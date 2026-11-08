@@ -11,7 +11,7 @@ function loadPlugin({ maplist = null, loggedOn = true, installed = [], settings 
   const values = new Map(Object.entries(configSchema).map(([name, entry]) => [name, entry.default]));
   for (const [k, v] of Object.entries(settings)) values.set(k, v);
   const files = new Map(maplist === null ? [] : [['maplist.txt', maplist]]);
-  const logs = [], requests = [], waiting = new Map(), admins = new Map(), timers = [];
+  const logs = [], requests = [], asks = [], waiting = new Map(), admins = new Map(), timers = [];
   const onConnected = [];
   const steam = { loggedOn, installed: new Set(installed) };
   const sdk = {
@@ -25,6 +25,7 @@ function loadPlugin({ maplist = null, loggedOn = true, installed = [], settings 
     Steam: { isLoggedOn: () => steam.loggedOn, onConnected: h => onConnected.push(h) },
     Workshop: {
       isInstalled: id => steam.installed.has(id),
+      request: id => { asks.push(id); return true; },
       download: id => { requests.push(id); return new Promise(resolve => waiting.set(id, resolve)); },
     },
   };
@@ -36,7 +37,7 @@ function loadPlugin({ maplist = null, loggedOn = true, installed = [], settings 
   const api = context.module.exports;
   const settle = () => new Promise(setImmediate);
   return {
-    api, logs, requests, admins, timers, steam, files, values,
+    api, logs, requests, asks, admins, timers, steam, files, values,
     start() { api.OnPluginStart(); return settle(); },
     async connect() { steam.loggedOn = true; for (const h of onConnected) h(); await settle(); },
     async finish(id, result = 1) {
@@ -105,6 +106,20 @@ test('a download with no result times out and the list moves on', async () => {
   await new Promise(setImmediate);
   assert.deepEqual(host.requests, ['1', '2']);
   assert.equal(host.logs[1], '[workshopmaps] 1: no result from Steam; will retry');
+});
+
+test('a timed-out item is asked for again without adding another waiter', async () => {
+  const host = loadPlugin({ maplist: 'a:1' });
+  await host.start();
+  host.timers[0].fn();
+  await new Promise(setImmediate);
+  await host.mapStart();
+  assert.deepEqual(host.requests, ['1'], 'one waiting download per item');
+  assert.deepEqual(host.asks, ['1'], 'Steam is asked again');
+  await host.finish('1');
+  assert.equal(host.logs.at(-1), '[workshopmaps] 1/1 ready');
+  await host.mapStart();
+  assert.deepEqual(host.requests, ['1']);
 });
 
 test('sm_workshop_sync reports the list and starts a pass', async () => {
