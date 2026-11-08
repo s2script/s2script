@@ -23,6 +23,7 @@ const EXTEND = "Extend Map";
 let currentMap = "";
 let roundsPlayed = 0;
 let voteRunning = false;   // claimed synchronously before the ballot's DB reads
+let voteMap = "";          // the map the running (or building) vote belongs to
 let voteFinished = false;  // a map won this map's vote
 let extendsUsed = 0;
 let pendingMap: MapEntry | null = null; // applied by us only when nextmap is absent
@@ -185,6 +186,7 @@ function startVote(forced: boolean): boolean {
   if (voteRunning || Vote.isActive()) return false;
   if (!forced && voteFinished) return false;
   const map = Server.mapName;
+  voteMap = map;
   if (iface.dispatch("OnMapVoteStart", { currentMap: map }) >= HookResult.Handled) return false;
   voteRunning = true;
   buildBallot().then(({ maps, extend }) => {
@@ -239,9 +241,12 @@ function pollTick(): void {
     // The first observed map after load is not a change: state (including a vote forced in that
     // window) already belongs to it. currentMap just starts empty.
     if (currentMap === "") { currentMap = m; return; }
-    // A ballot left open by the old map would keep eating typed numbers on the new one.
-    if (Vote.isActive()) Vote.cancel();
+    // A ballot left open by the old map would keep eating typed numbers on the new one. A vote
+    // already opened on THIS map (in the ~1 s before this poll noticed the change) is kept.
+    const keepVote = voteRunning && voteMap === m;
+    if (!keepVote && Vote.isActive()) Vote.cancel();
     resetForMap(m);
+    voteRunning = keepVote;
     return;
   }
   if (!config.getBool("mapvote_endvote") || voteRunning || voteFinished) return;
