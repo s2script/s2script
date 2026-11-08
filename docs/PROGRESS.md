@@ -1224,6 +1224,8 @@ the core goes away.
 Callbacks are notify-only and queued in `core/src/steam.rs`; a busy isolate keeps them queued (and
 the frame detour requested) for the next frame's sweep, and a download result whose listeners ran
 but whose waiters were deferred retries only the waiters. `Workshop.download` waiters are one-shot
-subscriptions keyed by item and go with their plugin on unload. Ids cross as decimal strings.
+subscriptions keyed by item and result epoch: a result settles only the waiters that existed when it
+arrived, so a listener that retries the same item waits for the next result. They go with their
+plugin on unload. Ids cross as decimal strings.
 
-Cookbook: `sm_ws_status` / `sm_ws_get` / `sm_ws_info`. Four in-isolate tests. Live gate pending.
+Cookbook: `sm_ws_status` / `sm_ws_get` / `sm_ws_info`. Five in-isolate tests. Live gate pending.
