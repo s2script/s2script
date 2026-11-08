@@ -1,4 +1,4 @@
-import { command, translations, Chat, Admin, ADMFLAG, HookResult, Translations } from "@s2script/sdk";
+import { command, translations, config, Chat, Admin, ADMFLAG, HookResult, Translations } from "@s2script/sdk";
 import type { HookResultValue } from "@s2script/sdk";
 import { Player, Activity } from "@s2script/cs2";
 
@@ -15,12 +15,20 @@ function doSay(actorSlot: number, msg: string): void {
   }
 }
 
+function isChatAdmin(slot: number): boolean {
+  if (slot < 0) return true; // server console
+  const a = Admin.forSlot(slot);
+  return !!a && a.hasFlags(ADMFLAG.CHAT);
+}
+
+// SourceMod SendChatToAdmins: every chat admin sees it, and so does the sender (a non-admin otherwise gets
+// no sign their message went anywhere). An admin's message reads "(ADMINS)"; a player's reads "(TO ADMINS)".
 function doAdminChat(actorSlot: number, msg: string): void {
   const name = actorName(actorSlot);
+  const key = isChatAdmin(actorSlot) ? "Say Admins" : "Say To Admins";
   for (const p of Player.allConnected()) {
-    const a = Admin.forSlot(p.slot);
-    if (a && a.hasFlags(ADMFLAG.CHAT)) {
-      Chat.toSlot(p.slot, Translations.translate(p.slot, "Say Admins", name, msg));
+    if (p.slot === actorSlot || isChatAdmin(p.slot)) {
+      Chat.toSlot(p.slot, Translations.translate(p.slot, key, name, msg));
     }
   }
 }
@@ -77,11 +85,22 @@ export function OnPluginStart(): void {
   });
 }
 
-// SourceMod @ chat triggers, over the raw-chat subscriber.
+// SourceMod basechat @ chat triggers, over the raw-chat subscriber.
+//   say      "@msg"            -> sm_say      (chat admins only)
+//   say      "@@target msg"    -> sm_psay     (chat admins only)
+//   say_team "@msg"            -> to admins   (anyone while `chat_mode` is on, the SM default; else admins)
+// Anything not allowed falls through as ordinary chat.
 export function OnClientSayCommand(slot: number, text: string, teamonly: boolean): HookResultValue {
   if (text[0] !== "@") return HookResult.Continue;
-  const admin = Admin.forSlot(slot);
-  if (!admin || !admin.hasFlags(ADMFLAG.CHAT)) return HookResult.Continue; // non-admin @ = normal chat
+  const admin = isChatAdmin(slot);
+  if (teamonly) {
+    if (!admin && !config.getBool("chat_mode")) return HookResult.Continue;
+    const body = text.slice(1).trim();
+    if (!body) return HookResult.Handled; // bare "@" with no message: consume, send nothing
+    doAdminChat(slot, body);
+    return HookResult.Handled;
+  }
+  if (!admin) return HookResult.Continue; // non-admin @ in all chat = normal chat
   if (text.startsWith("@@")) {
     const rest = text.slice(2).trim();
     const sp = rest.indexOf(" ");
@@ -91,8 +110,7 @@ export function OnClientSayCommand(slot: number, text: string, teamonly: boolean
     return HookResult.Handled;
   }
   const body = text.slice(1).trim();
-  if (!body) return HookResult.Handled; // bare "@" with no message: consume, send nothing
-  if (teamonly) doAdminChat(slot, body);
-  else doSay(slot, body);
+  if (!body) return HookResult.Handled;
+  doSay(slot, body);
   return HookResult.Handled;
 }
