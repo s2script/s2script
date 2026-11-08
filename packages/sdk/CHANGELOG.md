@@ -1,5 +1,11 @@
 # @s2script/cli
 
+## 0.36.0
+
+### Minor Changes
+
+- 51c0af0: Add PrecacheContext.addEntity(classname), which precaches everything an entity class needs to spawn (models, particles, soundevents and the classes it precaches). Requires the matching runtime with the precache_entity_add engine operation.
+
 ## 0.35.0
 
 ### Minor Changes
