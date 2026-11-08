@@ -258,4 +258,7 @@ test('the first map poll after load does not cancel a vote already forced', asyn
   await host.settle();
   host.poll();   // first observation of the map
   assert.ok(host.vote, 'still open');
+  assert.equal(host.iface.isVoteInProgress(), true);
+  await host.end(0, [1, 0, 0, 0, 0]);
+  assert.equal(host.iface.hasEndOfMapVoteFinished(), true, 'its result still counts');
 });

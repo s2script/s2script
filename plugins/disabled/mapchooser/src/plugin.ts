@@ -26,6 +26,7 @@ let voteRunning = false;   // claimed synchronously before the ballot's DB reads
 let voteFinished = false;  // a map won this map's vote
 let extendsUsed = 0;
 let pendingMap: MapEntry | null = null; // applied by us only when nextmap is absent
+let pendingSource = "";                  // the map pendingMap was chosen on
 let frameCounter = 0;
 
 let db!: Database;
@@ -60,7 +61,8 @@ function isValidEntry(e: MapEntry): boolean {
 }
 
 function isCurrentMap(name: string): boolean {
-  return currentMap !== "" && name.toLowerCase() === currentMap.toLowerCase();
+  const live = Server.mapName;
+  return live !== "" && name.toLowerCase() === live.toLowerCase();
 }
 
 function timeLimitMinutes(): number {
@@ -133,6 +135,7 @@ function setNextMap(entry: MapEntry): void {
     try { handled = nextmap.setNextMap(entry.name); } catch (e) { logErr(e); }
   }
   pendingMap = handled ? null : entry;
+  pendingSource = Server.mapName;
   console.log("[mapchooser] next map: " + entry.name + (handled ? " (nextmap rotates)" : " (changing at match end)"));
   Chat.toAll(Translations.translate(-1, "Mapvote Next Map", entry.name));
 }
@@ -153,7 +156,7 @@ function extendMap(): void {
 
 function finishVote(result: VoteResult, options: string[], maps: MapEntry[], map: string): void {
   voteRunning = false;
-  if (currentMap !== map) return; // the map changed under the vote
+  if (Server.mapName !== map) return; // the map changed under the vote
   let winner = result.winner;
   if (winner === null && result.total > 0) {
     // A tie: choose among the tied leaders rather than throwing the vote away.
@@ -181,11 +184,11 @@ function finishVote(result: VoteResult, options: string[], maps: MapEntry[], map
 function startVote(forced: boolean): boolean {
   if (voteRunning || Vote.isActive()) return false;
   if (!forced && voteFinished) return false;
-  if (iface.dispatch("OnMapVoteStart", { currentMap }) >= HookResult.Handled) return false;
+  const map = Server.mapName;
+  if (iface.dispatch("OnMapVoteStart", { currentMap: map }) >= HookResult.Handled) return false;
   voteRunning = true;
-  const map = currentMap;
   buildBallot().then(({ maps, extend }) => {
-    if (currentMap !== map) { voteRunning = false; return; }
+    if (Server.mapName !== map) { voteRunning = false; return; }
     const options = maps.map(m => m.name);
     if (extend) options.push(EXTEND);
     if (options.length < 2) {
@@ -219,9 +222,6 @@ function startWindowSeconds(): number {
 }
 
 function resetForMap(map: string): void {
-  // A ballot left open by the old map would keep eating typed numbers on the new one.
-  // (Not on the first observed map: currentMap starts empty, and a vote forced right after load is live.)
-  if (currentMap !== "" && Vote.isActive()) Vote.cancel();
   currentMap = map;
   roundsPlayed = 0;
   voteRunning = false;
@@ -235,7 +235,15 @@ function pollTick(): void {
   frameCounter = 0;
   const m = Server.mapName;
   if (!m) return;
-  if (m !== currentMap) { resetForMap(m); return; }
+  if (m !== currentMap) {
+    // The first observed map after load is not a change: state (including a vote forced in that
+    // window) already belongs to it. currentMap just starts empty.
+    if (currentMap === "") { currentMap = m; return; }
+    // A ballot left open by the old map would keep eating typed numbers on the new one.
+    if (Vote.isActive()) Vote.cancel();
+    resetForMap(m);
+    return;
+  }
   if (!config.getBool("mapvote_endvote") || voteRunning || voteFinished) return;
   const tl = timeLimitMinutes();
   // Same clock nextmap uses to decide the time limit has run out.
@@ -275,7 +283,7 @@ export async function OnPluginStart(): Promise<void> {
   hook.on("cs_win_panel_match", () => {
     const m = pendingMap;
     pendingMap = null;
-    if (m === null || Server.mapName !== currentMap) return;
+    if (m === null || pendingSource !== Server.mapName) return;
     Server.command(m.workshopId ? "host_workshop_map " + m.workshopId : "changelevel " + m.name);
   });
 
