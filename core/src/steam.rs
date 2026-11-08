@@ -71,16 +71,27 @@ thread_local! {
     /// Undelivered events. `listeners_done` marks a download result whose listeners already ran
     /// and whose waiters were deferred, so a retry never runs a listener twice.
     static QUEUE: std::cell::RefCell<VecDeque<Queued>> = const { std::cell::RefCell::new(VecDeque::new()) };
-    /// Outstanding download waiters: sub id → (owning plugin, item). The sub ids are what a delivered
-    /// result removes, so a waiter added while the result is being delivered stays for the next one.
-    static WAITERS: std::cell::RefCell<std::collections::HashMap<u64, (String, u64)>>
+    /// Outstanding download waiters: sub id → (owning plugin, waiter key), for the bound and teardown.
+    static WAITERS: std::cell::RefCell<std::collections::HashMap<u64, (String, String)>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Per item, the epoch a new waiter joins. A download result takes the current epoch when it is
+    /// queued and moves the item to the next one, so a waiter added after the result arrived (a
+    /// listener retrying the same item, say) waits for the next result instead of this one.
+    static EPOCHS: std::cell::RefCell<std::collections::HashMap<u64, u64>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Queued { event: SteamEvent, listeners_done: bool }
+struct Queued { event: SteamEvent, listeners_done: bool, epoch: u64 }
 
-fn waiter_key(id: u64) -> String { format!("wait:{id}") }
+fn waiter_key(id: u64, epoch: u64) -> String { format!("wait:{id}:{epoch}") }
+
+fn current_epoch(id: u64) -> u64 { EPOCHS.with(|e| e.borrow().get(&id).copied().unwrap_or(0)) }
+
+/// The epoch a result for `id` settles, moving later waiters on to the next one.
+fn take_epoch(id: u64) -> u64 {
+    EPOCHS.with(|e| { let mut e = e.borrow_mut(); let n = e.entry(id).or_insert(0); let cur = *n; *n += 1; cur })
+}
 
 /// Queued events keep the frame detour requested, so the sweep that delivers them runs.
 pub(crate) fn pending() -> usize {
@@ -93,7 +104,8 @@ pub(crate) fn dispatch_event(kind: i32, id: u64, result: i32, flag: i32) {
     let dropped = QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         let dropped = if q.len() >= MAX_QUEUED_EVENTS { q.pop_front() } else { None };
-        q.push_back(Queued { event, listeners_done: false });
+        let epoch = if let SteamEvent::DownloadResult { id, .. } = event { take_epoch(id) } else { 0 };
+        q.push_back(Queued { event, listeners_done: false, epoch });
         dropped
     });
     if let Some(d) = dropped {
@@ -135,18 +147,17 @@ fn deliver(entry: Queued) -> Option<Queued> {
         }
     }
     let SteamEvent::DownloadResult { id, result, .. } = event else { return None };
-    let ids: Vec<u64> = WAITERS.with(|w| w.borrow().iter()
-        .filter(|(_, (_, item))| *item == id).map(|(sub, _)| *sub).collect());
-    let waiters = STEAM_MUX.with(|m| m.borrow().snapshot(&waiter_key(id)));
+    let key = waiter_key(id, entry.epoch);
+    let waiters = STEAM_MUX.with(|m| m.borrow().snapshot(&key));
     if waiters.is_empty() { return None; }
     let delivery = fan_out(&waiters, "steam:download-wait", Instrument::none(), |tc| {
         Some(vec![v8::Integer::new(tc, result).into()])
     });
     if delivery == Delivery::Deferred {
-        return Some(Queued { event, listeners_done: true });
+        return Some(Queued { listeners_done: true, ..entry });
     }
-    STEAM_MUX.with(|m| { m.borrow_mut().remove_by_ids(&ids); });
-    WAITERS.with(|w| { let mut w = w.borrow_mut(); for i in &ids { w.remove(i); } });
+    STEAM_MUX.with(|m| m.borrow_mut().remove_by_name(&key));
+    WAITERS.with(|w| w.borrow_mut().retain(|_, (_, k)| *k != key));
     None
 }
 
@@ -252,9 +263,10 @@ fn s2_steam_download(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         let Some(f) = engine_ops().and_then(|o| o.steam_ugc_download) else { return };
         if crate::nest::with_outbound(&args, || f(id, high as i32)) == 0 { return; }
         if wants_callback {
-            let Some((sub_id, _)) = subscribe_into(scope, &args, &STEAM_MUX, &waiter_key(id), 2) else { return };
+            let key = waiter_key(id, current_epoch(id));
+            let Some((sub_id, _)) = subscribe_into(scope, &args, &STEAM_MUX, &key, 2) else { return };
             let owner = crate::v8host::current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-            WAITERS.with(|w| w.borrow_mut().insert(sub_id, (owner, id)));
+            WAITERS.with(|w| w.borrow_mut().insert(sub_id, (owner, key)));
         }
         rv.set_bool(true);
     }));
@@ -345,6 +357,7 @@ pub(crate) fn register_store() {
         Box::new(|| {
             STEAM_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
             WAITERS.with(|w| w.borrow_mut().clear());
+            EPOCHS.with(|e| e.borrow_mut().clear());
             QUEUE.with(|q| q.borrow_mut().clear());
         }),
     );
@@ -443,6 +456,26 @@ mod tests {
         shutdown();
     }
 
+    /// A listener that retries the same item gets a waiter for the NEXT result, not the one it is
+    /// being told about.
+    #[test]
+    fn a_retry_from_a_listener_waits_for_the_next_result() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(ops()));
+        create_plugin_context("st5");
+        eval_in_context_string("st5", r#"globalThis.out = []; var W = __s2pkg_steam.Workshop;
+            W.onDownloadResult(function (e) {
+                if (!e.ok && out.length === 0) W.download(e.id).then(function (r) { out.push("retry:" + r.result); });
+            });
+            W.download(12).then(function (r) { out.push("first:" + r.result); }); "" "#);
+        dispatch_event(DOWNLOAD, 12, 2, 730);
+        assert_eq!(js("st5", "out.join()"), "first:2", "the retry is still pending");
+        dispatch_event(DOWNLOAD, 12, 1, 730);
+        assert_eq!(js("st5", "out.join()"), "first:2,retry:1");
+        assert!(WAITERS.with(|w| w.borrow().is_empty()));
+        shutdown();
+    }
+
     #[test]
     fn busy_isolate_defers_events_without_repeating_listeners() {
         init(dummy_logger()).unwrap();
@@ -480,7 +513,7 @@ mod tests {
         unload_plugin("st4");
         assert!(WAITERS.with(|w| w.borrow().is_empty()));
         assert!(!STEAM_MUX.with(|m| m.borrow().has_subscribers("connected")));
-        assert!(!STEAM_MUX.with(|m| m.borrow().has_subscribers(&waiter_key(11))));
+        assert!(!STEAM_MUX.with(|m| m.borrow().has_subscribers(&waiter_key(11, 0))));
         dispatch_event(DOWNLOAD, 11, 1, 730);   // nobody left to deliver to
         assert_eq!(pending(), 0);
         shutdown();
