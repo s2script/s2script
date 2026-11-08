@@ -155,3 +155,18 @@ test('a ballot the vote slot refuses releases the RTV lock', async () => {
   assert.equal(reply, 'Rtv Forced');
   assert.ok(host.active, 'a later RTV can start');
 });
+
+test('an RTV requested on the old map does not open after a map change', async () => {
+  const host = await loadRtv();
+  host.end([0, 0, 0, 3]);
+  host.admins.get('sm_forcertv')({ replyT() {} });   // ballot building on de_inferno...
+  host.server.mapName = 'de_mirage';                 // ...when the map changes
+  await new Promise(setImmediate);
+  assert.equal(host.active, null, 'the old map\'s request is dropped');
+  host.poll();
+  let reply;
+  host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
+  await new Promise(setImmediate);
+  assert.equal(reply, 'Rtv Forced');
+  assert.ok(host.active, 'the new map can still vote');
+});

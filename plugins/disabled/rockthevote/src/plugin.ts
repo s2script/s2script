@@ -294,7 +294,11 @@ function startVote(force: boolean): boolean {
   if (voteRunning || Vote.isActive() || endVote.running || endVote.finished) return false;
   voteMap = Server.mapName;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
+  const claimMap = voteMap;
   buildBallot().then(ballot => {
+    // The map changed while the ballot was built: this request belonged to the old map. Release
+    // the lock only if it is still ours (a newer request on the new map may hold it).
+    if (Server.mapName !== claimMap) { if (voteMap === claimMap) voteRunning = false; return; }
     if (ballot === null) {
       Chat.toAll(Translations.translate(-1, "Rtv No Maps Available"));
       voteRunning = false;      // release — nothing started
