@@ -1,0 +1,25 @@
+{
+  "name": "@s2script/workshopmaps",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "config": {
+      "workshopmaps_from_maplist": {
+        "type": "bool",
+        "default": true,
+        "description": "Download every workshop map listed in maplist.txt (name:workshopId lines)."
+      },
+      "workshopmaps_items": {
+        "type": "string",
+        "default": "",
+        "description": "More workshop ids to keep downloaded, separated by commas or spaces."
+      },
+      "workshopmaps_check_on_map_start": {
+        "type": "bool",
+        "default": true,
+        "description": "Check again on every map start, which picks up maplist.txt edits and updated workshop items."
+      }
+    }
+  }
+}
