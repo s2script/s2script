@@ -356,7 +356,7 @@
     if (!callRespawn || !callSetPawn) return false;
     if (!this.ref.isValid()) return false;
     var pawn = this.pawn;
-    if (pawn) callSetPawn(this, pawn.ref, true, false);
+    if (pawn) callSetPawn(this, pawn.ref, true, false, false, false);
     callRespawn(this);
     return true;
   };

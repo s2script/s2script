@@ -256,11 +256,11 @@ test("respawn: SetPawn then Respawn run on THIS call, in that order", () => {
   assert.equal(p.respawn(), true);
   // SetPawn BEFORE Respawn, same call, in that order (SwiftlyS2/CSSharp's exact sequence).
   assert.deepEqual(h.names(), ["setPawn", "respawn"]);
-  // EXACTLY three args after `this`: (playerPawn, true, false). A fourth feeds the function a
-  // different reset flag — the arity is a correctness fact, not a convenience.
-  assert.equal(h.invokes[0].args.length, 3);
+  // EXACTLY five args after `this`: (playerPawn, true, false, false, false). The engine reads all
+  // four flags, so a shorter call leaves b3/b4 as register garbage — the arity is a correctness fact.
+  assert.equal(h.invokes[0].args.length, 5);
   assert.equal(h.invokes[0].args[0].index, p.ref.index + 64, "arg 0 is the pawn's EntityRef");
-  assert.deepEqual(h.invokes[0].args.slice(1), [true, false]);
+  assert.deepEqual(h.invokes[0].args.slice(1), [true, false, false, false]);
   assert.deepEqual(h.invokes[1].args, [], "Respawn is nullary");
 });
 
