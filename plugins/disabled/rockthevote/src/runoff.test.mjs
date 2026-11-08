@@ -27,6 +27,7 @@ async function loadRtv({ runoff = true } = {}) {
     Vote: {
       isActive: () => active !== null, registerTallyRenderer() {},
       start: options => { if (active) return false; active = options; votes.push(options); return true; },
+      cancel: () => { active = null; },
     },
   };
   const math = Object.create(Math); math.random = () => 0;
@@ -46,7 +47,8 @@ async function loadRtv({ runoff = true } = {}) {
     const leaders = counts.filter(c => c === best).length;
     v.onEnd({ winner: total === 0 || leaders > 1 ? null : counts.indexOf(best), counts, total });
   };
-  return { hooks, commands, chat, votes, end, server, get active() { return active; } };
+  const poll = () => { for (let i = 0; i < 64; i++) api.OnGameFrame(); };
+  return { hooks, commands, chat, votes, end, server, poll, get active() { return active; } };
 }
 
 test('a tie runs a runoff of only the tied options, repeating until one wins', async () => {
@@ -98,5 +100,22 @@ test('no runoff starts on a map that already changed', async () => {
   const host = await loadRtv();
   host.server.mapName = 'de_mirage';
   host.end([1, 1, 0, 0]);
+  assert.equal(host.active, null);
+});
+
+test('a winner from a ballot that outlived a map change is not applied', async () => {
+  const host = await loadRtv();
+  host.server.mapName = 'de_mirage';
+  host.end([0, 3, 0, 0]);
+  host.hooks.get('round_prestart')();
+  assert.deepEqual(host.commands, []);
+  assert.ok(!host.chat.some(line => line.startsWith('Rtv Winner')));
+});
+
+test('the map-change reset cancels a ballot still open', async () => {
+  const host = await loadRtv();
+  assert.ok(host.active);
+  host.server.mapName = 'de_mirage';
+  host.poll();
   assert.equal(host.active, null);
 });

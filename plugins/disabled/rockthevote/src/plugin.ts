@@ -246,10 +246,11 @@ function runBallot(options: string[], entries: Map<string, MapEntry>, runoff: nu
 function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>, runoff = 0, sourceMap = Server.mapName): void {
   voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — no votes /
                          // "Don't Change" / invalid winner leaves RTV open to re-accumulate (SM parity)
+  if (Server.mapName !== sourceMap) return; // the map changed under the ballot — its result is stale
 
   // A tie between two or more options goes to a runoff of just those options, again and again
   // until one wins. It ends when one option leads, or when nobody votes (the map stays).
-  if (result.winner === null && result.total > 0 && config.getBool("rtv_runoff") && Server.mapName === sourceMap) {
+  if (result.winner === null && result.total > 0 && config.getBool("rtv_runoff")) {
     const best = Math.max(...result.counts);
     const tied = options.filter((_, i) => result.counts[i] === best);
     if (tied.length >= 2) {
@@ -360,6 +361,7 @@ function pollTick(): void {
   frameCounter = 0;
   const m = Server.mapName;
   if (m && m !== currentMap) { // map changed — reset all per-map RTV state
+    if (Vote.isActive()) Vote.cancel(); // an old map's ballot would keep eating typed numbers
     currentMap = m;
     mapStartMs = Date.now();   // restart the rtv_initialdelay window for the new map
     rtvVoters.clear();
