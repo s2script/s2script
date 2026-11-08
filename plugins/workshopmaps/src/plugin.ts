@@ -37,10 +37,25 @@ function wantedIds(): string[] {
   return [...new Set(ids)].filter(id => id !== "0");
 }
 
-function downloadWithTimeout(id: string): Promise<{ ok: boolean; result: number } | null> {
+type Result = { ok: boolean; result: number };
+/** One outstanding download promise per item. A pass that times out leaves it waiting; a later pass
+ *  asks Steam again with `request` and keeps waiting on the same promise, so a session that never
+ *  answers cannot pile up one waiter per item per pass. */
+const inflight = new Map<string, Promise<Result>>();
+
+function downloadWithTimeout(id: string): Promise<Result | null> {
+  let pending = inflight.get(id);
+  if (pending) {
+    Workshop.request(id);
+  } else {
+    pending = Workshop.download(id);
+    inflight.set(id, pending);
+    pending.then(() => inflight.delete(id));
+  }
+  const settled = pending;
   return new Promise(resolve => {
     const timer = after(DOWNLOAD_TIMEOUT_MS, () => resolve(null));
-    Workshop.download(id).then(r => { timer.kill(); resolve(r); });
+    settled.then(r => { timer.kill(); resolve(r); });
   });
 }
 
