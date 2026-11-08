@@ -9,6 +9,7 @@
   "Rtv Hud Hint": "type a number in chat · ",
   "Rtv Hud Left": " left",
   "Rtv Hud Title": "Rock The Vote",
+  "Rtv Map Vote Finished": "{green}[RTV] {grey}The next map has already been voted on.",
   "Rtv No Maps Available": "{green}[RTV] {lightred}No maps available to vote on.",
   "Rtv Not Enough Players": "{green}[RTV] {lightred}Not enough players.",
   "Rtv Not Open Yet": "{green}[RTV] {grey}RockTheVote is not open yet — {yellow}{1}s{grey} to go.",

@@ -69,6 +69,13 @@ function isValidEntry(e: MapEntry): boolean {
   return /^[A-Za-z0-9_]+$/.test(e.name) && (e.workshopId === null || /^[0-9]+$/.test(e.workshopId));
 }
 
+/** Resolve a map name for an override: maplist.txt first (keeps a workshop id), then an installed
+ *  map. Null when unknown or when the entry would not be safe to hand to the console. */
+function resolveEntry(map: string): MapEntry | null {
+  const entry = loadPool().find(e => e.name === map) ?? (Server.isMapValid(map) ? { name: map, workshopId: null } : null);
+  return entry !== null && isValidEntry(entry) ? entry : null;
+}
+
 /** Announce and count down; rotation optionally waits for a round boundary. Startup bypasses it. */
 function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMap), startup = false): void {
   if (changing) return;
@@ -149,7 +156,16 @@ function pollTick(): void {
 }
 
 export function OnPluginStart(): void {
-  mapChanges = publish("@s2script/nextmap", {});
+  mapChanges = publish("@s2script/nextmap", {
+    // The same override sm_setnextmap sets; mapchooser calls it with its vote's winner.
+    setNextMap(map: string): boolean {
+      const entry = resolveEntry(map);
+      if (entry === null) return false;
+      override = entry;
+      Server.setCvar("nextlevel", entry.name);
+      return true;
+    },
+  });
   translations.load("nextmap", "common");
 
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the

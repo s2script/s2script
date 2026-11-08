@@ -1,0 +1,13 @@
+{
+  "Mapvote Ballot Header": "{green}[Map Vote] {grey}Vote for the next map — type its {yellow}number{grey} in chat:",
+  "Mapvote Cannot Start": "The map vote cannot start right now.",
+  "Mapvote Extended Rounds": "{green}[Map Vote] {lime}Extend Map{grey} won — the map is extended by {yellow}{1}{grey} rounds.",
+  "Mapvote Extended Time": "{green}[Map Vote] {lime}Extend Map{grey} won — the map is extended by {yellow}{1}{grey} minutes.",
+  "Mapvote Forced": "Map vote started.",
+  "Mapvote Next Map": "{green}[Map Vote] {grey}Voting finished. Next map: {lime}{1}{grey}.",
+  "Mapvote No Votes": "{green}[Map Vote] {grey}No votes were cast — the map rotation is unchanged.",
+  "Mapvote Option Extend": "  {yellow}{1}{grey}. {grey}{2}",
+  "Mapvote Option Map": "  {yellow}{1}{grey}. {lime}{2}",
+  "Mapvote Question": "Next map",
+  "Mapvote Tie Broken": "{green}[Map Vote] {grey}The vote tied — {lime}{1}{grey} was picked from the leaders."
+}

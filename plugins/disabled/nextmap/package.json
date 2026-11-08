@@ -6,7 +6,7 @@
   "types": "api.d.ts",
   "s2script": {
     "publishes": {
-      "@s2script/nextmap": "1.0.0"
+      "@s2script/nextmap": "1.1.0"
     },
     "interfaceProtocol": 2,
     "config": {

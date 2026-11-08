@@ -90,7 +90,11 @@ The release ships the SourceMod-parity suite from `plugins/` (demos live under `
 
 `adminhelp` · `adminmenu` · `antiflood` · `basebans` · `basechat` · `basecomm` · `basecommands` · `basetriggers` · `basevotes` · `clientprefs` · `funcommands` · `playercommands` · `reservedslots` · `zones`
 
-Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip under `addons/s2script/plugins/disabled/` but are **not** loaded — the runtime's `plugins/` scan is non-recursive, so it skips the `disabled/` subdir. To enable one, move its `.s2sp` up one level into `addons/s2script/plugins/`.
+Opt-in plugins (nominations, rockthevote, nextmap, mapchooser, funvotes) ship in the zip under `addons/s2script/plugins/disabled/` but are **not** loaded — the runtime's `plugins/` scan is non-recursive, so it skips the `disabled/` subdir. To enable one, move its `.s2sp` up one level into `addons/s2script/plugins/`.
+
+### End-of-map vote
+
+For the SourceMod setup (a vote near the end of every map, on the nominated maps plus an Extend option), enable `nextmap`, `nominations` and `mapchooser` together, and `rockthevote` if you want it. Set the map length with `mp_timelimit` (minutes) or `mp_maxrounds`. `mapchooser` opens the vote `mapvote_start` minutes before the time limit (default 2) or `mapvote_startround` rounds before the round limit (default 2); the ballot is the nominations, then random `maplist.txt` maps up to `mapvote_include`, then Extend Map while `mapvote_extend` allows it. Extend adds `extendmap_timestep` minutes or `extendmap_roundstep` rounds and the vote runs again before the new limit. The winner becomes nextmap's next map, and nextmap changes to it when the limit is reached. `sm_mapvote` starts the vote by hand. RTV is refused while the end-of-map vote runs and after it has chosen a map.
 
 ## When plugins load
 
