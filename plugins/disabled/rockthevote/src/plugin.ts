@@ -361,7 +361,9 @@ function pollTick(): void {
   frameCounter = 0;
   const m = Server.mapName;
   if (m && m !== currentMap) { // map changed — reset all per-map RTV state
-    if (Vote.isActive()) Vote.cancel(); // an old map's ballot would keep eating typed numbers
+    // An old map's ballot would keep eating typed numbers. Not on the first observed map:
+    // currentMap starts empty, and an RTV forced right after load is live.
+    if (currentMap !== "" && Vote.isActive()) Vote.cancel();
     currentMap = m;
     mapStartMs = Date.now();   // restart the rtv_initialdelay window for the new map
     rtvVoters.clear();

@@ -6,7 +6,7 @@ import { transformSync } from 'esbuild';
 
 const code = transformSync(readFileSync(new URL('./plugin.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'cjs' }).code;
 
-async function loadRtv({ runoff = true } = {}) {
+async function loadRtv({ runoff = true, pollFirst = true } = {}) {
   const hooks = new Map(), admins = new Map(), commands = [], chat = [], votes = [];
   let active = null;
   const server = { mapName: 'de_inferno', command: line => commands.push(line) };
@@ -36,7 +36,7 @@ async function loadRtv({ runoff = true } = {}) {
   vm.runInContext(code, ctx);
   const api = ctx.module.exports;
   await api.OnPluginStart();
-  for (let i = 0; i < 64; i++) api.OnGameFrame();
+  if (pollFirst) for (let i = 0; i < 64; i++) api.OnGameFrame();
   admins.get('sm_forcertv')({ replyT() {} });
   await new Promise(setImmediate);
   // End the open vote the way the core does: release the lock, then call onEnd.
@@ -118,4 +118,11 @@ test('the map-change reset cancels a ballot still open', async () => {
   host.server.mapName = 'de_mirage';
   host.poll();
   assert.equal(host.active, null);
+});
+
+test('the first map poll after load does not cancel a forced RTV', async () => {
+  const host = await loadRtv({ pollFirst: false });
+  assert.ok(host.active);
+  host.poll();
+  assert.ok(host.active, 'still open');
 });
