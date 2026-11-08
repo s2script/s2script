@@ -4,6 +4,10 @@
   "private": true,
   "main": "src/plugin.ts",
   "s2script": {
+    "optionalPluginDependencies": {
+      "@s2script/nextmap": "^1.0.0"
+    },
+    "interfaceProtocol": 2,
     "config": {
       "rtv_threshold": {
         "type": "float",

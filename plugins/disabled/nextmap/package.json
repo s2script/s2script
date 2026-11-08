@@ -3,12 +3,27 @@
   "version": "0.0.0",
   "private": true,
   "main": "src/plugin.ts",
+  "types": "api.d.ts",
   "s2script": {
+    "publishes": {
+      "@s2script/nextmap": "1.0.0"
+    },
+    "interfaceProtocol": 2,
     "config": {
+      "nextmap_random_startup": {
+        "type": "bool",
+        "default": false,
+        "description": "Choose one random usable maplist.txt entry when the first live map is observed after plugin load."
+      },
+      "nextmap_wait_for_round": {
+        "type": "bool",
+        "default": true,
+        "description": "Wait for round prestart or match end after the delay before rotating; false switches as soon as the delay expires."
+      },
       "nextmap_change_delay": {
         "type": "int",
         "default": 5,
-        "description": "Seconds to wait after announcing the map change before running changelevel."
+        "description": "Seconds after announcing a change. Rotation also waits for a round boundary when nextmap_wait_for_round=true; otherwise switches when this delay expires. Random startup uses only this delay."
       },
       "nextmap_use_timelimit": {
         "type": "bool",

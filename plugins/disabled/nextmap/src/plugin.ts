@@ -1,13 +1,10 @@
 // @s2script/nextmap — SourceMod nextmap: a maplist.txt rotation with an `sm_setnextmap` admin
 // override, seeding the `nextlevel` cvar (basetriggers' `nextmap` chat trigger reads it) and
-// auto-changelevel at mp_maxrounds/mp_timelimit.
-//
-// Task 1: the plugin scaffold, maplist parsing + rotation, the sm_setnextmap override, and the
-// per-map-change poll that reseeds nextlevel.
-// Task 2 (this file, current state): round_end (mp_maxrounds) + mp_timelimit detection, and the
-// real changeToNext body (delayed, validated changelevel/host_workshop_map).
+// an optional random startup map, then auto-changelevel at mp_maxrounds/mp_timelimit.
 
-import { command, hook, translations, ADMFLAG, Server, config, delay, Chat, Translations, HookResult } from "@s2script/sdk";
+import { command, hook, translations, publish, ADMFLAG, Server, config, delay, Chat, Translations, HookResult } from "@s2script/sdk";
+import type { TypedPublishHandle } from "@s2script/sdk";
+import type { Contract } from "../api";
 
 /** A map option: its stock/BSP name, or a workshop id (mutually informative). */
 interface MapEntry { name: string; workshopId: string | null; }
@@ -17,6 +14,9 @@ let override: MapEntry | null = null;
 let roundsPlayed = 0;
 let currentMap = "";
 let changing = false;
+let readyChange: (() => void) | null = null;
+let matchEnded = false;
+let mapChanges: TypedPublishHandle<Contract>;
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
 let failNotified = false; // debounces the misconfiguration log so a persistent failure doesn't spam every tick
 
@@ -69,11 +69,10 @@ function isValidEntry(e: MapEntry): boolean {
   return /^[A-Za-z0-9_]+$/.test(e.name) && (e.workshopId === null || /^[0-9]+$/.test(e.workshopId));
 }
 
-/** The delayed, validated changelevel/host_workshop_map — announces then switches after a config delay. */
-function changeToNext(): void {
+/** Announce and count down; rotation optionally waits for a round boundary. Startup bypasses it. */
+function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMap), startup = false): void {
   if (changing) return;
   changing = true;
-  const next = override ?? rotationNext(currentMap);
   if (!next) {
     // No candidate (e.g. maplist.txt empty/missing on a fresh deploy) — leave `changing` reset so the
     // NEXT round_end/timelimit tick (or a later sm_setnextmap) retries; log ONCE per failure episode
@@ -88,31 +87,59 @@ function changeToNext(): void {
     return;
   }
   failNotified = false; // a valid candidate — clear so a future failure re-logs
+  const waitForRound = !startup && config.getBool("nextmap_wait_for_round");
   const secs = config.getInt("nextmap_change_delay");
-  console.log("[nextmap] map end reached — changing to " + next.name + " in " + secs + "s");
+  console.log("[nextmap] changing to " + next.name + " after " + secs + "s" + (waitForRound ? " at the next round boundary" : ""));
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
   // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
   // Broadcast to everyone — no single recipient, so this resolves at the server default language.
-  Chat.toAll(Translations.translate(-1, "Changing To", next.name, secs));
-  delay(secs * 1000).then(() => {
+  Chat.toAll(Translations.translate(-1, waitForRound ? "Changing After Round" : "Changing To", next.name, secs));
+  const apply = () => {
     if (Server.mapName !== scheduledMap) {
       console.log("[nextmap] scheduled change to " + next.name + " skipped — map already changed to " + Server.mapName);
       return;
     }
+    // A vote winner takes priority even if its boundary handler ran first and queued a command.
+    if (!startup && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: next.name }) >= HookResult.Handled) return;
     Server.command(next.workshopId ? "host_workshop_map " + next.workshopId : "changelevel " + next.name);
+  };
+  delay(secs * 1000).then(() => {
+    if (Server.mapName !== scheduledMap || !waitForRound || matchEnded) apply();
+    else readyChange = apply;
   }).catch(logErr);
 }
 
-// Plugins persist across a changelevel — the shim has no level-init reload hook, so OnPluginStart fires
-// once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions and
+function applyReadyChange(): void {
+  const apply = readyChange;
+  readyChange = null;
+  apply?.();
+}
+
+/** Pick once per plugin load, after the server's initial map becomes available. */
+function changeToStartupMap(): void {
+  const list = loadPool().filter(e => isValidEntry(e) && (e.workshopId !== null || Server.isMapValid(e.name)));
+  if (list.length === 0) {
+    console.log("[nextmap] no usable startup map available (check maplist.txt)");
+    return;
+  }
+  const next = list[Math.floor(Math.random() * list.length)];
+  if (next.name.toLowerCase() !== currentMap.toLowerCase()) changeToNext(next, true);
+}
+
+// Plugins persist across a changelevel: OnPluginStart fires once per plugin load, not per map.
+// Poll Server.mapName (throttled) to catch map transitions and
 // reset all per-map state, reseeding nextlevel from the rotation (mirrors the rockthevote pattern).
 function pollTick(): void {
   if (++frameCounter < 64) return; // ~once/sec at 64-tick
   frameCounter = 0;
   const m = Server.mapName;
-  if (m && m !== currentMap) {                 // map changed — reset + seed nextlevel
+  if (!m) return; // do not schedule a map change before the initial map is live
+  if (m !== currentMap) {                 // map changed — reset + seed nextlevel
+    const startup = currentMap === ""; // consumed before scheduling; later maps keep normal rotation
     currentMap = m; roundsPlayed = 0; changing = false; override = null; failNotified = false;
+    readyChange = null; matchEnded = false;
     const next = rotationNext(m); if (next && isValidEntry(next)) Server.setCvar("nextlevel", next.name);
+    if (startup && config.getBool("nextmap_random_startup")) changeToStartupMap();
     return;
   }
   if (!changing && config.getBool("nextmap_use_timelimit")) {
@@ -122,6 +149,7 @@ function pollTick(): void {
 }
 
 export function OnPluginStart(): void {
+  mapChanges = publish("@s2script/nextmap", {});
   translations.load("nextmap", "common");
 
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the
@@ -132,6 +160,17 @@ export function OnPluginStart(): void {
     roundsPlayed++;
     const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
     if (max > 0 && roundsPlayed >= max) changeToNext();
+  });
+
+  hook.on("round_prestart", () => {
+    matchEnded = false;
+    applyReadyChange();
+  });
+  // A completed match may never start another round. Its final panel is also a safe boundary;
+  // if the countdown is still running, it will apply the change after it finishes.
+  hook.on("cs_win_panel_match", () => {
+    matchEnded = true;
+    applyReadyChange();
   });
 
   command.admin("sm_setnextmap", ADMFLAG.CHANGEMAP, cmd => {

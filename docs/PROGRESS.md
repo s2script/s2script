@@ -1143,3 +1143,24 @@ SetStringUserData 10, GetStringUserData 11, FindStringIndex 12) on the first tab
 the interface-hook pin and range check. A table whose vtable is not the verified one is refused.
 User data crosses as a copied `Uint8Array` (a string is written as UTF-8), and reads grow their
 buffer once up to 1 MiB. Cookbook: `sm_st_list` / `sm_st_find` / `sm_st_show`. Live gate pending.
+
+
+## 2026-11-07 — Random startup map from nextmap's maplist
+
+`@s2script/nextmap` now chooses one random usable `maplist.txt` entry when its first live map is observed after plugin load. It reuses `nextmap_change_delay`, the existing announcement and validated stock/workshop switch, and cancellation when another actor changes maps first. A selected map already running is left alone; an empty/unusable list logs once. Later maps keep sequential rotation and admin overrides. Each fresh plugin load gets one startup choice, including manual reloads.
+
+Verification: 11 VM-hosted regression tests failed before the change and passed after; registered in `scripts/ci-js.sh`. The full JS gate passed, including 962 SDK tests, all plugin/example typechecks, and Docker compose/tooling checks. The SDK CLI and nextmap `.s2sp` build passed. No core/shim changes and no live CS2 acceptance or deployment. Design: `docs/superpowers/specs/2026-11-07-random-startup-map-design.md`; plan: `docs/superpowers/plans/2026-11-07-random-startup-map.md`.
+
+## 2026-11-07 — Round-boundary rotation and RTV
+
+Normal nextmap rotation now queues a target when its round/time limit is reached and waits until `round_prestart` after the minimum countdown before switching. RTV winners also wait for prestart rather than switching immediately on `round_end`. A final match panel permits switching without requiring another round; stale source maps are checked at execution. The initial random startup switch keeps its prompt delay, and the rotation announcement/config description now explain the boundary wait.
+
+Independent review reproduced competing rotation and RTV commands on the same boundary. Nextmap now exposes the protocol-2 `OnAutoMapChange` hook (`@s2script/nextmap` contract 1.0.0); RTV optionally vetoes normal rotation while it owns a winner for that source map, including after queuing its own command. Both load orders and identical/different targets issue exactly one command. Both plugins remain standalone.
+
+Verification: 32 focused tests pass, including eight initially failing combined-plugin conflict cases. Both archives build with matching contract hashes. The final full JS gate passes, including 962 SDK tests, plugin/example typechecks, and Docker tooling checks. No core/shim changes or live CS2 acceptance/deployment. The design and plan above include this follow-up.
+
+## 2026-11-07 — Configure nextmap's new behavior
+
+Applied the [PR review guidelines](https://github.com/s2script/s2script/pull/340#issuecomment-6713564447): bool `nextmap_random_startup` defaults to false, preserving SourceMod-style startup unless explicitly enabled; bool `nextmap_wait_for_round` defaults to true, with false restoring a switch as soon as the existing delay expires. The startup opportunity is consumed at the first live map even when disabled. Announcements and the delay description explain the selected timing mode; RTV priority remains independent of round waiting. Spec and plan now describe these operator settings.
+
+Verification: six regression tests failed before the fix, then all 44 focused tests passed. Both plugin archives build and nextmap's archive carries the requested bool defaults. The full JS gate passes, including 962 SDK tests, all plugin/example typechecks, and Docker tooling checks. Independent read-only review found no actionable issues. No core/shim changes or live CS2 acceptance/deployment.
