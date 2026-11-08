@@ -186,6 +186,9 @@ function startVote(forced: boolean): boolean {
   if (voteRunning || Vote.isActive()) return false;
   if (!forced && voteFinished) return false;
   const map = Server.mapName;
+  // Opened on a map the poll has not noticed yet: adopt it first, so the ballot is built against
+  // this map's state (extend count, rounds) rather than the previous map's.
+  if (map !== currentMap) resetForMap(map);
   voteMap = map;
   if (iface.dispatch("OnMapVoteStart", { currentMap: map }) >= HookResult.Handled) return false;
   voteRunning = true;

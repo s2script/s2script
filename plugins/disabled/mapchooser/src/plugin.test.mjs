@@ -266,10 +266,16 @@ test('the first map poll after load does not cancel a vote already forced', asyn
 test('a vote forced on the new map before the poll notices the change is kept', async () => {
   const host = loadPlugin();
   await host.start();
+  host.cvars.set('mp_timelimit', '30');
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  const extendAt = host.vote.options.indexOf('Extend Map');
+  await host.end(extendAt, host.vote.options.map((_, i) => (i === extendAt ? 1 : 0)));   // the old map's one extension
   host.server.mapName = 'de_nuke';
   host.admins.get('sm_mapvote')({ replyT() {} });
   await host.settle();
   assert.ok(host.vote);
+  assert.ok(host.vote.options.includes('Extend Map'), 'built against the new map\'s extend count');
   host.poll();   // the reset for de_nuke
   assert.ok(host.vote, 'the new map\'s ballot is not cancelled');
   assert.equal(host.iface.isVoteInProgress(), true);
