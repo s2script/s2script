@@ -101,6 +101,9 @@ node --test plugins/zones/src/plugin.test.mjs
 echo "== basecomm service operation tests =="
 node --test plugins/basecomm/src/plugin.test.mjs
 
+echo "== basechat @ trigger routing tests =="
+node --test plugins/basechat/src/plugin.test.mjs
+
 echo "== basebans service operation tests =="
 node --test plugins/basebans/src/plugin.test.mjs
 

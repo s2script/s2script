@@ -225,3 +225,5 @@
     ops.usermsg_hook_set_int = &s2_usermsg_hook_set_int;
     // --- Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity ---
     ops.precache_entity_add = &s2_precache_entity_add;
+    // --- Cvar flags (SourceMod GetConVarFlags): -1 if the cvar is absent ---
+    ops.cvar_flags = &s2_cvar_flags;

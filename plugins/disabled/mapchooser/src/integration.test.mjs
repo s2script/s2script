@@ -36,6 +36,8 @@ async function loadAll(names, { nominations = [] } = {}) {
     translations: { load() {} }, Translations: { translate: (_slot, key) => key },
     Chat: { toAll: text => chat.push(text), toSlot: (_slot, text) => chat.push(text) },
     ADMFLAG: { CHANGEMAP: 8 }, HookResult: { Continue: 0, Handled: 2 },
+    // Activity's chat line stands in for the forced-RTV confirmation.
+    Activity: { showT: (cmd, key) => cmd.replyT(key), show() {}, log() {}, describe: () => '' },
     publish(name, impl) {
       const handlers = new Map();
       const provider = {
@@ -132,7 +134,7 @@ test('the end-of-map vote waits while an RTV vote runs', async () => {
   let reply;
   host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
   await host.settle();
-  assert.equal(reply, 'Rtv Forced');
+  assert.equal(reply, 'Initiated Vote Map');
   assert.ok(host.votes.rockthevote.current);
   host.server.gameTime = 30 * 60 - 100;
   host.poll(); await host.settle();

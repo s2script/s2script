@@ -853,14 +853,21 @@ fn config_templates_prelude() -> String {
 /// reviewable as JS. It is ONE file because the whole body shares one IIFE scope (`(function () {`
 /// … `})();`) — splitting it per module would make concatenation order silently load-bearing.
 ///
-/// prelude.js's own file line N is no longer V8 line N now that colors.js is concatenated ahead
-/// of it below: V8 line = colors.js's line count + 1 (the joining "\n") + N. Historically file
+/// prelude.js's own file line N is no longer V8 line N now that colors.js and activity.js are
+/// concatenated ahead of it below: V8 line = their line counts + 2 (the joining "\n"s) + N. Historically file
 /// line N WAS V8 line N — the file starts directly at `globalThis.HookResult`, where the old
 /// `r#"` literal opened with a newline and shifted every reported line by one.
 // colors.js FIRST: it sets globalThis.__s2_colors, which prelude.js's chat and console
-// funnels call. Package source ordering belongs to each package manifest.
-const INJECTED_STD_PRELUDE: &str =
-    concat!(include_str!("../js/colors.js"), "\n", include_str!("../js/prelude.js"));
+// funnels call. activity.js next: it sets globalThis.__s2_activity, the pure show-activity
+// decision logic prelude.js's `Activity` (ShowActivity2 / LogAction) runs on. Both are dual-use
+// (unit-tested under node). Package source ordering belongs to each package manifest.
+const INJECTED_STD_PRELUDE: &str = concat!(
+    include_str!("../js/colors.js"),
+    "\n",
+    include_str!("../js/activity.js"),
+    "\n",
+    include_str!("../js/prelude.js")
+);
 
 // Game code is supplied by the selected verified package receipt (see game_packages).
 
@@ -2934,6 +2941,22 @@ fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
             Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
         })().unwrap_or_default();
         if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
+    }));
+}
+
+/// `__s2_cvar_flags(name) -> number` — the cvar's FCVAR bitmask (SourceMod `GetConVarFlags`), or -1
+/// if the op is missing or the cvar is absent. Flags fit a double exactly (no FCVAR bit exceeds 2^53).
+fn s2_cvar_flags(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let flags: i64 = (|| {
+            if args.length() < 1 { return None; }
+            let name = args.get(0).to_rust_string_lossy(scope);
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.cvar_flags?;
+            let cn = CString::new(name).ok()?;
+            Some(f(cn.as_ptr()))
+        })().unwrap_or(-1);
+        rv.set(v8::Number::new(scope, flags as f64).into());
     }));
 }
 

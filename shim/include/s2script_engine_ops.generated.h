@@ -262,6 +262,7 @@ typedef int (*s2_stringtable_add_string_fn)(int tableId, const char* tableName, 
 typedef int (*s2_usermsg_hook_read_strings_fn)(const char* path, char* buf, int buflen);
 typedef int (*s2_usermsg_hook_set_int_fn)(const char* path, long long value);
 typedef int (*s2_precache_entity_add_fn)(const char* classname);
+typedef long long (*s2_cvar_flags_fn)(const char* name);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -490,4 +491,6 @@ typedef struct {
     s2_usermsg_hook_set_int_fn usermsg_hook_set_int;
     /* --- Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity --- */
     s2_precache_entity_add_fn precache_entity_add;
+    /* --- Cvar flags (SourceMod GetConVarFlags): -1 if the cvar is absent --- */
+    s2_cvar_flags_fn cvar_flags;
 } S2EngineOps;

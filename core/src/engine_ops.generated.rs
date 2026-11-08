@@ -286,6 +286,7 @@ pub type StringTableAddStringFn = extern "C" fn(c_int, *const c_char, *const c_c
 pub type UsermsgHookReadStringsFn = extern "C" fn(*const c_char, *mut c_char, c_int) -> c_int;
 pub type UsermsgHookSetIntFn = extern "C" fn(*const c_char, i64) -> c_int;
 pub type PrecacheEntityAddFn = extern "C" fn(*const c_char) -> c_int;
+pub type CvarFlagsFn = extern "C" fn(name: *const c_char) -> i64;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -519,6 +520,8 @@ pub struct S2EngineOps {
     pub usermsg_hook_set_int: Option<UsermsgHookSetIntFn>,
     // --- Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity ---
     pub precache_entity_add: Option<PrecacheEntityAddFn>,
+    // --- Cvar flags (SourceMod GetConVarFlags): -1 if the cvar is absent ---
+    pub cvar_flags: Option<CvarFlagsFn>,
 }
 
 impl S2EngineOps {

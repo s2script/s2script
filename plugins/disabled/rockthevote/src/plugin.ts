@@ -9,7 +9,7 @@
 
 import {
   command, hook, translations, watchOptional, ADMFLAG, Chat, HookResult, UserMessages, Vote, Clients,
-  Server, config, Database, Events, Translations,
+  Server, config, Database, Events, Translations, Activity,
 } from "@s2script/sdk";
 import type { HookResultValue, VoteResult, Client } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
@@ -460,7 +460,9 @@ export async function OnPluginStart(): Promise<void> {
   hook.on("cs_win_panel_match", applyPendingMap);
 
   command.admin("sm_forcertv", ADMFLAG.CHANGEMAP, (cmd) => {
-    cmd.replyT(startVote(true) ? "Rtv Forced" : "Rtv Forced Already Running");
+    if (!startVote(true)) { cmd.replyT("Rtv Forced Already Running"); return HookResult.Handled; }
+    Activity.showT(cmd, "Initiated Vote Map");
+    Activity.log(cmd, null, `"${Activity.describe(cmd)}" forced a map vote.`);
     return HookResult.Handled;
   });
 }

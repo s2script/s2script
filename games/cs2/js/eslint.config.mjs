@@ -67,14 +67,13 @@ if (natives.length === 0) {
 
 export default [
   {
-    // activity.js is dual-use — it ships concatenated into the prelude AND is unit-tested under
-    // node (`scripts/check-activity-test.sh`), so its `typeof module !== "undefined"` guard and its
-    // test file legitimately reference CommonJS globals. Scoped narrowly rather than adding them to
-    // the prelude's own globals, where they would mask a real `require` creeping into raw-context code.
+    // Test files are unit-tested under node, so they legitimately reference CommonJS globals. Scoped
+    // narrowly rather than adding them to the prelude's own globals, where they would mask a real
+    // `require` creeping into raw-context code.
     //
-    // components.test.js is here for the same reason, but note that components.js itself is NOT:
+    // Note that components.js itself is NOT here:
     // it is prelude-only, so a `require` creeping into it must still fail this lint.
-    files: ["activity.js", "activity.test.js", "components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
+    files: ["components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -87,7 +86,7 @@ export default [
   },
   {
     files: ["**/*.js"],
-    ignores: ["activity.js", "activity.test.js", "components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
+    ignores: ["components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",

@@ -1,7 +1,7 @@
 // Shared BaseBans service. Bans.add is void and cache-first; see api.d.ts for
 // observable outcomes and trusted caller / advisory hook semantics.
-import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations, HookResult, publish } from "@s2script/sdk";
-import type { Client } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations, HookResult, publish, Activity } from "@s2script/sdk";
+import type { Client, ActivityActor } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 import type { TypedPublishHandle } from "@s2script/sdk/interfaces";
 import type { Contract, BanRequest, BanResult, UnbanRequest } from "../api";
@@ -107,6 +107,19 @@ function canReply(slot: number, actor: Identity | null): boolean {
   // Command.replyT captures a raw slot; guard it after arbitrary interop callbacks.
   return slot < 0 || (actor !== null && resolveActor(slot, actor) !== null);
 }
+// SourceMod basebans feedback: announce the ban (ShowActivity2) and log it, naming both parties by the
+// %L identities captured before the ban kicked anyone.
+// The log line is written even when the actor left mid-ban; the announcement needs them present.
+function reportBan(actor: ActivityActor, actorLog: string, target: Identity, targetLog: string,
+  minutes: number, reason: string, announce: boolean): void {
+  Activity.log(actor, null, `"${actorLog}" banned "${targetLog}" (minutes "${minutes}") (reason "${reason}")`);
+  if (!announce) return;
+  if (minutes === 0) {
+    if (reason) Activity.showT(actor, "Permabanned player reason", target.name, reason);
+    else Activity.showT(actor, "Permabanned player", target.name);
+  } else if (reason) Activity.showT(actor, "Banned player reason", target.name, minutes, reason);
+  else Activity.showT(actor, "Banned player", target.name, minutes);
+}
 function failurePhrase(result: BanResult): "Ban Intercepted" | "Ban Record Failed" {
   return result.result >= HookResult.Handled ? "Ban Intercepted" : "Ban Record Failed";
 }
@@ -129,15 +142,11 @@ export function OnPluginStart(): void {
     }
     const actor = snapshotActor(cmd.callerSlot);
     const request: BanRequest = { steamId: identity.steamId, minutes, reason, source: "command", actorSteamId: cmd.callerSlot < 0 ? null : actor?.steamId ?? "0" };
-    // Resolve translated success arguments while the command's actor identity is still current.
-    const duration = minutes > 0
-      ? Translations.translate(cmd.callerSlot, minutes === 1 ? "Ban Duration Minute" : "Ban Duration Minutes", minutes)
-      : Translations.translate(cmd.callerSlot, "Ban Duration Permanently");
-    const suffix = reason ? Translations.translate(cmd.callerSlot, "Ban Reason Suffix", reason) : "";
+    const actorLog = Activity.describe(cmd), targetLog = Activity.describe(targets[0].slot);
     const outcome = recordBan(request, identity);
-    if (!canReply(cmd.callerSlot, actor)) return HookResult.Handled;
-    if (outcome.recorded) cmd.replyT("Ban Success", identity.name, duration, suffix);
-    else cmd.replyT(failurePhrase(outcome));
+    const present = canReply(cmd.callerSlot, actor);
+    if (outcome.recorded) reportBan(cmd, actorLog, identity, targetLog, minutes, reason, present);
+    else if (present) cmd.replyT(failurePhrase(outcome));
     return HookResult.Handled;
   });
 
@@ -145,8 +154,12 @@ export function OnPluginStart(): void {
     const steamId = cmd.arg(0);
     if (!validSteamId(steamId)) { cmd.replyT("Usage Unban"); return HookResult.Handled; }
     const actor = snapshotActor(cmd.callerSlot);
+    const actorLog = Activity.describe(cmd);
     const removed = unban({ steamId });
-    if (canReply(cmd.callerSlot, actor)) cmd.replyT(removed ? "Unban Success" : "Unban Not Banned", steamId);
+    if (removed) Activity.log(cmd, null, `"${actorLog}" removed ban (filter "${steamId}")`);
+    if (!canReply(cmd.callerSlot, actor)) return HookResult.Handled;
+    if (removed) Activity.showT(cmd, "Removed bans matching", steamId);
+    else cmd.replyT("Unban Not Banned", steamId);
     return HookResult.Handled;
   });
 
@@ -160,7 +173,9 @@ export function OnPluginStart(): void {
     const duration = minutes > 0 ? Translations.translate(cmd.callerSlot, "Addban Duration Minutes", minutes)
       : Translations.translate(cmd.callerSlot, "Addban Duration Permanent");
     const suffix = reason ? Translations.translate(cmd.callerSlot, "Addban Reason Suffix", reason) : "";
+    const actorLog = Activity.describe(cmd);
     const outcome = recordBan(request, null);
+    if (outcome.recorded) Activity.log(cmd, null, `"${actorLog}" added ban (minutes "${minutes}") (id "${steamId}") (reason "${reason}")`);
     if (!canReply(cmd.callerSlot, actor)) return HookResult.Handled;
     if (outcome.recorded) cmd.replyT("Addban Success", steamId, duration, suffix);
     else cmd.replyT(failurePhrase(outcome));
@@ -169,7 +184,11 @@ export function OnPluginStart(): void {
 
   topmenu.addTab({ id: "basebans", title: "Bans" });
   topmenu.addItem("basebans", { id: "basebans:kick", name: Translations.translate(-1, "Kick Item"), flags: ADMFLAG.KICK,
-    onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick(Translations.translate(t.slot, "Kick By Admin"))) });
+    onSelect: adminSlot => pickPlayer(adminSlot, t => {
+      Activity.showT(adminSlot, "Kicked target", t.playerName ?? "");
+      Activity.log(adminSlot, t.slot, `"${Activity.describe(adminSlot)}" kicked "${Activity.describe(t.slot)}" (reason "")`);
+      t.kick(Translations.translate(t.slot, "Kick By Admin"));
+    }) });
   topmenu.addItem("basebans", { id: "basebans:ban", name: Translations.translate(-1, "Ban Item"), flags: ADMFLAG.BAN,
     onSelect: adminSlot => {
       const adminIdentity = snapshotActor(adminSlot);
@@ -190,10 +209,14 @@ export function OnPluginStart(): void {
           if (!resolveActor(adminSlot, adminIdentity)) return;
           const minutes = Number(event.info);
           if (![0, 5, 30, 60].includes(minutes)) return;
+          const live = resolve(identity);
+          const actorLog = Activity.describe(adminSlot), targetLog = live ? Activity.describe(live.slot)
+            : `${identity.name}<${identity.userId}><${identity.steamId}><>`;
           const outcome = recordBan({ steamId: identity.steamId, minutes, reason: BAN_REASON_BY_ADMIN,
             source: "menu", actorSteamId: adminIdentity.steamId }, identity);
           // Re-resolve the admin too: a listener can disconnect or replace either participant.
           const currentAdmin = resolveActor(adminSlot, adminIdentity);
+          if (outcome.recorded) reportBan(adminSlot, actorLog, identity, targetLog, minutes, "", currentAdmin !== null);
           if (!outcome.recorded && currentAdmin) Clients.fromSlot(currentAdmin.slot)?.chat(
             Translations.translate(currentAdmin.slot, failurePhrase(outcome)));
         });
