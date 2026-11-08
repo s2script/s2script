@@ -39,6 +39,7 @@ function loadPlugin({
     Vote: {
       isActive: () => vote !== null,
       start: options => { vote = options; return true; },
+      cancel: () => { vote = null; },
     },
     hook: { on: (name, handler) => hooks.set(name, handler) },
     command: { admin: (name, _flags, handler) => admins.set(name, handler) },
@@ -52,7 +53,7 @@ function loadPlugin({
     },
     watchOptional: (name, attach) => {
       if (name === '@s2script/nextmap' && withNextmap) {
-        attach({ setNextMap: map => { nextmapCalls.push(map); return true; } }, { own: value => value });
+        attach({ setNextMap: map => { nextmapCalls.push(map); return true; }, on: () => ({ dispose() {} }) }, { own: value => value });
       }
     },
   };
@@ -235,4 +236,16 @@ test('a map change resets the vote', async () => {
   host.server.mapName = 'de_nuke';
   host.poll();
   assert.equal(host.iface.hasEndOfMapVoteFinished(), false);
+});
+
+test('a map change cancels a ballot still open from the old map', async () => {
+  const host = loadPlugin();
+  await host.start();
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  assert.ok(host.vote);
+  host.server.mapName = 'de_nuke';
+  host.poll();
+  assert.equal(host.vote, null);
+  assert.equal(host.iface.isVoteInProgress(), false);
 });

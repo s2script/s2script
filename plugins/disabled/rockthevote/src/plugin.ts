@@ -286,7 +286,9 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
 /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
  *  Returns true if the request was accepted (the lock claimed); false if a vote is already active. */
 function startVote(force: boolean): boolean {
-  if (voteRunning || Vote.isActive() || mapchooserState().running) return false;
+  // Also closed once the end-of-map vote has chosen: a forced RTV would veto that winner.
+  const endVote = mapchooserState();
+  if (voteRunning || Vote.isActive() || endVote.running || endVote.finished) return false;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
   buildBallot().then(ballot => {
     if (ballot === null) {

@@ -219,6 +219,8 @@ function startWindowSeconds(): number {
 }
 
 function resetForMap(map: string): void {
+  // A ballot left open by the old map would keep eating typed numbers on the new one.
+  if (Vote.isActive()) Vote.cancel();
   currentMap = map;
   roundsPlayed = 0;
   voteRunning = false;
@@ -255,6 +257,9 @@ export async function OnPluginStart(): Promise<void> {
   watchOptional("@s2script/nextmap", (service, scope) => {
     nextmap = service;
     scope.own({ dispose() { nextmap = null; } });
+    // The limit was reached while our vote is still open (short rounds, or a late sm_mapvote):
+    // hold the rotation. nextmap retries, and picks up our winner through setNextMap.
+    scope.own(service.on("OnAutoMapChange", () => (voteRunning ? HookResult.Handled : HookResult.Continue)));
   });
 
   hook.on("round_end", () => {
