@@ -1238,8 +1238,8 @@ Cookbook: `sm_ws_status` / `sm_ws_get` / `sm_ws_info`. Five in-isolate tests. Li
 that is not installed or needs an update. A pass runs at plugin start once Steam is logged on, on
 every `Steam.onConnected`, and on every map start (`workshopmaps_check_on_map_start`, default on),
 which picks up maplist edits and author updates. One download at a time; a request during a pass
-queues one more pass; a download with no result in 15 minutes is given up on and retried next pass.
+queues one more pass; a download with no result in 15 minutes is given up on and asked for again next pass, keeping a single waiter per item.
 `sm_workshop_sync` (CHANGEMAP) reports the list and starts a pass.
 
-Ships enabled in `plugins/`: with no workshop ids listed it does nothing. Six VM-hosted tests in
+Ships enabled in `plugins/`: with no workshop ids listed it does nothing. Seven VM-hosted tests in
 `scripts/ci-js.sh`. Live gate pending.
