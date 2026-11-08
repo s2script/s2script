@@ -203,3 +203,20 @@ for (const order of [['nextmap', 'mapchooser'], ['mapchooser', 'nextmap']]) {
     assert.deepEqual(host.sent, []);
   });
 }
+
+for (const order of [['nextmap', 'mapchooser'], ['mapchooser', 'nextmap']]) {
+  test(`Extend winning after the match ended does not stall the rotation: ${order.join(' then ')}`, async () => {
+    const host = await loadAll(order);
+    host.cvars.set('mp_timelimit', '0');
+    host.cvars.set('mp_maxrounds', '3');
+    host.fire('round_end');
+    host.fire('round_end');
+    await host.settle();
+    host.fire('round_end');           // the limit, vote still open
+    host.fire('cs_win_panel_match');  // the match is over
+    await host.elapse();
+    host.end('mapchooser', host.votes.mapchooser.current.options.indexOf('Extend Map'));
+    host.poll(); await host.elapse();
+    assert.equal(host.sent.length, 1, 'the server still leaves the finished match');
+  });
+}

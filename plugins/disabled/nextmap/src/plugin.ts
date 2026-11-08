@@ -81,6 +81,8 @@ function resolveEntry(map: string): MapEntry | null {
 /** Whether the map's time or round limit is (still) reached. An Extend raises the limit, which
  *  cancels a change already counting down. */
 function limitReached(): boolean {
+  // Once the match is over there are no more rounds to extend into: the change must go ahead.
+  if (matchEnded) return true;
   const tl = parseFloat(Server.getCvar("mp_timelimit"));
   if (config.getBool("nextmap_use_timelimit") && tl > 0 && Server.gameTime >= tl * 60) return true;
   const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
