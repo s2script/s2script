@@ -6,7 +6,7 @@
 
 import {
   command, translations, ADMFLAG, Chat, config, Vote, Server, Translations,
-  HookResult,
+  HookResult, Activity,
 } from "@s2script/sdk";
 import type { Command, PhraseKey } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
@@ -43,7 +43,9 @@ function startYesNo(cmd: Command, questionKey: PhraseKey, questionArg: string | 
       }
     },
   });
-  cmd.replyT("Vote Started");
+  // SourceMod funvotes: announce who started the vote (ShowActivity2) and log it.
+  Activity.showT(cmd, "Initiated Vote", question);
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" initiated a vote ("${question}").`);
 }
 
 export function OnPluginStart(): void {

@@ -26,6 +26,11 @@ export declare const Server: {
   /** A cvar's current value as a string. `""` if the cvar doesn't exist (or an unsupported type → `"<type>"`). */
   getCvar(name: string): string;
   /**
+   * A cvar's FCVAR flag bitmask (SourceMod `GetConVarFlags`), or `-1` if the cvar doesn't exist.
+   * Test a bit with `&`, e.g. FCVAR_PROTECTED: `(Server.getCvarFlags("rcon_password") & (1 << 5)) !== 0`.
+   */
+  getCvarFlags(name: string): number;
+  /**
    * Set a cvar through `ICvar` now (SourceMod `SetConVarString`). Not a console command: `;` in
    * `value` is data, not a second command. `getCvar` and `onCvarChange` see the new value before
    * this returns. `false` if the cvar does not exist or the string cannot become that type.

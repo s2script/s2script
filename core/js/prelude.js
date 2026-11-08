@@ -1370,6 +1370,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
     getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
+    getCvarFlags: function (name) { return __s2_cvar_flags(String(name)); },          // FCVAR bitmask; -1 if absent
     setCvar: function (name, value) { return __s2_cvar_set(String(name), String(value)); },
     // onCvarChange(name|"*", handler) -> { dispose() }. Notify-only: the engine's global change
     // callback runs AFTER the value is applied, so there is nothing to veto.
@@ -1794,7 +1795,136 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // .Handled to stop the engine handling it, anything else to pass through.
     onClientCommand: function (name, handler) { return __s2_client_command_listen(name, handler); },
   };
-  globalThis.__s2pkg_commands = { Commands: __s2_commands };   // named export `Commands`
+  // --- Activity: SourceMod's admin-activity layer (ShowActivity2 / LogAction / %L) ---
+  // Engine-generic: an admin, a name, a chat line and a log line exist on every Source 2 game. The
+  // pure routing decision is activity.js (concatenated ahead of this file, node-tested); this wires
+  // it to the admin cache, clients, chat and the console. Admin/Clients/Chat are published further
+  // down this file, so every reference here is resolved at CALL time, never at init.
+  var __s2_act = globalThis.__s2_activity;
+  // The actor argument: a command invocation carries its own reply source; a bare slot is a menu or
+  // plugin action, which SourceMod treats as a chat reply source (the server console stays "server").
+  function __s2_actActor(actor) {
+    if (actor && typeof actor === "object") {
+      var s = actor.callerSlot | 0;
+      return { slot: s, replySource: s < 0 ? "server" : (actor.replySource === "chat" ? "chat" : "console") };
+    }
+    var slot = (typeof actor === "number") ? (actor | 0) : -1;
+    return { slot: slot, replySource: slot < 0 ? "server" : "chat" };
+  }
+  function __s2_actClient(slot) {
+    var C = globalThis.__s2pkg_clients;
+    return (slot >= 0 && C) ? C.Clients.fromSlot(slot) : null;
+  }
+  function __s2_actRank(slot) {
+    var A = globalThis.__s2pkg_admin;
+    var a = A ? A.Admin.forSlot(slot) : null;
+    return a ? { isAdmin: a.hasFlags(A.ADMFLAG.GENERIC), isRoot: a.hasFlags(A.ADMFLAG.ROOT) } : { isAdmin: false, isRoot: false };
+  }
+  // The actor's two names: the real one, and the label ("ADMIN" / "PLAYER") a recipient sees when
+  // sm_show_activity hides names from them. SM FormatActivitySource: an unresolvable name is "ADMIN".
+  function __s2_actNames(slot) {
+    if (slot < 0) return { real: "Console", label: "Console" };
+    var c = __s2_actClient(slot);
+    return { real: (c && c.name) ? c.name : "ADMIN", label: __s2_actRank(slot).isAdmin ? "ADMIN" : "PLAYER" };
+  }
+  function __s2_actFlags() { return __s2_act.parseShowActivity(__s2_cvar_get("sm_show_activity")); }
+  function __s2_actUserId(slot) { var c = __s2_actClient(slot); return c ? c.userId : -1; }
+  // ShowActivity2 core. `text(slot)` renders the body for one recipient (-1 = the server's language).
+  // Names are resolved NOW; chat lines are delivered next frame so a `!cmd` announcement lands after
+  // the player's own chat line, the same as cmd.reply.
+  function __s2_showActivity(actor, text) {
+    var a = __s2_actActor(actor);
+    var names = __s2_actNames(a.slot);
+    var C = globalThis.__s2pkg_clients;
+    var all = C ? C.Clients.all() : [];
+    var recipients = [];
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].isBot) continue;
+      var rank = __s2_actRank(all[i].slot);
+      recipients.push({ slot: all[i].slot, isAdmin: rank.isAdmin, isRoot: rank.isRoot });
+    }
+    var plan = __s2_act.planActivity(__s2_actFlags(),
+      { slot: a.slot, label: names.label, real: names.real, replySource: a.replySource }, recipients);
+    var tag = __s2_activity_api.tag;
+    if (plan.actorConsole) {
+      var mine = globalThis.__s2_colors.consoleLine(tag + names.real + ": " + text(a.slot));
+      if (a.slot < 0) console.log(mine);
+      else __s2_client_console_print(a.slot, mine + "\n");
+    }
+    if (plan.chat.length === 0) return;
+    var lines = [];
+    for (var j = 0; j < plan.chat.length; j++) {
+      var r = plan.chat[j];
+      lines.push({ slot: r.slot, userId: __s2_actUserId(r.slot), msg: tag + r.name + ": " + text(r.slot) });
+    }
+    globalThis.__s2pkg_timers.nextFrame().then(function () {
+      for (var k = 0; k < lines.length; k++) {
+        // A slot handed to someone else during the frame wait does not inherit the line.
+        if (__s2_actUserId(lines[k].slot) !== lines[k].userId) continue;
+        globalThis.__s2pkg_chat.Chat.toSlot(lines[k].slot, lines[k].msg);
+      }
+    });
+  }
+  function __s2_actTranslate(slot, key, args) {
+    var t = globalThis.__s2pkg_translations;
+    return t ? t.Translations.translate.apply(t.Translations, [slot, key].concat(args)) : String(key);
+  }
+  function __s2_actStamp() {
+    var d = new Date();
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return two(d.getMonth() + 1) + "/" + two(d.getDate()) + "/" + d.getFullYear() + " - " +
+      two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
+  }
+  var __s2_activity_api = {
+    // ShowActivity2's tag: the prefix of every activity line (colour tags expand in chat and are
+    // stripped in a console). Mutable, per plugin context.
+    tag: "{green}[S2S]{default} ",
+    get flags() { return __s2_actFlags(); },
+    // SM FormatActivitySource: may `recipientSlot` see an action by `actorSlot`, and under which name.
+    formatSource: function (actorSlot, recipientSlot) {
+      var names = __s2_actNames(actorSlot | 0);
+      var rank = __s2_actRank(recipientSlot | 0);
+      return __s2_act.computeActivitySource(__s2_actFlags(), names.label, names.real, rank.isAdmin, rank.isRoot, (actorSlot | 0) === (recipientSlot | 0));
+    },
+    // SM ShowActivity2(client, tag, "%s", message).
+    show: function (actor, message) {
+      var m = String(message);
+      __s2_showActivity(actor, function () { return m; });
+    },
+    // SM ShowActivity2(client, tag, "%t", key, ...): translated for each recipient.
+    showT: function (actor, key) {
+      var args = [].slice.call(arguments, 2);
+      __s2_showActivity(actor, function (slot) { return __s2_actTranslate(slot, key, args); });
+    },
+    // SM %L for a slot or a command's caller.
+    describe: function (who) {
+      var slot = __s2_actActor(who).slot;
+      if (slot < 0) return __s2_act.describeIdentity(null);
+      var c = __s2_actClient(slot);
+      return __s2_act.describeIdentity(c ? { name: c.name, userId: c.userId, steamId: c.steamId, isBot: c.isBot }
+                                         : { name: "", userId: -1, steamId: "0", isBot: false });
+    },
+    // SM LogAction(client, target, message): one stamped server-log line tagged with this plugin's
+    // id. `actor`/`target` mirror SM's signature; the message names the parties via describe().
+    log: function (actor, target, message) {
+      var pid = __s2_current_plugin();
+      console.log(globalThis.__s2_colors.consoleLine("L " + __s2_actStamp() + ": " + (pid ? "[" + pid + "] " : "") + String(message)));
+    },
+    // The target label for an activity line: one player's name, "all players" for @all, else "N players".
+    targetName: function (pattern, targets) {
+      var list = targets || [];
+      if (list.length === 1) {
+        var c = __s2_actClient(list[0].slot);
+        return (c && c.name) ? c.name : String(pattern);
+      }
+      if (list.length === 0) return String(pattern);
+      var key = pattern === "@all" ? "Target All Players" : "Target Players";
+      var out = __s2_actTranslate(-1, key, [list.length]);
+      if (out !== key) return out;
+      return pattern === "@all" ? "all players" : list.length + " players";
+    },
+  };
+  globalThis.__s2pkg_commands = { Commands: __s2_commands, Activity: __s2_activity_api };   // named exports `Commands` + `Activity`
   // --- admin module (engine-generic; ADMFLAG + Admin API + group/immunity/override resolution) ---
   var __s2_ADMFLAG = {
     RESERVATION: 1<<0, GENERIC: 1<<1, KICK: 1<<2, BAN: 1<<3, UNBAN: 1<<4, SLAY: 1<<5, CHANGEMAP: 1<<6,

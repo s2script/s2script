@@ -2,7 +2,7 @@
 // override, seeding the `nextlevel` cvar (basetriggers' `nextmap` chat trigger reads it) and
 // an optional random startup map, then auto-changelevel at mp_maxrounds/mp_timelimit.
 
-import { command, hook, translations, publish, ADMFLAG, Server, config, delay, Chat, Translations, HookResult } from "@s2script/sdk";
+import { command, hook, translations, publish, ADMFLAG, Server, config, delay, Chat, Translations, HookResult, Activity } from "@s2script/sdk";
 import type { TypedPublishHandle } from "@s2script/sdk";
 import type { Contract } from "../api";
 
@@ -182,7 +182,8 @@ export function OnPluginStart(): void {
     if (!isValidEntry(entry)) { cmd.replyT("Invalid Map Name"); return HookResult.Handled; }
     override = entry;
     Server.setCvar("nextlevel", entry.name);
-    cmd.replyT("Next Map Set", entry.name);
+    Activity.showT(cmd, "Changed Next Map", entry.name);
+    Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed the next map to "${entry.name}"`);
     return HookResult.Handled;
   });
 

@@ -10,14 +10,23 @@ import {
   MenuStyle,
   Translations,
   HookResult,
+  delay,
+  Activity,
 } from "@s2script/sdk";
-import type { Command, HookResultValue } from "@s2script/sdk";
+import type { Command, HookResultValue, ActivityActor } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
 const MAP_CHOICES = ["de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_ancient", "de_anubis"];
 
 export function OnPluginStart(): void {
   translations.load("basecommands", "common");
+
+  // SourceMod core's sm_show_activity: who sees admin actions, and under which name. Registered here
+  // because basecommands ships with every install; Activity reads it at each announcement.
+  Server.registerCvar("sm_show_activity", {
+    type: "int", default: 13, min: 0, max: 31,
+    help: "Show admin activity: 1=non-admins, 2=non-admins see names, 4=admins, 8=admins see names, 16=root sees names",
+  });
 
   command.admin("sm_kick", ADMFLAG.KICK, kick);
   command.admin("sm_map", ADMFLAG.CHANGEMAP, map);
@@ -37,7 +46,7 @@ export function OnPluginStart(): void {
       m.style = MenuStyle.Center;
       m.freezePlayer = true;   // user-requested map picker HUD
       for (const mapName of MAP_CHOICES) if (Server.isMapValid(mapName)) m.addItem(mapName, mapName);
-      m.onSelect((e) => { Server.command("changelevel " + e.info); });
+      m.onSelect((e) => { changeMap(adminSlot, e.info); });
       m.display(adminSlot, 30);
     },
   });
@@ -54,14 +63,25 @@ function kick(cmd: Command): HookResultValue {
     cmd.replyT("Kick Ambiguous Target", targetStr);
     return HookResult.Handled;
   }
-  let n = 0;
+  // Announce and log BEFORE the kick, while every target still has a name and a %L identity.
+  const label = Activity.targetName(targetStr, targets);
+  if (customReason) Activity.showT(cmd, "Kicked target reason", label, customReason);
+  else Activity.showT(cmd, "Kicked target", label);
+  // The actor may be among the targets (@all): capture their %L before the first kick frees a slot.
+  const actorLog = Activity.describe(cmd);
   for (const p of targets) {
-    const reason = customReason || Translations.translate(p.slot, "Kick Reason Default");
-    p.kick(reason);
-    n++;
+    Activity.log(cmd, p.slot, `"${actorLog}" kicked "${Activity.describe(p.slot)}" (reason "${customReason}")`);
+    p.kick(customReason || Translations.translate(p.slot, "Kick Reason Default"));
   }
-  cmd.replyT(n === 1 ? "Kicked Player" : "Kicked Players", n);
   return HookResult.Handled;
+}
+
+// SourceMod basecommands: announce the change, log it, and give players 3 seconds to read who did it
+// before the level actually changes.
+function changeMap(actor: ActivityActor, mapName: string): void {
+  Activity.showT(actor, "Changing map", mapName);
+  Activity.log(actor, null, `"${Activity.describe(actor)}" changed map to "${mapName}"`);
+  delay(3000).then(() => Server.command("changelevel " + mapName));
 }
 
 function map(cmd: Command): HookResultValue {
@@ -69,8 +89,7 @@ function map(cmd: Command): HookResultValue {
   if (!mapName) { cmd.replyT("Usage Map"); return HookResult.Handled; }
   if (!/^[A-Za-z0-9_]+$/.test(mapName)) { cmd.replyT("Invalid Map Name"); return HookResult.Handled; }
   if (!Server.isMapValid(mapName)) { cmd.replyT("Map Not Valid", mapName); return HookResult.Handled; }
-  cmd.replyT("Changing Map", mapName);
-  Server.command("changelevel " + mapName);
+  changeMap(cmd, mapName);
   return HookResult.Handled;
 }
 
@@ -132,6 +151,7 @@ function who(cmd: Command): HookResultValue {
 function reloadAdmins(cmd: Command): HookResultValue {
   Admin.reload();
   cmd.replyT("Admin Cache Reloaded");
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" refreshed the admin cache.`);
   return HookResult.Handled;
 }
 
@@ -152,6 +172,7 @@ function printChunked(print: (text: string) => void, output: string): void {
 function rcon(cmd: Command): HookResultValue {
   const c = cmd.argString.trim();
   if (!c) { cmd.replyT("Usage Rcon"); return HookResult.Handled; }
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" console command (cmdline "${c}")`);
   if (cmd.callerSlot < 0) { Server.command(c); return HookResult.Handled; }
   // Capture the connection now: the output arrives a frame later, and the slot may change hands.
   const caller = Clients.fromSlot(cmd.callerSlot);
@@ -172,19 +193,37 @@ function execCfg(cmd: Command): HookResultValue {
     cmd.replyT("Invalid Config Name");
     return HookResult.Handled;
   }
+  Activity.showT(cmd, "Executed config", file);
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" executed config (file "${file}")`);
   Server.command("exec " + file);
-  cmd.replyT("Executing Config", file);
   return HookResult.Handled;
+}
+
+// FCVAR_PROTECTED (tier0/convar.h, 1<<5): a password-class cvar. SourceMod's sm_cvar shows
+// ***PROTECTED*** in place of its value everywhere — the reply, the announcement and the log.
+const FCVAR_PROTECTED = 1 << 5;
+const PROTECTED_VALUE = "***PROTECTED***";
+
+// A cvar whose flags can't be read (-1: absent, or an older shim without the op) is treated as
+// protected, so a missing capability never turns into a leaked secret.
+function isProtected(name: string): boolean {
+  const flags = Server.getCvarFlags(name);
+  return flags < 0 || (flags & FCVAR_PROTECTED) !== 0;
 }
 
 function cvar(cmd: Command): HookResultValue {
   const name = cmd.arg(0);
   if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { cmd.replyT("Usage Cvar"); return HookResult.Handled; }
-  if (cmd.argCount < 2) { cmd.replyT("Cvar Value", name, Server.getCvar(name)); return HookResult.Handled; }
+  if (cmd.argCount < 2) {
+    cmd.replyT("Cvar Value", name, isProtected(name) ? PROTECTED_VALUE : Server.getCvar(name));
+    return HookResult.Handled;
+  }
   const value = cmd.argsFrom(1);
   // setCvar writes through ICvar, so `;` is data. `{`/`}` would collide with translate substitution.
   if (/[\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
   if (!Server.setCvar(name, value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
-  cmd.replyT("Cvar Set", name, Server.getCvar(name) || value);
+  const shown = isProtected(name) ? PROTECTED_VALUE : (Server.getCvar(name) || value);
+  Activity.showT(cmd, "Cvar changed", name, shown);
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed cvar (cvar "${name}") (value "${shown}")`);
   return HookResult.Handled;
 }

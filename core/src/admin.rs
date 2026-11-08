@@ -278,6 +278,8 @@ mod tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_set('sv_gravity', '800'))"), "false");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.getCvar"), "function");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.setCvar"), "function");
+        // cvar_flags degrades to -1 without the op (callers treat unreadable flags as protected).
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.getCvarFlags('rcon_password'))"), "-1");
         // reservedslots+basetriggers: server-info natives degrade (max_clients->0, map_name->"", game_time->0)
         // and the @s2script/server module exposes maxPlayers/mapName/gameTime getters that pass them through.
         assert_eq!(eval_in_context_string("p", "String(__s2_server_max_clients())"), "0");

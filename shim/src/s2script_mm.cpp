@@ -2507,6 +2507,17 @@ static const char* s2_cvar_get(const char* name) {
     return s_cvarBuf;
 }
 
+// cvar_flags — the cvar's FCVAR bitmask via the same tier1-free FindConVar+GetConVarData path;
+// ConVarData::GetFlags is inline (a plain m_nFlags read). -1 if absent.
+static long long s2_cvar_flags(const char* name) {
+    if (!s_pCvar || !name) return -1;
+    ConVarRef ref = s_pCvar->FindConVar(name, false);
+    if (!ref.IsValidRef()) return -1;
+    ConVarData* data = s_pCvar->GetConVarData(ref);
+    if (!data) return -1;
+    return static_cast<long long>(data->GetFlags());
+}
+
 // cvar_set — ICvar write, same ConVarData layout as cvar_get (no ServerCommand, no `;` split).
 // TypeTraits/SetString are non-inline tier1; we parse + write the value union ourselves, then
 // fire the engine's own change callbacks so onCvarChange and game listeners see the write now.

@@ -2057,6 +2057,15 @@
       "shim": "s2_precache_entity_add"
     },
     {
+      "name": "cvar_flags",
+      "alias": "CvarFlagsFn",
+      "rust": "extern \"C\" fn(name: *const c_char) -> i64",
+      "group": "Cvar flags (SourceMod GetConVarFlags): -1 if the cvar is absent",
+      "c_ret": "long long",
+      "c_params": "const char* name",
+      "shim": "s2_cvar_flags"
+    },
+    {
       "name": "server_command_capture",
       "alias": "ServerCommandCaptureFn",
       "rust": "extern \"C\" fn(cmd: *const c_char, cookie: c_int) -> c_int",

@@ -2,5 +2,14 @@
   "name": "@s2script/basechat",
   "version": "0.0.0",
   "private": true,
-  "main": "src/plugin.ts"
+  "main": "src/plugin.ts",
+  "s2script": {
+    "config": {
+      "chat_mode": {
+        "type": "bool",
+        "default": true,
+        "description": "Let players without the chat admin flag message admins with @ in team chat (SourceMod sm_chat_mode)."
+      }
+    }
+  }
 }
