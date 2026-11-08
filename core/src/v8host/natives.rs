@@ -96,6 +96,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_engine_function", engine_functions::lookup);
     // Engine-identity client-list natives (Slice 5D.2).
     crate::client::install_natives(scope, global_obj);
+    crate::server_capture::install_natives(scope, global_obj);
     // Translations slice: root/language phrase-file read + the client's cl_language cvar.
     set_native(
         scope,

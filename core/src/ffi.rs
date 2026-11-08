@@ -335,6 +335,20 @@ pub extern "C" fn s2script_core_dispatch_convar_response(slot: c_int, cookie: c_
     });
 }
 
+/// Shim → core: a `Server.commandEx` capture finished (its end marker ran, or the shim timed it
+/// out). Drained at the top of GameFramePre with the isolate free. `text` is copied here; null
+/// degrades to "". `catch_unwind`-wrapped.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_command_output(cookie: c_int, text: *const c_char, truncated: c_int) {
+    let _ = catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_command_output");
+        let text = if text.is_null() { String::new() } else {
+            (unsafe { CStr::from_ptr(text) }).to_string_lossy().into_owned()
+        };
+        crate::server_capture::dispatch_command_output(cookie, &text, truncated != 0);
+    });
+}
+
 /// Shim → core: an IEntityListener callback (create/spawn/delete) with the entity's packed
 /// CEntityHandle (ToInt()) + class name. Notify-only: dispatches to the `Entity.on{Create,Spawn,Delete}`
 /// JS subscribers. `catch_unwind`-wrapped; null/invalid-UTF-8 degrade to a no-op.

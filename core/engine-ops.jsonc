@@ -2055,6 +2055,15 @@
       "c_ret": "int",
       "c_params": "const char* classname",
       "shim": "s2_precache_entity_add"
+    },
+    {
+      "name": "server_command_capture",
+      "alias": "ServerCommandCaptureFn",
+      "rust": "extern \"C\" fn(cmd: *const c_char, cookie: c_int) -> c_int",
+      "group": "Server console output capture (Server.commandEx): ServerCommand bracketed by marker commands + a tier0 logging listener",
+      "c_ret": "int",
+      "c_params": "const char* cmd, int cookie",
+      "shim": "s2_server_command_capture"
     }
   ]
 }

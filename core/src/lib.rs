@@ -68,6 +68,7 @@ mod schema;
 mod schema_catalog;
 mod sdkhooks;
 mod sdkhooks_transmit;
+mod server_capture;
 mod server_update;
 mod sm_command;
 mod profiler;

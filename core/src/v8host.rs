@@ -670,6 +670,7 @@ fn async_pending() -> usize {
         + crate::jobs::pending()
         + crate::async_limits::obligations()
         + crate::client::convar_queries_pending()
+        + crate::server_capture::captures_pending()
         + usize::from(MICROTASK_DRAIN_NEEDED.with(|v| v.get()))
         + usize::from(
             crate::cookies::pending_cached()
@@ -6481,6 +6482,7 @@ pub(crate) fn frame_async_drain() {
     crate::surface_leases::advance_frame();
     crate::shared_entity_switch::retry_pending();
     crate::client::sweep_convar_queries();
+    crate::server_capture::sweep();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
@@ -6785,6 +6787,7 @@ pub(crate) fn register_builtin_stores() {
 
     // CLIENT_MUX: registered by the feature module, which owns the mux the callbacks close over.
     crate::client::register_store();
+    crate::server_capture::register_store();
     crate::surface_leases::register_store();
     crate::shared_entity_switch::register_store();
 

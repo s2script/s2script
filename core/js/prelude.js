@@ -1358,6 +1358,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- Slice 6.4: server module (command / isMapValid; engine-generic server control) ---
   var __s2_server = {
     command: function (cmd) { __s2_server_command(String(cmd)); },
+    // SourceMod ServerCommandEx: run `cmd` and resolve with the console output it printed. Resolves on
+    // a later frame (the command buffer runs between frames). null when output cannot be captured on
+    // this build — the command still runs, uncaptured — or no result arrived within 15 seconds.
+    commandEx: function (cmd) {
+      var text = String(cmd);
+      return new Promise(function (resolve) {
+        var cookie = __s2_server_command_capture(text, function (output) { resolve(output == null ? null : output); });
+        if (!cookie) { __s2_server_command(text); resolve(null); }
+      });
+    },
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
     getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
     setCvar: function (name, value) { return __s2_cvar_set(String(name), String(value)); },
