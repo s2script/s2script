@@ -220,7 +220,8 @@ function startWindowSeconds(): number {
 
 function resetForMap(map: string): void {
   // A ballot left open by the old map would keep eating typed numbers on the new one.
-  if (Vote.isActive()) Vote.cancel();
+  // (Not on the first observed map: currentMap starts empty, and a vote forced right after load is live.)
+  if (currentMap !== "" && Vote.isActive()) Vote.cancel();
   currentMap = map;
   roundsPlayed = 0;
   voteRunning = false;

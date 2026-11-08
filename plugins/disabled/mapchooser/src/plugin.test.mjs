@@ -69,6 +69,7 @@ function loadPlugin({
     get vote() { return vote; },
     get iface() { return published; },
     async start() { await api.OnPluginStart(); host.poll(); },
+    async load() { await api.OnPluginStart(); },
     poll() { for (let i = 0; i < 64; i++) api.OnGameFrame(); },
     async settle() { await new Promise(setImmediate); },
     async end(winner, counts) {
@@ -248,4 +249,13 @@ test('a map change cancels a ballot still open from the old map', async () => {
   host.poll();
   assert.equal(host.vote, null);
   assert.equal(host.iface.isVoteInProgress(), false);
+});
+
+test('the first map poll after load does not cancel a vote already forced', async () => {
+  const host = loadPlugin();
+  await host.load();
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  host.poll();   // first observation of the map
+  assert.ok(host.vote, 'still open');
 });
