@@ -5,7 +5,7 @@
   "Rtv Ballot Header": "{green}[RTV] {grey}Vote for the next map — type its {yellow}number{grey} in chat:",
   "Rtv Dont Change Won": "{green}[RTV] {lightred}Don't Change{grey} won — the map stays.",
   "Rtv Forced": "RTV forced.",
-  "Rtv Forced Already Running": "A vote is already running.",
+  "Rtv Forced Already Running": "A map vote is already running, or the next map has already been voted on.",
   "Rtv Hud Hint": "type a number in chat · ",
   "Rtv Hud Left": " left",
   "Rtv Hud Title": "Rock The Vote",

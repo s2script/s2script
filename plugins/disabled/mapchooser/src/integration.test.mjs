@@ -59,7 +59,7 @@ async function loadAll(names, { nominations = [] } = {}) {
     // Each plugin context has its own vote lock, as in the host.
     const vote = { current: null };
     votes[name] = vote;
-    const sdk = { ...base, Vote: { isActive: () => vote.current !== null, registerTallyRenderer() {}, start: o => { vote.current = o; return true; } } };
+    const sdk = { ...base, Vote: { isActive: () => vote.current !== null, registerTallyRenderer() {}, cancel: () => { vote.current = null; }, start: o => { if (vote.current) return false; vote.current = o; return true; } } };
     const source = readFileSync(new URL(`../../${name}/src/plugin.ts`, import.meta.url), 'utf8');
     const math = Object.create(Math); math.random = () => 0;
     const ctx = vm.createContext({ module: { exports: {} }, console: { log() {} }, Math: math,
@@ -121,6 +121,10 @@ test('RTV is refused once the end-of-map vote has chosen, and while it runs', as
   host.end('mapchooser', 0);
   host.apis.rockthevote.OnClientSayCommand(1, 'rtv', false);
   assert.equal(host.chat.at(-1), 'Rtv Map Vote Finished');
+  host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
+  await host.settle();
+  assert.equal(reply, 'Rtv Forced Already Running', 'a forced RTV cannot veto the chosen map');
+  assert.equal(host.votes.rockthevote.current, null);
 });
 
 test('the end-of-map vote waits while an RTV vote runs', async () => {
@@ -137,3 +141,24 @@ test('the end-of-map vote waits while an RTV vote runs', async () => {
   host.poll(); await host.settle();
   assert.ok(host.votes.mapchooser.current, 'opens once RTV is done');
 });
+
+for (const order of [['nextmap', 'mapchooser'], ['mapchooser', 'nextmap']]) {
+  test(`a vote still open at the final round holds the rotation, then its winner is played: ${order.join(' then ')}`, async () => {
+    const host = await loadAll(order, { nominations: ['de_ancient'] });
+    host.cvars.set('mp_timelimit', '0');
+    host.cvars.set('mp_maxrounds', '3');
+    host.fire('round_end');
+    host.fire('round_end');   // two to go -> vote opens
+    await host.settle();
+    assert.ok(host.votes.mapchooser.current);
+    host.fire('round_end');   // the limit, while the vote is still open
+    await host.elapse();
+    host.fire('round_prestart');
+    assert.deepEqual(host.sent, [], 'rotation held while the vote is open');
+    host.end('mapchooser', 0);
+    host.poll();              // nextmap retries the deferred change
+    await host.elapse();
+    host.fire('cs_win_panel_match');
+    assert.deepEqual(host.sent, ['changelevel de_ancient']);
+  });
+}

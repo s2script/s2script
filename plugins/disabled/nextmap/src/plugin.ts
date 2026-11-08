@@ -18,6 +18,7 @@ let readyChange: (() => void) | null = null;
 let matchEnded = false;
 let mapChanges: TypedPublishHandle<Contract>;
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
+let deferred = false; // an OnAutoMapChange consumer deferred the last attempt — retry, quietly
 let failNotified = false; // debounces the misconfiguration log so a persistent failure doesn't spam every tick
 
 const logErr = (e: unknown) => console.log("[nextmap] error: " + e);
@@ -96,19 +97,30 @@ function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMa
   failNotified = false; // a valid candidate — clear so a future failure re-logs
   const waitForRound = !startup && config.getBool("nextmap_wait_for_round");
   const secs = config.getInt("nextmap_change_delay");
-  console.log("[nextmap] changing to " + next.name + " after " + secs + "s" + (waitForRound ? " at the next round boundary" : ""));
+  const retry = deferred;
+  deferred = false;
+  console.log("[nextmap] changing to " + next.name + " after " + secs + "s" + (waitForRound ? " at the next round boundary" : "") + (retry ? " (retry)" : ""));
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
   // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
   // Broadcast to everyone — no single recipient, so this resolves at the server default language.
-  Chat.toAll(Translations.translate(-1, waitForRound ? "Changing After Round" : "Changing To", next.name, secs));
+  // A retry after a deferral has already been announced once; do not repeat it every few seconds.
+  if (!retry) Chat.toAll(Translations.translate(-1, waitForRound ? "Changing After Round" : "Changing To", next.name, secs));
   const apply = () => {
     if (Server.mapName !== scheduledMap) {
       console.log("[nextmap] scheduled change to " + next.name + " skipped — map already changed to " + Server.mapName);
       return;
     }
+    // An override set during the countdown (a vote that closed after the limit was hit) wins.
+    const target = startup ? next : (override ?? next);
     // A vote winner takes priority even if its boundary handler ran first and queued a command.
-    if (!startup && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: next.name }) >= HookResult.Handled) return;
-    Server.command(next.workshopId ? "host_workshop_map " + next.workshopId : "changelevel " + next.name);
+    // Handled can also mean "not yet" (an end-of-map vote still open), so the change is re-armed:
+    // pollTick retries once the limit is still reached, and a map change ends it.
+    if (!startup && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: target.name }) >= HookResult.Handled) {
+      changing = false;
+      deferred = true;
+      return;
+    }
+    Server.command(target.workshopId ? "host_workshop_map " + target.workshopId : "changelevel " + target.name);
   };
   delay(secs * 1000).then(() => {
     if (Server.mapName !== scheduledMap || !waitForRound || matchEnded) apply();
@@ -144,7 +156,7 @@ function pollTick(): void {
   if (m !== currentMap) {                 // map changed — reset + seed nextlevel
     const startup = currentMap === ""; // consumed before scheduling; later maps keep normal rotation
     currentMap = m; roundsPlayed = 0; changing = false; override = null; failNotified = false;
-    readyChange = null; matchEnded = false;
+    readyChange = null; matchEnded = false; deferred = false;
     const next = rotationNext(m); if (next && isValidEntry(next)) Server.setCvar("nextlevel", next.name);
     if (startup && config.getBool("nextmap_random_startup")) changeToStartupMap();
     return;
@@ -152,6 +164,11 @@ function pollTick(): void {
   if (!changing && config.getBool("nextmap_use_timelimit")) {
     const tl = parseFloat(Server.getCvar("mp_timelimit"));   // float cvar in CS2 — parseFloat for exact SM parity
     if (tl > 0 && Server.gameTime >= tl * 60) changeToNext();
+  }
+  // A deferred round-limit change: no further round_end may come (the match is over), so retry here.
+  if (!changing && deferred) {
+    const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
+    if (max > 0 && roundsPlayed >= max) changeToNext();
   }
 }
 
