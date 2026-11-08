@@ -162,3 +162,44 @@ for (const order of [['nextmap', 'mapchooser'], ['mapchooser', 'nextmap']]) {
     assert.deepEqual(host.sent, ['changelevel de_ancient']);
   });
 }
+
+for (const order of [['nextmap', 'mapchooser'], ['mapchooser', 'nextmap']]) {
+  test(`Extend winning after the round limit cancels the held change, and the later one is announced: ${order.join(' then ')}`, async () => {
+    const host = await loadAll(order);
+    host.cvars.set('mp_timelimit', '0');
+    host.cvars.set('mp_maxrounds', '3');
+    host.fire('round_end');
+    host.fire('round_end');
+    await host.settle();
+    host.fire('round_end');   // the limit, while the vote is still open
+    await host.elapse();
+    host.fire('round_prestart');
+    const announcedBefore = host.chat.filter(l => l === 'Changing After Round').length;
+    host.end('mapchooser', host.votes.mapchooser.current.options.indexOf('Extend Map'));
+    assert.equal(host.cvars.get('mp_maxrounds'), '8');
+    host.poll(); await host.elapse();
+    host.fire('round_prestart'); host.fire('cs_win_panel_match');
+    assert.deepEqual(host.sent, [], 'the extended map keeps playing');
+    for (let i = 0; i < 5; i++) host.fire('round_end');
+    await host.settle();
+    if (host.votes.mapchooser.current) host.end('mapchooser', 0);
+    await host.elapse();
+    host.fire('round_prestart');
+    assert.equal(host.sent.length, 1, 'the map changes at the new limit');
+    assert.ok(host.chat.filter(l => l === 'Changing After Round').length > announcedBefore, 'and that change is announced');
+  });
+
+  test(`Extend winning during the countdown cancels the scheduled change: ${order.join(' then ')}`, async () => {
+    const host = await loadAll(order);
+    host.server.gameTime = 30 * 60 - 100;
+    host.poll(); await host.settle();
+    host.server.gameTime = 30 * 60;   // the limit hits while the vote is open: nextmap schedules
+    host.poll();
+    assert.ok(host.chat.includes('Changing After Round'));
+    const v = host.votes.mapchooser.current;
+    host.end('mapchooser', v.options.indexOf('Extend Map'));   // Extend wins during the countdown
+    await host.elapse();
+    host.fire('round_prestart');
+    assert.deepEqual(host.sent, []);
+  });
+}
