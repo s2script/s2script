@@ -219,16 +219,53 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
   return { options, entries };
 }
 
+/** Open a ballot over `options`. `runoff` is 0 for the first vote, then 1, 2, ... for each runoff. */
+function runBallot(options: string[], entries: Map<string, MapEntry>, runoff: number): boolean {
+  const sourceMap = Server.mapName;
+  // Suppress the core's own announcement for the duration of this start (see `suppressVoteLine`)
+  // and print the ballot properly below, one option per line. The runoff question keeps the
+  // "RockTheVote" prefix the suppression matches on.
+  suppressCoreVoteLine = true;
+  const started = Vote.start({
+    question: runoff === 0 ? "RockTheVote" : "RockTheVote Runoff",
+    options,
+    duration: config.getInt("rtv_vote_duration"),
+    showLiveTally: config.getBool("rtv_show_tally"),
+    onEnd: (result) => finishVote(result, options, entries, runoff, sourceMap),
+  });
+  suppressCoreVoteLine = false;
+  if (started === false) return false;
+  if (runoff > 0) Chat.toAll(Translations.translate(-1, "Rtv Runoff", runoff));
+  announceBallot(options);
+  return true;
+}
+
 /** Apply the vote's result: map the winning index back to its display string, then either keep
- *  the map (tie / no votes / "Don't Change") or stage the winner for the next round boundary. */
-function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>): void {
-  voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — a tie /
+ *  the map (no votes / "Don't Change"), run a runoff between the tied leaders, or stage the
+ *  winner for the next round boundary. */
+function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>, runoff = 0, sourceMap = Server.mapName): void {
+  voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — no votes /
                          // "Don't Change" / invalid winner leaves RTV open to re-accumulate (SM parity)
+
+  // A tie between two or more options goes to a runoff of just those options, again and again
+  // until one wins. It ends when one option leads, or when nobody votes (the map stays).
+  if (result.winner === null && result.total > 0 && config.getBool("rtv_runoff") && Server.mapName === sourceMap) {
+    const best = Math.max(...result.counts);
+    const tied = options.filter((_, i) => result.counts[i] === best);
+    if (tied.length >= 2) {
+      voteRunning = true;
+      if (runBallot(tied, entries, runoff + 1)) {
+        console.log("[rockthevote] tie — runoff " + (runoff + 1) + " options=" + JSON.stringify(tied));
+        return;
+      }
+      voteRunning = false;
+    }
+  }
 
   const chosen = result.winner === null ? null : options[result.winner];
   if (chosen === null || chosen === DONT_CHANGE) {
     // Broadcast — no single recipient, resolves at the server default language.
-    Chat.toAll(Translations.translate(-1, chosen === null ? "Rtv Vote Tied" : "Rtv Dont Change Won"));
+    Chat.toAll(Translations.translate(-1, chosen !== null ? "Rtv Dont Change Won" : result.total === 0 ? "Rtv No Votes" : "Rtv Vote Tied"));
     return;
   }
 
@@ -260,18 +297,7 @@ function startVote(force: boolean): boolean {
     }
     rtvVoters.clear();
     const { options, entries } = ballot;
-    // Suppress the core's own announcement for the duration of this start (see `suppressVoteLine`)
-    // and print the ballot properly below, one option per line.
-    suppressCoreVoteLine = true;
-    Vote.start({
-      question: "RockTheVote",
-      options,
-      duration: config.getInt("rtv_vote_duration"),
-      showLiveTally: config.getBool("rtv_show_tally"),
-      onEnd: (result) => finishVote(result, options, entries),
-    });
-    suppressCoreVoteLine = false;
-    announceBallot(options);
+    runBallot(options, entries, 0);
     console.log("[rockthevote] startVote force=" + force + " options=" + JSON.stringify(options));
   }).catch(e => { voteRunning = false; logErr(e); });   // release the lock on a build error too
   return true;
