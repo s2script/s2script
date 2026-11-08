@@ -295,3 +295,21 @@ for (const timing of ["before-command", "during-callback"]) test(`BaseComm repli
   assert.deepEqual(f.replies, []);
   assert.deepEqual(f.activity, [[2, "Gagged target", "player-1"]]);
 });
+
+test("a target whose slot is handed over during a policy hook is announced under its snapshotted name", () => {
+  const f = fixture(); const target = f.addPlayer(VALID_A, 1);
+  f.setTargets([target]);
+  f.on("OnClientGagChanged", () => { target.playerName = "replacement"; });
+  f.call("sm_gag", "#101", -1);
+  assert.deepEqual(f.activity, [[-1, "Gagged target", "player-1"]]);
+});
+
+test("the gag menu neither announces nor logs as an admin who was replaced during the hook", () => {
+  const f = fixture(); const target = f.addPlayer(VALID_A, 1); f.addPlayer(VALID_B, 7);
+  f.setPicked(target);
+  f.on("OnClientGagChanged", () => { f.players.delete(7); f.addPlayer("76561198000000003", 7); });
+  f.menuItems.get("basecomm:gag").onSelect(7);
+  assert.equal(f.service.isGagged(VALID_A), true);
+  assert.deepEqual(f.activity, [], "no announcement under the new occupant");
+  assert.deepEqual(f.logs.map(l => l[2]), ['"L7" gagged "L1"'], "logged from the identity captured before the hook");
+});

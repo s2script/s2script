@@ -66,8 +66,10 @@ function kick(cmd: Command): HookResultValue {
   const label = Activity.targetName(targetStr, targets);
   if (customReason) Activity.showT(cmd, "Kicked target reason", label, customReason);
   else Activity.showT(cmd, "Kicked target", label);
+  // The actor may be among the targets (@all): capture their %L before the first kick frees a slot.
+  const actorLog = Activity.describe(cmd);
   for (const p of targets) {
-    Activity.log(cmd, p.slot, `"${Activity.describe(cmd)}" kicked "${Activity.describe(p.slot)}" (reason "${customReason}")`);
+    Activity.log(cmd, p.slot, `"${actorLog}" kicked "${Activity.describe(p.slot)}" (reason "${customReason}")`);
     p.kick(customReason || Translations.translate(p.slot, "Kick Reason Default"));
   }
   return HookResult.Handled;
@@ -181,10 +183,14 @@ function cvar(cmd: Command): HookResultValue {
   // setCvar writes through ICvar, so `;` is data. `{`/`}` would collide with translate substitution.
   if (/[\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
   if (!Server.setCvar(name, value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
-  // SourceMod shows ***PROTECTED*** for FCVAR_PROTECTED cvars. That flag isn't readable here, so a
-  // secret-shaped name is redacted instead: never broadcast or log an rcon/server password.
-  const now = /password|passwd|token|secret|key$/i.test(name) ? "***PROTECTED***" : (Server.getCvar(name) || value);
-  Activity.showT(cmd, "Cvar changed", name, now);
-  Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed cvar (cvar "${name}") (value "${now}")`);
+  // SourceMod hides FCVAR_PROTECTED values. That flag isn't readable here and no name list catches
+  // every secret (sv_setsteamaccount, a plugin's API key), so the public announcement names the cvar
+  // only; the new value goes privately to the caller and to the server log (redacted when the name
+  // looks secret).
+  const now = Server.getCvar(name) || value;
+  Activity.showT(cmd, "Cvar changed", name);
+  cmd.replyT("Cvar Value", name, now);
+  const logged = /pass|token|secret|key|account|auth|rcon/i.test(name) ? "***PROTECTED***" : now;
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed cvar (cvar "${name}") (value "${logged}")`);
   return HookResult.Handled;
 }

@@ -4,7 +4,7 @@
   "Change Map Title": "Change Map",
   "Changing map": "changing map to {1}…",
   "Cvar Value": "{green}[S2S]{default} {1} = {2}",
-  "Cvar changed": "changed cvar {1} to {2}.",
+  "Cvar changed": "changed cvar {1}.",
   "Executed config": "executed config {1}.",
   "Flag None": "none",
   "Flag Root": "root",

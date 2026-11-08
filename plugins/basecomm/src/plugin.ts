@@ -100,11 +100,12 @@ function forTargets(
   const actorIdentity = actor ? { userId: actor.userId, steamId: actor.steamId } : null;
   const actorLog = Activity.describe(cmd);
   // Copy every target identity before the first policy notification invokes arbitrary consumers.
-  const snaps = targets.map((player) => ({ player, steamId: player.steamId, log: Activity.describe(player.slot) }));
-  const accepted: Player[] = [];
+  const snaps = targets.map((player) => ({ player, steamId: player.steamId, name: player.playerName ?? "",
+    log: Activity.describe(player.slot) }));
+  const accepted: typeof snaps = [];
   for (const t of snaps) {
     if (!act(t.steamId)) continue;
-    accepted.push(t.player);
+    accepted.push(t);
     Activity.log(cmd, t.player.slot, `"${actorLog}" ${verb} "${t.log}"`);
   }
   if (accepted.length === 0) return;
@@ -113,7 +114,9 @@ function forTargets(
     if (!actorIdentity || !current || current.userId !== actorIdentity.userId ||
         current.steamId !== actorIdentity.steamId) return;
   }
-  Activity.showT(cmd, activityKey, Activity.targetName(pat, accepted));
+  // A policy hook may have handed a target's slot to someone else: name a single target from the
+  // snapshot, and a group only by count (targetName reads names only for a single target).
+  Activity.showT(cmd, activityKey, accepted.length === 1 ? accepted[0].name : Activity.targetName(pat, accepted.map(t => t.player)));
 }
 
 export function OnPluginStart(): void {
@@ -156,9 +159,15 @@ export function OnPluginStart(): void {
   topmenu.addTab({ id: "basecomm", title: "Comm" });
   topmenu.addItem("basecomm", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
     onSelect: adminSlot => pickPlayer(adminSlot, target => {
+      // Snapshot both parties before the policy hooks run, as the command path does.
+      const admin = Player.allConnected().find(player => player.slot === adminSlot);
+      const adminId = admin ? { userId: admin.userId, steamId: admin.steamId } : null;
+      const adminLog = Activity.describe(adminSlot);
       const targetLog = Activity.describe(target.slot), name = target.playerName ?? "";
       if (!basecomm.setGagged(target.steamId, true)) return;
-      Activity.log(adminSlot, target.slot, `"${Activity.describe(adminSlot)}" gagged "${targetLog}"`);
+      Activity.log(adminSlot, target.slot, `"${adminLog}" gagged "${targetLog}"`);
+      const current = Player.allConnected().find(player => player.slot === adminSlot);
+      if (!adminId || !current || current.userId !== adminId.userId || current.steamId !== adminId.steamId) return;
       Activity.showT(adminSlot, "Gagged target", name);
     }) });
 }
