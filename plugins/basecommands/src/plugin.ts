@@ -175,22 +175,31 @@ function execCfg(cmd: Command): HookResultValue {
   return HookResult.Handled;
 }
 
+// FCVAR_PROTECTED (tier0/convar.h, 1<<5): a password-class cvar. SourceMod's sm_cvar shows
+// ***PROTECTED*** in place of its value everywhere — the reply, the announcement and the log.
+const FCVAR_PROTECTED = 1 << 5;
+const PROTECTED_VALUE = "***PROTECTED***";
+
+// A cvar whose flags can't be read (-1: absent, or an older shim without the op) is treated as
+// protected, so a missing capability never turns into a leaked secret.
+function isProtected(name: string): boolean {
+  const flags = Server.getCvarFlags(name);
+  return flags < 0 || (flags & FCVAR_PROTECTED) !== 0;
+}
+
 function cvar(cmd: Command): HookResultValue {
   const name = cmd.arg(0);
   if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { cmd.replyT("Usage Cvar"); return HookResult.Handled; }
-  if (cmd.argCount < 2) { cmd.replyT("Cvar Value", name, Server.getCvar(name)); return HookResult.Handled; }
+  if (cmd.argCount < 2) {
+    cmd.replyT("Cvar Value", name, isProtected(name) ? PROTECTED_VALUE : Server.getCvar(name));
+    return HookResult.Handled;
+  }
   const value = cmd.argsFrom(1);
   // setCvar writes through ICvar, so `;` is data. `{`/`}` would collide with translate substitution.
   if (/[\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
   if (!Server.setCvar(name, value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
-  // SourceMod hides FCVAR_PROTECTED values. That flag isn't readable here and no name list catches
-  // every secret (sv_setsteamaccount, a plugin's API key), so the public announcement names the cvar
-  // only; the new value goes privately to the caller and to the server log (redacted when the name
-  // looks secret).
-  const now = Server.getCvar(name) || value;
-  Activity.showT(cmd, "Cvar changed", name);
-  cmd.replyT("Cvar Value", name, now);
-  const logged = /pass|token|secret|key|account|auth|rcon/i.test(name) ? "***PROTECTED***" : now;
-  Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed cvar (cvar "${name}") (value "${logged}")`);
+  const shown = isProtected(name) ? PROTECTED_VALUE : (Server.getCvar(name) || value);
+  Activity.showT(cmd, "Cvar changed", name, shown);
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed cvar (cvar "${name}") (value "${shown}")`);
   return HookResult.Handled;
 }

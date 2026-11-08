@@ -1360,6 +1360,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     command: function (cmd) { __s2_server_command(String(cmd)); },
     isMapValid: function (map) { return __s2_server_map_valid(String(map)) === 1; },
     getCvar: function (name) { return __s2_cvar_get(String(name)); },                 // "" if absent
+    getCvarFlags: function (name) { return __s2_cvar_flags(String(name)); },          // FCVAR bitmask; -1 if absent
     setCvar: function (name, value) { return __s2_cvar_set(String(name), String(value)); },
     // onCvarChange(name|"*", handler) -> { dispose() }. Notify-only: the engine's global change
     // callback runs AFTER the value is applied, so there is nothing to veto.

@@ -1179,7 +1179,8 @@ per the new `sm_show_activity` cvar, default 13; the actor gets one copy on thei
 `%L`. `@s2script/cs2`'s `Activity` forwards to it. Every base and opt-in admin command and admin-menu
 action now follows SourceMod's pattern: usage/errors via `replyT`, the action via `showT`, one
 `LogAction` line per target, with SourceMod's phrase wording. `sm_map` gives the 3 s warning before
-changelevel; `sm_cvar` redacts secret-shaped cvars as `***PROTECTED***`.
+changelevel; `sm_cvar` shows `***PROTECTED***` for FCVAR_PROTECTED cvars (new `cvar_flags` engine op →
+`Server.getCvarFlags`; unreadable flags count as protected) and the real value otherwise.
 
 Not done here: `sm_rcon` and basechat's `@` triggers (parallel threads own them); LogAction writes
 to the server console only (no `logs/` file sink yet). Live gate pending.

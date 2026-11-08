@@ -2944,6 +2944,22 @@ fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
     }));
 }
 
+/// `__s2_cvar_flags(name) -> number` — the cvar's FCVAR bitmask (SourceMod `GetConVarFlags`), or -1
+/// if the op is missing or the cvar is absent. Flags fit a double exactly (no FCVAR bit exceeds 2^53).
+fn s2_cvar_flags(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let flags: i64 = (|| {
+            if args.length() < 1 { return None; }
+            let name = args.get(0).to_rust_string_lossy(scope);
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let f = ops.cvar_flags?;
+            let cn = CString::new(name).ok()?;
+            Some(f(cn.as_ptr()))
+        })().unwrap_or(-1);
+        rv.set(v8::Number::new(scope, flags as f64).into());
+    }));
+}
+
 /// `__s2_cvar_set(name, value) -> boolean` — write a cvar through ICvar now (not ServerCommand).
 /// False if the op is missing, the cvar is absent, or the string cannot become that type.
 fn s2_cvar_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
