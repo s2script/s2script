@@ -17,6 +17,11 @@ fi
 
 node --test scripts/framework-version.test.mjs scripts/check-plugin-versions.test.mjs
 
+# PROGRESS.md entries are per-PR fragments under docs/progress/ (see scripts/progress.mjs).
+echo "== docs/progress fragments =="
+node --test scripts/progress.test.mjs
+node scripts/progress.mjs check
+
 echo "== game package artifact schema, hashes, and deterministic bytes =="
 node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs
 
