@@ -100,6 +100,7 @@
 #include <thread>    // console capture: main-thread filter in the logging listener
 #include <tier0/logging.h>     // ILoggingListener / LoggingContext_t (console capture)
 #include "console_capture.h"   // Server.commandEx: the engine-free capture policy
+#include "cvar_value.h"        // Server.setCvar: the bytes a cvar value really owns
 #include <vector>
 #include <iterator>
 #include <stdexcept>
@@ -2539,6 +2540,19 @@ static CVValue_t* s2_cvar_slot(ConVarData* data) {
     return reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data) + VOFF);
 }
 
+// cvar_value.h: the engine allocates only m_ByteSize per value slot, so values are copied with
+// s2cvar::copy_value, never as a whole CVValue_t. Its numbering must match EConVarType.
+static_assert(int(s2cvar::Bool) == int(EConVarType_Bool) && int(s2cvar::Int16) == int(EConVarType_Int16)
+              && int(s2cvar::UInt16) == int(EConVarType_UInt16) && int(s2cvar::Int32) == int(EConVarType_Int32)
+              && int(s2cvar::UInt32) == int(EConVarType_UInt32) && int(s2cvar::Int64) == int(EConVarType_Int64)
+              && int(s2cvar::UInt64) == int(EConVarType_UInt64)
+              && int(s2cvar::Float32) == int(EConVarType_Float32)
+              && int(s2cvar::Float64) == int(EConVarType_Float64),
+              "cvar_value.h type numbering drifted from EConVarType");
+static_assert(sizeof(float32) == sizeof(float) && sizeof(float64) == sizeof(double)
+              && sizeof(int16) == 2 && sizeof(int32) == 4 && sizeof(int64) == 8,
+              "cvar_value.h sizes assume the SDK scalar widths");
+
 static bool s2_cvar_parse(EConVarType ty, const char* value, CVValue_t* out) {
     if (!value) return false;
     char* end = nullptr;
@@ -2665,7 +2679,10 @@ static int s2_cvar_set(const char* name, const char* value) {
     CVValue_t* curr = s2_cvar_slot(data);
     if (!curr) return 0;
 
-    CVValue_t neu{};
+    // CVValue_t has a user-provided empty constructor, so `CVValue_t neu{}` does NOT zero it; parse
+    // only sets the active member. Zero it so no stack bytes reach the filter/change callbacks.
+    CVValue_t neu;
+    memset(static_cast<void*>(&neu), 0, sizeof(neu));
     if (!s2_cvar_parse(ty, value, &neu)) return 0;
     if (ty != EConVarType_String) s2_cvar_clamp(data, ty, &neu);
 
@@ -2692,11 +2709,15 @@ static int s2_cvar_set(const char* name, const char* value) {
         return 1;
     }
 
+    // Only the type's own bytes belong to this slot (cvar_value.h); the bytes after it are the
+    // next arena block (this cvar's min/max/default value, or the next cvar).
+    if (s2cvar::value_size(ty) == 0) return 0;
     if (s2_cvar_equal(ty, curr, &neu)) return 1; // no-op
     if (!s_pCvar->CallFilterCallback(ref, CSplitScreenSlot(0), &neu, curr)) return 0;
     alignas(CVValue_t) unsigned char prevStore[sizeof(CVValue_t)];
-    memcpy(prevStore, curr, sizeof(CVValue_t));
-    memcpy(curr, &neu, sizeof(CVValue_t));
+    memset(prevStore, 0, sizeof(prevStore));
+    s2cvar::copy_value(prevStore, curr, ty);
+    s2cvar::copy_value(curr, &neu, ty);
     data->IncrementTimesChanged();
     S2CvarAbs abs(ref, data);
     s_pCvar->CallChangeCallback(ref, CSplitScreenSlot(0), curr, reinterpret_cast<CVValue_t*>(prevStore));
