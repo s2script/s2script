@@ -280,3 +280,26 @@ test('a vote forced on the new map before the poll notices the change is kept', 
   assert.ok(host.vote, 'the new map\'s ballot is not cancelled');
   assert.equal(host.iface.isVoteInProgress(), true);
 });
+
+test('when every other map is on cooldown the ballot falls back to them, not Extend alone', async () => {
+  const host = loadPlugin({ history: ['de_inferno', 'de_mirage', 'de_nuke', 'awp_lego_2'] });
+  await host.start();
+  host.cvars.set('mp_timelimit', '30');
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  assert.ok(host.vote, 'a vote opens');
+  assert.ok(host.vote.options.length > 1);
+  assert.ok(host.vote.options.some(o => o !== 'Extend Map'), 'with maps on it');
+  assert.equal(host.iface.hasEndOfMapVoteFinished(), false);
+});
+
+test('without nextmap a winner chosen after the match ended changes at once', async () => {
+  const host = loadPlugin({ nominations: ['de_nuke'] });
+  await host.start();
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  host.hooks.get('cs_win_panel_match')();   // the match ends while the vote is open
+  assert.deepEqual(host.commands, []);
+  await host.end(0, [2, 0, 0, 0, 0]);
+  assert.deepEqual(host.commands, ['changelevel de_nuke']);
+});
