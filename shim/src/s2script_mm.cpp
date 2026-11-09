@@ -80,6 +80,7 @@
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
 #include "named_hooks.h"    // checked chat/output/usercmd/precache bindings
 #include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
+#include "steam.h"          // Steam game-server services + workshop (@s2script/sdk/steam)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -95,6 +96,10 @@
 #include <unordered_map>   // the CheckTransmit rule table (checktransmit slice)
 #include <unordered_set>
 #include <mutex>     // the client convar-response queue
+#include <chrono>    // console capture: arm timestamps for the timeout
+#include <thread>    // console capture: main-thread filter in the logging listener
+#include <tier0/logging.h>     // ILoggingListener / LoggingContext_t (console capture)
+#include "console_capture.h"   // Server.commandEx: the engine-free capture policy
 #include <vector>
 #include <iterator>
 #include <stdexcept>
@@ -2171,6 +2176,147 @@ static const char* s2_client_address(int slot) {
 // ---------------------------------------------------------------------------
 static void s2_server_command(const char* cmd) {
     S2Engine_ServerCommand(cmd);
+}
+
+// ---------------------------------------------------------------------------
+// server_command_capture — Server.commandEx (SourceMod ServerCommandEx parity): run a server command
+// and hand its console output back to core.
+//
+// Source 2 has no synchronous "execute the command buffer now", so the command is queued between two
+// marker commands of our own (see console_capture.h for the full argument). While a capture is armed
+// a tier0 logging listener is registered; it collects every main-thread line logged between the
+// markers. Finished captures are handed to core at the top of the next GameFramePre, like convar
+// replies.
+//
+// Engine facts used, all resolved by name and all degradable: LoggingSystem_RegisterLoggingListener /
+// LoggingSystem_UnregisterLoggingListener are looked up in the loaded tier0 with dlsym (exported by
+// name; missing → the op returns 0 and Server.commandEx falls back to a plain command). The listener
+// vtable is the SDK's ILoggingListener (Log, OnFlush, OnChannelRegistered, OnChannelVerbosityChanged,
+// OnChannelFlagsChanged); tier0's dispatch calls slots 0x00–0x20 only, matching it.
+// ---------------------------------------------------------------------------
+static S2ConsoleCapture s_capture;
+static std::thread::id s_captureThread;   // set before the listener is first registered
+static bool s_captureListenerOn = false;
+static int  s_captureState = 0;           // 0 = unresolved, 1 = ready, -1 = unavailable (logged once)
+using S2LoggingListenerFn = void (*)(ILoggingListener*);
+static S2LoggingListenerFn s_logRegister = nullptr;
+static S2LoggingListenerFn s_logUnregister = nullptr;
+static ConCommandRef s_captureBeginCmd, s_captureEndCmd;
+
+class S2CaptureListener final : public ILoggingListener {
+public:
+    // Called synchronously by tier0 for every logged message, from whichever thread logged it. Only
+    // the main thread runs the command buffer, so anything else is unrelated and dropped before it
+    // touches the (single-threaded) policy. Must never log itself.
+    void Log(const LoggingContext_t* ctx, const tchar* msg) override {
+        if (std::this_thread::get_id() != s_captureThread) return;
+        if (ctx && (ctx->m_Flags & LCF_DO_NOT_ECHO)) return;   // never shown on the console either
+        s_capture.Append(msg);
+    }
+};
+static S2CaptureListener s_captureListener;
+
+static double S2CaptureNow() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// Register the listener while any capture is armed or open; drop it as soon as none is, so the
+// logging hot path pays nothing between captures.
+static void S2Capture_SyncListener() {
+    const bool want = s_capture.Active();
+    if (want == s_captureListenerOn || !s_logRegister || !s_logUnregister) return;
+    if (want) s_logRegister(&s_captureListener); else s_logUnregister(&s_captureListener);
+    s_captureListenerOn = want;
+}
+
+static int S2CaptureMarkerCookie(const CCommandContext& ctx, const CCommand& cmd) {
+    // Only the server's own command buffer runs the markers; a client typing one is ignored.
+    if (ctx.GetPlayerSlot().Get() != -1 || cmd.ArgC() < 2) return 0;
+    return std::atoi(cmd.Arg(1));
+}
+static void s2_capture_begin_cb(const CCommandContext& ctx, const CCommand& cmd) {
+    if (int cookie = S2CaptureMarkerCookie(ctx, cmd)) s_capture.Begin(cookie);
+}
+static void s2_capture_end_cb(const CCommandContext& ctx, const CCommand& cmd) {
+    if (int cookie = S2CaptureMarkerCookie(ctx, cmd)) s_capture.End(cookie);
+}
+
+static ConCommandRef S2RegisterCaptureMarker(const char* name, FnCommandCallback_t cb) {
+    ConCommandCreation_t setup;
+    setup.m_pszName       = name;   // string literal: process lifetime
+    setup.m_pszHelpString = "s2script internal: brackets Server.commandEx output";
+    // Same flag set as every s2script command (the combination proven to run from the server
+    // buffer); the callback ignores anything that is not server-originated.
+    setup.m_nFlags        = FCVAR_CLIENT_CAN_EXECUTE;
+    setup.m_CBInfo        = ConCommandCallbackInfo_t(cb);
+    return s_pCvar->RegisterConCommand(setup);
+}
+
+// Resolve tier0's listener API and register the two markers, once.
+static bool S2Capture_Ready() {
+    if (s_captureState != 0) return s_captureState == 1;
+    s_captureState = -1;
+    if (!s_pCvar) {
+        META_CONPRINTF("[s2script] WARN: console capture OFF — ICvar not acquired; Server.commandEx returns null\n");
+        return false;
+    }
+    s_logRegister = reinterpret_cast<S2LoggingListenerFn>(dlsym(RTLD_DEFAULT, "LoggingSystem_RegisterLoggingListener"));
+    s_logUnregister = reinterpret_cast<S2LoggingListenerFn>(dlsym(RTLD_DEFAULT, "LoggingSystem_UnregisterLoggingListener"));
+    if (!s_logRegister || !s_logUnregister) {
+        META_CONPRINTF("[s2script] WARN: console capture OFF — tier0 LoggingSystem_(Un)RegisterLoggingListener "
+                       "not exported; Server.commandEx returns null\n");
+        s_logRegister = s_logUnregister = nullptr;
+        return false;
+    }
+    s_captureBeginCmd = S2RegisterCaptureMarker("s2s_capture_begin", &s2_capture_begin_cb);
+    s_captureEndCmd = S2RegisterCaptureMarker("s2s_capture_end", &s2_capture_end_cb);
+    if (!s_captureBeginCmd.IsValidRef() || !s_captureEndCmd.IsValidRef()) {
+        META_CONPRINTF("[s2script] WARN: console capture OFF — marker commands did not register; "
+                       "Server.commandEx returns null\n");
+        return false;
+    }
+    s_captureThread = std::this_thread::get_id();
+    s_captureState = 1;
+    META_CONPRINTF("[s2script] console capture ready (Server.commandEx)\n");
+    return true;
+}
+
+// 1 = queued with capture armed (core will get s2script_core_dispatch_command_output for `cookie`);
+// 0 = nothing was run (capture unavailable, engine missing, or too many captures in flight).
+static int s2_server_command_capture(const char* cmd, int cookie) {
+    if (!cmd || !cmd[0] || cookie <= 0) return 0;
+    if (!S2EngineCalls() || !S2Capture_Ready()) return 0;
+    if (std::this_thread::get_id() != s_captureThread) return 0;
+    if (!s_capture.Arm(cookie, S2CaptureNow())) return 0;
+    S2Capture_SyncListener();
+    // A newline ends a buffered command even inside an unbalanced quote, so the command cannot
+    // swallow the end marker. Strip any embedded ones so a multi-line string stays one command line,
+    // like the console's own input.
+    std::string line(cmd);
+    for (char& c : line) if (c == '\n' || c == '\r') c = ' ';
+    char marker[64];
+    std::snprintf(marker, sizeof marker, "s2s_capture_begin %d\n", cookie);
+    S2Engine_ServerCommand(marker);
+    line += "\n";
+    S2Engine_ServerCommand(line.c_str());
+    std::snprintf(marker, sizeof marker, "s2s_capture_end %d\n", cookie);
+    S2Engine_ServerCommand(marker);
+    return 1;
+}
+
+// Top of GameFramePre: time out stuck captures, drop the listener when idle, deliver results.
+static void S2_DrainCommandCaptures() {
+    if (s_captureState != 1) return;
+    s_capture.Expire(S2CaptureNow());
+    S2Capture_SyncListener();
+    for (const auto& r : s_capture.TakeDone())
+        s2script_core_dispatch_command_output(r.cookie, r.text.c_str(), r.truncated ? 1 : 0);
+}
+
+static void S2_ShutdownCommandCapture() {
+    s_capture.Reset();
+    S2Capture_SyncListener();   // unregisters: a listener must never outlive this image
 }
 // Client command execution (SourceMod ClientCommand / FakeClientCommand parity).
 //
@@ -6379,6 +6525,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         return true; // degrade, do not fail the load (spec §7)
     }
     m_coreDispatchReady = true;
+    // Steam callbacks enter the core, so they register only once it is up, and unregister in
+    // PreShutdown before it goes away.
+    S2Steam_Init([] { return S2Tid() == g_coreOwnerTid; });
 
     // Late-load bootstrap. CPlayerUserId stores ushort; -1 is represented by 65535.
     // A userid proves occupancy, not exact signon phase: use connected conservatively.
@@ -6648,8 +6797,10 @@ static bool S2_FinishUnloadCleanup() {
         s_pCvar->RemoveGlobalChangeCallback(&s2_cvar_change_cb);
         s_cvarChangeCbInstalled = false;
     }
+    S2_ShutdownCommandCapture();
 
     META_CONPRINTF("[s2script] PreShutdown: shutting down V8 core\n");
+    S2Steam_Shutdown();
 
     S2Defer_Flush("unload");
     s_userMsgFirstFireDone = false;
@@ -6821,6 +6972,8 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // dispatch could not deliver last frame.
     S2Defer_Drain();
     S2_DrainCvarResponses();
+    S2_DrainCommandCaptures();
+    S2Steam_Drain();
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     return S2_Ignore();

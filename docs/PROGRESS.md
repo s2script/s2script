@@ -1193,3 +1193,53 @@ mapchooser chooses; nextmap changes. nextmap's contract goes to 1.1.0 with a `se
 
 Verification: 25 VM tests (13 unit, 12 running the real nextmap/mapchooser/rockthevote sources together), registered in `scripts/ci-js.sh`. Live CS2 gate pending (needs human clients to vote).
 
+## 2026-11-08 — sm_rcon returns the command's output (Server.commandEx)
+
+`sm_rcon` used to reply "Command sent." Like SourceMod's `Command_Rcon`, a player now gets the command's console output back in their console. A chat caller is also told "See console for output." The server console just runs the command, because it already sees the output. The new SDK call is `Server.commandEx(cmd): Promise<string | null>`, which is SourceMod `ServerCommandEx`.
+
+Source 2 has no synchronous "execute the command buffer now", so the shim queues the command between two marker commands of its own (`s2s_capture_begin <cookie>` / `s2s_capture_end <cookie>`). While a capture is in flight, a tier0 `ILoggingListener` is registered (`LoggingSystem_(Un)RegisterLoggingListener`, found with dlsym). It keeps every main-thread line logged between the markers. That covers `exec`, aliases and `;` chains, and nothing from before or after the command. The policy (FIFO attribution, a lost marker, the 16 KiB cap, the 10 s timeout) is engine-free in `shim/src/console_capture.cpp`, and `scripts/test-console-capture.sh` tests it directly. Results reach core at the top of the next GameFramePre, the same way convar replies do (`server_capture.rs`: cookie-keyed, ledgered per plugin, 15 s timeout → null). Without the listener API or the markers, `commandEx` runs the command uncaptured and resolves null, and `sm_rcon` falls back to "Command sent."
+
+Checked against the Nov 5 libtier0.so: both listener functions are exported, and listener dispatch uses vtable slots 0x00–0x20 only, which matches the SDK's five-method `ILoggingListener`. Known limit: like every s2script ConCommand, the two markers are not unregistered at shim unload (existing teardown TODO). Live CS2 acceptance is still pending.
+
+## 2026-11-08 — Steam game server and Workshop downloads
+
+Gabriel asked for our version of ModSharp's `ISteamApi` so a server can download its workshop maps
+itself. The Steamworks game-server API is in every Source 2 dedicated server, so this is core:
+`@s2script/sdk/steam` with `Steam` (session state, SteamID, public IP, connect/disconnect events) and
+`Workshop` (`download` → promise of the EResult, `request`, `state`, `isInstalled`,
+`downloadProgress`, `installInfo`, `suspendDownloads`, `onDownloadResult`, `onItemInstalled`).
+
+The engine owns the Steam session; `shim/src/steam.cpp` borrows it. Nothing is linked and no
+gamedata is added: the shim finds the engine's already-loaded `libsteam_api.so` (RTLD_NOLOAD),
+looks up `SteamGameServer_GetHSteamUser`, `SteamInternal_FindOrCreateGameServerInterface` and
+`SteamAPI_{Register,Unregister}Callback`, and asks Steam for `ISteamGameServer` / `ISteamUGC` by the
+version strings of the pinned hl2sdk headers it compiles its vtable calls against
+(`SteamGameServer015`, `STEAMUGC_INTERFACE_VERSION021`). The version string is the handshake: Steam
+serves exactly that layout or answers null, which turns the feature off with a named reason. That is
+why the strings stay with the headers instead of in gamedata, where changing one without the header
+would call a mismatched vtable. The interfaces are re-requested whenever the engine's session handle
+changes. Five game-server callbacks register after core init and unregister in PreShutdown, before
+the core goes away.
+
+Callbacks are notify-only and queued in `core/src/steam.rs`; a busy isolate keeps them queued (and
+the frame detour requested) for the next frame's sweep, and a download result whose listeners ran
+but whose waiters were deferred retries only the waiters. `Workshop.download` waiters are one-shot
+subscriptions keyed by item and result epoch: a result settles only the waiters that existed when it
+arrived, so a listener that retries the same item waits for the next result. They go with their
+plugin on unload. Ids cross as decimal strings.
+
+Cookbook: `sm_ws_status` / `sm_ws_get` / `sm_ws_info`. Five in-isolate tests. Live gate pending.
+
+## 2026-11-08 — Keep the server's workshop maps downloaded
+
+`@s2script/workshopmaps`, the first consumer of `@s2script/sdk/steam`. It reads the workshop ids in
+`maplist.txt` (the `name:workshopId` lines nextmap, nominations and rockthevote share; commented and
+`:id` lines are skipped the way nextmap skips them) plus `workshopmaps_items`, and downloads each one
+that is not installed or needs an update. A pass runs at plugin start once Steam is logged on, on
+every `Steam.onConnected`, and on every map start (`workshopmaps_check_on_map_start`, default on),
+which picks up maplist edits and author updates. One download at a time; a request during a pass
+queues one more pass; a download with no result in 15 minutes is given up on and asked for again next pass, keeping a single waiter per item.
+`sm_workshop_sync` (CHANGEMAP) reports the list and starts a pass.
+
+Ships enabled in `plugins/`: with no workshop ids listed it does nothing. Seven VM-hosted tests in
+`scripts/ci-js.sh`. Live gate pending.

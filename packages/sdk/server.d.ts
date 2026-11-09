@@ -10,6 +10,17 @@
 export declare const Server: {
   /** Run `cmd` at the server console (queued; executes next frame). */
   command(cmd: string): void;
+  /**
+   * Run `cmd` at the server console and resolve with the console output it printed (SourceMod
+   * `ServerCommandEx`). Resolves on a later frame, once the engine has run the command buffer.
+   * Everything the command prints is included, also for `exec`, aliases and `;`-separated commands;
+   * output is cut at 16 KiB. Resolves `null` when output cannot be captured on this build (the
+   * command still runs, uncaptured) or no result arrived within 15 seconds.
+   * @example
+   * // plugins/basecommands/src/plugin.ts — sm_rcon
+   * const output = await Server.commandEx("status");
+   */
+  commandEx(cmd: string): Promise<string | null>;
   /** Whether `map` is an installed, valid map file. */
   isMapValid(map: string): boolean;
   /** A cvar's current value as a string. `""` if the cvar doesn't exist (or an unsupported type → `"<type>"`). */

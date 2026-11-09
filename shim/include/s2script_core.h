@@ -145,6 +145,16 @@ void s2script_core_dispatch_precache(void);
  * GameFramePre. `slot` is the answering client's own slot; core delivers only to the query that
  * minted `cookie` for that slot and connection. Strings are copied before this returns. */
 void s2script_core_dispatch_convar_response(int slot, int cookie, int status, const char* name, const char* value);
+/* Shim -> core: a Server.commandEx capture finished (the end marker ran, or it timed out). `text` is the
+ * console output logged between the capture's markers, at most the shim's cap; `truncated` is 1 when
+ * output past the cap was dropped. Drained at the top of GameFramePre, so the isolate is free. Core
+ * delivers only to the pending call that minted `cookie`. `text` is copied before this returns. */
+void s2script_core_dispatch_command_output(int cookie, const char* text, int truncated);
+/* Shim -> core: a Steam game-server callback fired (shim/src/steam.h S2SteamEventKind). `id` is the
+ * workshop item for download/installed events (else 0), `result` the EResult, `flag` stillRetrying for a
+ * connect failure or the app id for workshop events. Notify-only: core queues it and delivers it now, or
+ * on the next frame when the isolate is busy. */
+void s2script_core_dispatch_steam_event(int kind, uint64_t id, int result, int flag);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->

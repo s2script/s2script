@@ -1,4 +1,5 @@
 import {
+  Clients,
   command,
   topmenu,
   translations,
@@ -154,11 +155,34 @@ function reloadAdmins(cmd: Command): HookResultValue {
   return HookResult.Handled;
 }
 
+/** One console print per chunk, split on line boundaries, so a long listing is not one huge message. */
+const RCON_CHUNK = 1000;
+
+function printChunked(print: (text: string) => void, output: string): void {
+  let chunk = "";
+  for (const line of output.replace(/\r/g, "").replace(/\n+$/, "").split("\n")) {
+    if (chunk.length > 0 && chunk.length + 1 + line.length > RCON_CHUNK) { print(chunk); chunk = ""; }
+    chunk = chunk.length > 0 ? chunk + "\n" + line : line;
+  }
+  if (chunk.length > 0) print(chunk);
+}
+
+// SM basecommands Command_Rcon: the server console already sees the output, so it just runs the
+// command; a player gets the command's console output back (ServerCommandEx + ReplyToCommand).
 function rcon(cmd: Command): HookResultValue {
   const c = cmd.argString.trim();
   if (!c) { cmd.replyT("Usage Rcon"); return HookResult.Handled; }
-  Server.command(c);
-  cmd.replyT("Rcon Command Sent");
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" console command (cmdline "${c}")`);
+  if (cmd.callerSlot < 0) { Server.command(c); return HookResult.Handled; }
+  // Capture the connection now: the output arrives a frame later, and the slot may change hands.
+  const caller = Clients.fromSlot(cmd.callerSlot);
+  void Server.commandEx(c).then((output) => {
+    if (caller === null || !caller.isValid()) return;
+    if (output === null || output.trim().length === 0) { cmd.replyT("Rcon Command Sent"); return; }
+    // Multi-line output belongs in the console; a chat caller is told where to look (as sm_who does).
+    printChunked((text) => caller.print(text), output);
+    if (cmd.replySource === "chat") cmd.replyT("See Console For Output");
+  });
   return HookResult.Handled;
 }
 

@@ -77,6 +77,10 @@ add_library(s2script SHARED
     # deferred-dispatch slice: the queue/drain POLICY, engine-free (every engine + core call is
     # injected through S2DeferOps), so shim/tests/defer_queue_test.cpp drives the SHIPPED drain.
     src/defer_queue.cpp
+    # Server.commandEx: the console-capture POLICY (armed/open captures, cap, timeout), engine-free
+    # so shim/tests/console_capture_test.cpp drives the shipped code. The tier0 listener and the
+    # marker commands are in s2script_mm.cpp.
+    src/console_capture.cpp
     # declarative inbound hooks: the engine-free POLICY half (shape vocabulary, bypass latch,
     # collapse contract) — also built standalone into hook_dispatch_selftest below, so the gate
     # drives exactly the code that ships...
@@ -90,6 +94,8 @@ add_library(s2script SHARED
     # SDKHooks virtuals: per-entity SH_ADD_MANUALHOOK (Touch family). Isolated so s2script_mm.cpp
     # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
     src/sdkhooks_vp.cpp
+    # Steam game-server services (@s2script/sdk/steam): borrows the engine's libsteam_api session.
+    src/steam.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
