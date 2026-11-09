@@ -1,5 +1,18 @@
 # @s2script/cs2
 
+## 0.25.0
+
+### Minor Changes
+
+- 6056112: Add SourceMod's admin-activity layer as `Activity` on `@s2script/sdk`: `show`/`showT` (ShowActivity2, governed by the `sm_show_activity` cvar), `log` (LogAction), `describe` (`%L`), `targetName`, `tag` and `flags`. It is engine-generic, so it moved out of `@s2script/cs2`; `@s2script/cs2`'s `Activity` is now a deprecated re-export of the same object, and `formatSource` reads `sm_show_activity` instead of always using the default. Adds `Server.getCvarFlags(name)` (SourceMod `GetConVarFlags`; `-1` if absent).
+
+### Patch Changes
+
+- Updated dependencies [bd0ef20]
+- Updated dependencies [307de91]
+- Updated dependencies [6056112]
+  - @s2script/sdk@0.37.0
+
 ## 0.24.0
 
 ### Minor Changes
