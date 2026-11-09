@@ -264,6 +264,14 @@ typedef int (*s2_usermsg_hook_set_int_fn)(const char* path, long long value);
 typedef int (*s2_precache_entity_add_fn)(const char* classname);
 typedef long long (*s2_cvar_flags_fn)(const char* name);
 typedef int (*s2_server_command_capture_fn)(const char* cmd, int cookie);
+typedef int (*s2_steam_status_fn)(void);
+typedef uint64_t (*s2_steam_server_id_fn)(void);
+typedef uint32_t (*s2_steam_public_ip_fn)(void);
+typedef int (*s2_steam_ugc_download_fn)(uint64_t id, int high_priority);
+typedef long long (*s2_steam_ugc_state_fn)(uint64_t id);
+typedef int (*s2_steam_ugc_download_info_fn)(uint64_t id, uint64_t* downloaded, uint64_t* total);
+typedef int (*s2_steam_ugc_install_info_fn)(uint64_t id, uint64_t* size_on_disk, char* folder, int cap, uint32_t* timestamp);
+typedef int (*s2_steam_ugc_suspend_fn)(int suspend);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -496,4 +504,13 @@ typedef struct {
     s2_cvar_flags_fn cvar_flags;
     /* --- Server console output capture (Server.commandEx): ServerCommand bracketed by marker commands + a tier0 logging listener --- */
     s2_server_command_capture_fn server_command_capture;
+    /* --- Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC) --- */
+    s2_steam_status_fn steam_status;
+    s2_steam_server_id_fn steam_server_id;
+    s2_steam_public_ip_fn steam_public_ip;
+    s2_steam_ugc_download_fn steam_ugc_download;
+    s2_steam_ugc_state_fn steam_ugc_state;
+    s2_steam_ugc_download_info_fn steam_ugc_download_info;
+    s2_steam_ugc_install_info_fn steam_ugc_install_info;
+    s2_steam_ugc_suspend_fn steam_ugc_suspend;
 } S2EngineOps;

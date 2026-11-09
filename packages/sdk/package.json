@@ -137,6 +137,9 @@
     "./stringtables": {
       "types": "./stringtables.d.ts"
     },
+    "./steam": {
+      "types": "./steam.d.ts"
+    },
     "./voice": {
       "types": "./voice.d.ts"
     },
