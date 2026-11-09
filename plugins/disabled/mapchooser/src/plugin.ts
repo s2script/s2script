@@ -26,6 +26,7 @@ let voteRunning = false;   // claimed synchronously before the ballot's DB reads
 let voteMap = "";          // the map the running (or building) vote belongs to
 let voteFinished = false;  // a map won this map's vote
 let extendsUsed = 0;
+let matchEnded = false;    // cs_win_panel_match fired on this map
 let pendingMap: MapEntry | null = null; // applied by us only when nextmap is absent
 let pendingSource = "";                  // the map pendingMap was chosen on
 let frameCounter = 0;
@@ -123,8 +124,24 @@ async function buildBallot(): Promise<{ maps: MapEntry[]; extend: boolean }> {
       if (maps.length >= cap) break;
       if (!listed(m.name)) maps.push(m);
     }
+    // A rotation no larger than mapvote_exclude leaves nothing off cooldown. An Extend-only (or
+    // empty) ballot is no vote at all, so fall back to the cooldown maps rather than skip it.
+    if (maps.length === 0) {
+      for (const m of pool) {
+        if (maps.length >= cap) break;
+        if (!isCurrentMap(m.name) && !listed(m.name)) maps.push(m);
+      }
+    }
   }
   return { maps: maps.filter(isValidEntry), extend };
+}
+
+/** Change to the winner we hold (only when nextmap is absent). */
+function applyPendingMap(): void {
+  const m = pendingMap;
+  pendingMap = null;
+  if (m === null || pendingSource !== Server.mapName) return;
+  Server.command(m.workshopId ? "host_workshop_map " + m.workshopId : "changelevel " + m.name);
 }
 
 /** Make `entry` the next map: nextmap's override when it is loaded, otherwise our own change. */
@@ -137,6 +154,8 @@ function setNextMap(entry: MapEntry): void {
   }
   pendingMap = handled ? null : entry;
   pendingSource = Server.mapName;
+  // The match already ended while the vote was open: there is no later match end to wait for.
+  if (matchEnded) applyPendingMap();
   console.log("[mapchooser] next map: " + entry.name + (handled ? " (nextmap rotates)" : " (changing at match end)"));
   Chat.toAll(Translations.translate(-1, "Mapvote Next Map", entry.name));
 }
@@ -232,6 +251,7 @@ function resetForMap(map: string): void {
   voteRunning = false;
   voteFinished = false;
   extendsUsed = 0;
+  matchEnded = false;
   pendingMap = null;
 }
 
@@ -288,12 +308,7 @@ export async function OnPluginStart(): Promise<void> {
   });
 
   // Only reached without nextmap: nextmap otherwise owns the change.
-  hook.on("cs_win_panel_match", () => {
-    const m = pendingMap;
-    pendingMap = null;
-    if (m === null || pendingSource !== Server.mapName) return;
-    Server.command(m.workshopId ? "host_workshop_map " + m.workshopId : "changelevel " + m.name);
-  });
+  hook.on("cs_win_panel_match", () => { matchEnded = true; applyPendingMap(); });
 
   command.admin("sm_mapvote", ADMFLAG.CHANGEMAP, cmd => {
     cmd.replyT(startVote(true) ? "Mapvote Forced" : "Mapvote Cannot Start");
