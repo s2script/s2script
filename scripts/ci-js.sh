@@ -86,8 +86,8 @@ bash scripts/check-antiflood-test.sh
 echo "== clientprefs connection race tests =="
 node --test plugins/clientprefs/src/plugin.test.mjs
 
-echo "== adminmenu and RTV connection cleanup tests =="
-node --test plugins/adminmenu/src/plugin.test.mjs plugins/disabled/rockthevote/src/plugin.test.mjs
+echo "== adminmenu and RTV connection cleanup + runoff tests =="
+node --test plugins/adminmenu/src/plugin.test.mjs plugins/disabled/rockthevote/src/plugin.test.mjs plugins/disabled/rockthevote/src/runoff.test.mjs
 
 echo "== nextmap startup selection and rotation tests =="
 node --test plugins/disabled/nextmap/src/plugin.test.mjs plugins/disabled/nextmap/src/rotation-rtv.test.mjs
