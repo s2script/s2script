@@ -1229,3 +1229,17 @@ arrived, so a listener that retries the same item waits for the next result. The
 plugin on unload. Ids cross as decimal strings.
 
 Cookbook: `sm_ws_status` / `sm_ws_get` / `sm_ws_info`. Five in-isolate tests. Live gate pending.
+
+## 2026-11-08 — Keep the server's workshop maps downloaded
+
+`@s2script/workshopmaps`, the first consumer of `@s2script/sdk/steam`. It reads the workshop ids in
+`maplist.txt` (the `name:workshopId` lines nextmap, nominations and rockthevote share; commented and
+`:id` lines are skipped the way nextmap skips them) plus `workshopmaps_items`, and downloads each one
+that is not installed or needs an update. A pass runs at plugin start once Steam is logged on, on
+every `Steam.onConnected`, and on every map start (`workshopmaps_check_on_map_start`, default on),
+which picks up maplist edits and author updates. One download at a time; a request during a pass
+queues one more pass; a download with no result in 15 minutes is given up on and asked for again next pass, keeping a single waiter per item.
+`sm_workshop_sync` (CHANGEMAP) reports the list and starts a pass.
+
+Ships enabled in `plugins/`: with no workshop ids listed it does nothing. Seven VM-hosted tests in
+`scripts/ci-js.sh`. Live gate pending.
