@@ -99,6 +99,15 @@ async function nominationList(): Promise<string[]> {
  * The ballot: nominations first (in nomination order), then random maplist.txt maps that are not
  * the current map or on cooldown, up to mapvote_include, then Extend Map when it is allowed.
  */
+/** Fisher-Yates in place; returns the same array. */
+function shuffle<T>(items: T[]): T[] {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = items[i]!; items[i] = items[j]!; items[j] = tmp;
+  }
+  return items;
+}
+
 async function buildBallot(): Promise<{ maps: MapEntry[]; extend: boolean }> {
   const extend = canExtend();
   const cap = Math.min(Math.max(1, config.getInt("mapvote_include")), extend ? 8 : 9);
@@ -116,10 +125,7 @@ async function buildBallot(): Promise<{ maps: MapEntry[]; extend: boolean }> {
   if (maps.length < cap) {
     const cooldown = await cooldownSet();
     const fill = pool.filter(m => !cooldown.has(m.name) && !isCurrentMap(m.name) && !listed(m.name));
-    for (let i = fill.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const tmp = fill[i]; fill[i] = fill[j]; fill[j] = tmp;
-    }
+    shuffle(fill);
     for (const m of fill) {
       if (maps.length >= cap) break;
       if (!listed(m.name)) maps.push(m);
@@ -127,7 +133,7 @@ async function buildBallot(): Promise<{ maps: MapEntry[]; extend: boolean }> {
     // A rotation no larger than mapvote_exclude leaves nothing off cooldown. An Extend-only (or
     // empty) ballot is no vote at all, so fall back to the cooldown maps rather than skip it.
     if (maps.length === 0) {
-      for (const m of pool) {
+      for (const m of shuffle(pool.slice())) {
         if (maps.length >= cap) break;
         if (!isCurrentMap(m.name) && !listed(m.name)) maps.push(m);
       }
