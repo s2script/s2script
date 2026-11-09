@@ -1193,3 +1193,10 @@ mapchooser chooses; nextmap changes. nextmap's contract goes to 1.1.0 with a `se
 
 Verification: 25 VM tests (13 unit, 12 running the real nextmap/mapchooser/rockthevote sources together), registered in `scripts/ci-js.sh`. Live CS2 gate pending (needs human clients to vote).
 
+## 2026-11-08 — sm_rcon returns the command's output (Server.commandEx)
+
+`sm_rcon` used to reply "Command sent." Like SourceMod's `Command_Rcon`, a player now gets the command's console output back in their console. A chat caller is also told "See console for output." The server console just runs the command, because it already sees the output. The new SDK call is `Server.commandEx(cmd): Promise<string | null>`, which is SourceMod `ServerCommandEx`.
+
+Source 2 has no synchronous "execute the command buffer now", so the shim queues the command between two marker commands of its own (`s2s_capture_begin <cookie>` / `s2s_capture_end <cookie>`). While a capture is in flight, a tier0 `ILoggingListener` is registered (`LoggingSystem_(Un)RegisterLoggingListener`, found with dlsym). It keeps every main-thread line logged between the markers. That covers `exec`, aliases and `;` chains, and nothing from before or after the command. The policy (FIFO attribution, a lost marker, the 16 KiB cap, the 10 s timeout) is engine-free in `shim/src/console_capture.cpp`, and `scripts/test-console-capture.sh` tests it directly. Results reach core at the top of the next GameFramePre, the same way convar replies do (`server_capture.rs`: cookie-keyed, ledgered per plugin, 15 s timeout → null). Without the listener API or the markers, `commandEx` runs the command uncaptured and resolves null, and `sm_rcon` falls back to "Command sent."
+
+Checked against the Nov 5 libtier0.so: both listener functions are exported, and listener dispatch uses vtable slots 0x00–0x20 only, which matches the SDK's five-method `ILoggingListener`. Known limit: like every s2script ConCommand, the two markers are not unregistered at shim unload (existing teardown TODO). Live CS2 acceptance is still pending.

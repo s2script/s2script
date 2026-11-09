@@ -105,6 +105,9 @@ python3 scripts/test-usermsg-fields.py
 echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
 bash scripts/test-defer-queue.sh
 
+echo "== test-console-capture.sh (Server.commandEx output bracketing, cap, timeout) =="
+bash scripts/test-console-capture.sh
+
 echo "== test-client-bootstrap.sh (unsigned userid sentinel and late-load occupancy) =="
 bash scripts/test-client-bootstrap.sh
 
