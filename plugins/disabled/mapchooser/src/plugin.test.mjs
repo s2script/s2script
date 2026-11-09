@@ -303,3 +303,14 @@ test('without nextmap a winner chosen after the match ended changes at once', as
   await host.end(0, [2, 0, 0, 0, 0]);
   assert.deepEqual(host.commands, ['changelevel de_nuke']);
 });
+
+test('the cooldown fallback is shuffled, not the head of maplist.txt', async () => {
+  const pool = ['de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_ancient', 'de_vertigo'];
+  const host = loadPlugin({ maplist: pool.join('\n'), mapName: 'de_vertigo', history: pool, settings: { mapvote_include: 2 } });
+  await host.start();
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  // Math.random() is 0 in this harness: Fisher-Yates then moves the first map to the end, so the
+  // file-order prefix (de_dust2, de_inferno) is not what is listed.
+  assert.deepEqual([...host.vote.options], ['de_inferno', 'de_mirage']);
+});
