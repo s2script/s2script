@@ -261,12 +261,23 @@ fn s2_steam_download(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
             return;
         }
         let Some(f) = engine_ops().and_then(|o| o.steam_ugc_download) else { return };
-        if crate::nest::with_outbound(&args, || f(id, high as i32)) == 0 { return; }
+        // The waiter is in place BEFORE the outbound call: an item that is already current can have
+        // its DownloadItemResult dispatched on this thread during DownloadItem itself, and that
+        // result takes the epoch the waiter must be keyed on.
+        let mut waiter = None;
         if wants_callback {
             let key = waiter_key(id, current_epoch(id));
             let Some((sub_id, _)) = subscribe_into(scope, &args, &STEAM_MUX, &key, 2) else { return };
             let owner = crate::v8host::current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
             WAITERS.with(|w| w.borrow_mut().insert(sub_id, (owner, key)));
+            waiter = Some(sub_id);
+        }
+        if crate::nest::with_outbound(&args, || f(id, high as i32)) == 0 {
+            if let Some(sub_id) = waiter {
+                STEAM_MUX.with(|m| m.borrow_mut().remove_by_ids(&[sub_id]));
+                WAITERS.with(|w| w.borrow_mut().remove(&sub_id));
+            }
+            return;
         }
         rv.set_bool(true);
     }));
@@ -378,6 +389,8 @@ mod tests {
     extern "C" fn public_ip() -> u32 { 0xCB00_7107 }
     extern "C" fn download(id: u64, high: c_int) -> c_int {
         REQUESTS.with(|r| r.borrow_mut().push((id, high)));
+        // 77 is already current: Steam reports its result on this thread, inside DownloadItem.
+        if id == 77 { dispatch_event(DOWNLOAD, 77, 1, 730); }
         (id != 404) as c_int
     }
     extern "C" fn state(id: u64) -> i64 { if id == 7 { 4 } else { 8 | 32 } }
@@ -473,6 +486,21 @@ mod tests {
         dispatch_event(DOWNLOAD, 12, 1, 730);
         assert_eq!(js("st5", "out.join()"), "first:2,retry:1");
         assert!(WAITERS.with(|w| w.borrow().is_empty()));
+        shutdown();
+    }
+
+    /// A result Steam dispatches during DownloadItem itself still settles that call's waiter.
+    #[test]
+    fn a_result_reported_inside_download_item_settles_it() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(ops()));
+        create_plugin_context("st6");
+        eval_in_context_string("st6", r#"globalThis.out = [];
+            __s2pkg_steam.Workshop.download(77).then(function (r) { out.push(JSON.stringify(r)); }); "" "#);
+        sweep();
+        assert_eq!(js("st6", "out.join()"), r#"{"id":"77","result":1,"ok":true}"#);
+        assert!(WAITERS.with(|w| w.borrow().is_empty()));
+        assert_eq!(pending(), 0);
         shutdown();
     }
 
