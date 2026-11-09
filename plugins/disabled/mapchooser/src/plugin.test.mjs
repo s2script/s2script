@@ -280,3 +280,37 @@ test('a vote forced on the new map before the poll notices the change is kept', 
   assert.ok(host.vote, 'the new map\'s ballot is not cancelled');
   assert.equal(host.iface.isVoteInProgress(), true);
 });
+
+test('when every other map is on cooldown the ballot falls back to them, not Extend alone', async () => {
+  const host = loadPlugin({ history: ['de_inferno', 'de_mirage', 'de_nuke', 'awp_lego_2'] });
+  await host.start();
+  host.cvars.set('mp_timelimit', '30');
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  assert.ok(host.vote, 'a vote opens');
+  assert.ok(host.vote.options.length > 1);
+  assert.ok(host.vote.options.some(o => o !== 'Extend Map'), 'with maps on it');
+  assert.equal(host.iface.hasEndOfMapVoteFinished(), false);
+});
+
+test('without nextmap a winner chosen after the match ended changes at once', async () => {
+  const host = loadPlugin({ nominations: ['de_nuke'] });
+  await host.start();
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  host.hooks.get('cs_win_panel_match')();   // the match ends while the vote is open
+  assert.deepEqual(host.commands, []);
+  await host.end(0, [2, 0, 0, 0, 0]);
+  assert.deepEqual(host.commands, ['changelevel de_nuke']);
+});
+
+test('the cooldown fallback is shuffled, not the head of maplist.txt', async () => {
+  const pool = ['de_dust2', 'de_inferno', 'de_mirage', 'de_nuke', 'de_ancient', 'de_vertigo'];
+  const host = loadPlugin({ maplist: pool.join('\n'), mapName: 'de_vertigo', history: pool, settings: { mapvote_include: 2 } });
+  await host.start();
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  // Math.random() is 0 in this harness: Fisher-Yates then moves the first map to the end, so the
+  // file-order prefix (de_dust2, de_inferno) is not what is listed.
+  assert.deepEqual([...host.vote.options], ['de_inferno', 'de_mirage']);
+});
