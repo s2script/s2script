@@ -20,6 +20,7 @@
     "@s2script/clientprefs",
     "@s2script/funcommands",
     "@s2script/funvotes",
+    "@s2script/mapchooser",
     "@s2script/nextmap",
     "@s2script/nominations",
     "@s2script/playercommands",

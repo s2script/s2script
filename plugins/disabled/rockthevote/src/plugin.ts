@@ -33,6 +33,7 @@ function pruneVoters(): void {
   for (const [slot, client] of rtvVoters) if (!client.isValid()) rtvVoters.delete(slot);
 }
 let voteRunning = false;
+let voteMap = "";   // the map the running (or building) RTV ballot belongs to
 let votedThisMap = false;
 let pendingMap: MapEntry | null = null;
 let pendingMapSource = "";
@@ -41,6 +42,16 @@ let frameCounter = 0; // throttles the map-change poll to ~once/sec
 let mapStartMs = Date.now(); // when the current map began — the rtv_initialdelay window counts from here
 
 const logErr = (e: unknown) => console.log("[rockthevote] error: " + e);
+
+/** The end-of-map vote's state, while @s2script/mapchooser is loaded. Each plugin's vote lock is
+ *  its own, so without this the two ballots could run at once and split every typed number. */
+let mapchooser: { isVoteInProgress(): boolean; hasEndOfMapVoteFinished(): boolean } | null = null;
+function mapchooserState(): { running: boolean; finished: boolean } {
+  if (mapchooser === null) return { running: false, finished: false };
+  try {
+    return { running: mapchooser.isVoteInProgress(), finished: mapchooser.hasEndOfMapVoteFinished() };
+  } catch (e) { logErr(e); return { running: false, finished: false }; }
+}
 
 /** Connected non-bot player count (bots are skipped everywhere in RTV). */
 function playerCount(): number {
@@ -209,16 +220,55 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
   return { options, entries };
 }
 
+/** Open a ballot over `options`. `runoff` is 0 for the first vote, then 1, 2, ... for each runoff. */
+function runBallot(options: string[], entries: Map<string, MapEntry>, runoff: number): boolean {
+  const sourceMap = Server.mapName;
+  voteMap = sourceMap;
+  // Suppress the core's own announcement for the duration of this start (see `suppressVoteLine`)
+  // and print the ballot properly below, one option per line. The runoff question keeps the
+  // "RockTheVote" prefix the suppression matches on.
+  suppressCoreVoteLine = true;
+  const started = Vote.start({
+    question: runoff === 0 ? "RockTheVote" : "RockTheVote Runoff",
+    options,
+    duration: config.getInt("rtv_vote_duration"),
+    showLiveTally: config.getBool("rtv_show_tally"),
+    onEnd: (result) => finishVote(result, options, entries, runoff, sourceMap),
+  });
+  suppressCoreVoteLine = false;
+  if (started === false) return false;
+  if (runoff > 0) Chat.toAll(Translations.translate(-1, "Rtv Runoff", runoff));
+  announceBallot(options);
+  return true;
+}
+
 /** Apply the vote's result: map the winning index back to its display string, then either keep
- *  the map (tie / no votes / "Don't Change") or stage the winner for the next round boundary. */
-function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>): void {
-  voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — a tie /
+ *  the map (no votes / "Don't Change"), run a runoff between the tied leaders, or stage the
+ *  winner for the next round boundary. */
+function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>, runoff = 0, sourceMap = Server.mapName): void {
+  voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — no votes /
                          // "Don't Change" / invalid winner leaves RTV open to re-accumulate (SM parity)
+  if (Server.mapName !== sourceMap) return; // the map changed under the ballot — its result is stale
+
+  // A tie between two or more options goes to a runoff of just those options, again and again
+  // until one wins. It ends when one option leads, or when nobody votes (the map stays).
+  if (result.winner === null && result.total > 0 && config.getBool("rtv_runoff")) {
+    const best = Math.max(...result.counts);
+    const tied = options.filter((_, i) => result.counts[i] === best);
+    if (tied.length >= 2) {
+      voteRunning = true;
+      if (runBallot(tied, entries, runoff + 1)) {
+        console.log("[rockthevote] tie — runoff " + (runoff + 1) + " options=" + JSON.stringify(tied));
+        return;
+      }
+      voteRunning = false;
+    }
+  }
 
   const chosen = result.winner === null ? null : options[result.winner];
   if (chosen === null || chosen === DONT_CHANGE) {
     // Broadcast — no single recipient, resolves at the server default language.
-    Chat.toAll(Translations.translate(-1, chosen === null ? "Rtv Vote Tied" : "Rtv Dont Change Won"));
+    Chat.toAll(Translations.translate(-1, chosen !== null ? "Rtv Dont Change Won" : result.total === 0 ? "Rtv No Votes" : "Rtv Vote Tied"));
     return;
   }
 
@@ -239,9 +289,16 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
 /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
  *  Returns true if the request was accepted (the lock claimed); false if a vote is already active. */
 function startVote(force: boolean): boolean {
-  if (voteRunning || Vote.isActive()) return false;
+  // Also closed once the end-of-map vote has chosen: a forced RTV would veto that winner.
+  const endVote = mapchooserState();
+  if (voteRunning || Vote.isActive() || endVote.running || endVote.finished) return false;
+  voteMap = Server.mapName;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
+  const claimMap = voteMap;
   buildBallot().then(ballot => {
+    // The map changed while the ballot was built: this request belonged to the old map. Release
+    // the lock only if it is still ours (a newer request on the new map may hold it).
+    if (Server.mapName !== claimMap) { if (voteMap === claimMap) voteRunning = false; return; }
     if (ballot === null) {
       Chat.toAll(Translations.translate(-1, "Rtv No Maps Available"));
       voteRunning = false;      // release — nothing started
@@ -250,18 +307,8 @@ function startVote(force: boolean): boolean {
     }
     rtvVoters.clear();
     const { options, entries } = ballot;
-    // Suppress the core's own announcement for the duration of this start (see `suppressVoteLine`)
-    // and print the ballot properly below, one option per line.
-    suppressCoreVoteLine = true;
-    Vote.start({
-      question: "RockTheVote",
-      options,
-      duration: config.getInt("rtv_vote_duration"),
-      showLiveTally: config.getBool("rtv_show_tally"),
-      onEnd: (result) => finishVote(result, options, entries),
-    });
-    suppressCoreVoteLine = false;
-    announceBallot(options);
+    // Another vote may have taken the slot while the ballot was built: release the lock then.
+    if (!runBallot(options, entries, 0)) voteRunning = false;
     console.log("[rockthevote] startVote force=" + force + " options=" + JSON.stringify(options));
   }).catch(e => { voteRunning = false; logErr(e); });   // release the lock on a build error too
   return true;
@@ -273,6 +320,12 @@ function requestRtv(slot: number): void {
   pruneVoters();
   if (voteRunning || votedThisMap) {
     Chat.toSlot(slot, Translations.translate(slot, voteRunning ? "Rtv Vote Already Running" : "Rtv Vote Already Happened"));
+    return;
+  }
+  // SM parity: RTV yields to the end-of-map vote while it runs, and closes once it has chosen.
+  const endVote = mapchooserState();
+  if (endVote.running || endVote.finished) {
+    Chat.toSlot(slot, Translations.translate(slot, endVote.running ? "Rtv Vote Already Running" : "Rtv Map Vote Finished"));
     return;
   }
   // rtv_initialdelay — refuse player RTV during a map's opening window (SM parity; sm_forcertv bypasses it).
@@ -316,10 +369,14 @@ function pollTick(): void {
   frameCounter = 0;
   const m = Server.mapName;
   if (m && m !== currentMap) { // map changed — reset all per-map RTV state
+    // An old map's ballot would keep eating typed numbers. A ballot already opened on THIS map
+    // (forced right after load, or in the ~1 s before this poll noticed the change) is kept.
+    const keepBallot = voteRunning && voteMap === m;
+    if (!keepBallot && Vote.isActive()) Vote.cancel();
     currentMap = m;
     mapStartMs = Date.now();   // restart the rtv_initialdelay window for the new map
     rtvVoters.clear();
-    voteRunning = false;
+    voteRunning = keepBallot;
     votedThisMap = false;
     pendingMap = null;
     pendingMapSource = "";
@@ -347,6 +404,14 @@ export async function OnPluginStart(): Promise<void> {
   watchOptional("@s2script/nextmap", (nextmap, scope) => {
     scope.own(nextmap.on("OnAutoMapChange", ({ currentMap: map }) =>
       pendingMapSource === map ? HookResult.Handled : HookResult.Continue));
+  });
+
+  // The end-of-map vote waits while our vote runs or our winner is queued.
+  watchOptional("@s2script/mapchooser", (service, scope) => {
+    mapchooser = service;
+    scope.own({ dispose() { mapchooser = null; } });
+    scope.own(service.on("OnMapVoteStart", () =>
+      voteRunning || pendingMap !== null ? HookResult.Handled : HookResult.Continue));
   });
 
   // Fill the renderer seam @s2script/votes leaves open. `show` is called on every cast and once a

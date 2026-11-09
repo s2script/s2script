@@ -1,0 +1,63 @@
+{
+  "name": "@s2script/mapchooser",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "types": "api.d.ts",
+  "s2script": {
+    "publishes": {
+      "@s2script/mapchooser": "1.0.0"
+    },
+    "optionalPluginDependencies": {
+      "@s2script/nextmap": "^1.1.0"
+    },
+    "interfaceProtocol": 2,
+    "config": {
+      "mapvote_endvote": {
+        "type": "bool",
+        "default": true,
+        "description": "Run the end-of-map vote automatically (SM sm_mapvote_endvote). sm_mapvote still works when this is off."
+      },
+      "mapvote_start": {
+        "type": "float",
+        "default": 2.0,
+        "description": "Minutes before mp_timelimit runs out to start the vote (SM sm_mapvote_start). Never later than the vote duration plus 10 seconds, so the vote closes before the map ends."
+      },
+      "mapvote_startround": {
+        "type": "int",
+        "default": 2,
+        "description": "Rounds before mp_maxrounds is reached to start the vote (SM sm_mapvote_startround). At least 1, so the vote closes before the last round ends."
+      },
+      "mapvote_include": {
+        "type": "int",
+        "default": 5,
+        "description": "Maps on the ballot: nominations first, then random maplist.txt maps (SM sm_mapvote_include; capped at 8 with Extend, 9 without)."
+      },
+      "mapvote_exclude": {
+        "type": "int",
+        "default": 5,
+        "description": "Recently played maps left out of the random fill (SM sm_mapvote_exclude). Nominated maps are always listed."
+      },
+      "mapvote_extend": {
+        "type": "int",
+        "default": 1,
+        "description": "How many times per map the vote offers Extend Map; 0 removes the option (SM sm_mapvote_extend)."
+      },
+      "extendmap_timestep": {
+        "type": "int",
+        "default": 15,
+        "description": "Minutes added to mp_timelimit when Extend wins (SM sm_extendmap_timestep)."
+      },
+      "extendmap_roundstep": {
+        "type": "int",
+        "default": 5,
+        "description": "Rounds added to mp_maxrounds when Extend wins (SM sm_extendmap_roundstep)."
+      },
+      "mapvote_voteduration": {
+        "type": "int",
+        "default": 20,
+        "description": "Seconds the vote stays open (SM sm_mapvote_voteduration)."
+      }
+    }
+  }
+}
