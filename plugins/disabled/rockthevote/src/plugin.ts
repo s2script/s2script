@@ -42,6 +42,16 @@ let mapStartMs = Date.now(); // when the current map began — the rtv_initialde
 
 const logErr = (e: unknown) => console.log("[rockthevote] error: " + e);
 
+/** The end-of-map vote's state, while @s2script/mapchooser is loaded. Each plugin's vote lock is
+ *  its own, so without this the two ballots could run at once and split every typed number. */
+let mapchooser: { isVoteInProgress(): boolean; hasEndOfMapVoteFinished(): boolean } | null = null;
+function mapchooserState(): { running: boolean; finished: boolean } {
+  if (mapchooser === null) return { running: false, finished: false };
+  try {
+    return { running: mapchooser.isVoteInProgress(), finished: mapchooser.hasEndOfMapVoteFinished() };
+  } catch (e) { logErr(e); return { running: false, finished: false }; }
+}
+
 /** Connected non-bot player count (bots are skipped everywhere in RTV). */
 function playerCount(): number {
   return Clients.all().filter(c => !c.isBot).length;
@@ -239,7 +249,9 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
 /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
  *  Returns true if the request was accepted (the lock claimed); false if a vote is already active. */
 function startVote(force: boolean): boolean {
-  if (voteRunning || Vote.isActive()) return false;
+  // Also closed once the end-of-map vote has chosen: a forced RTV would veto that winner.
+  const endVote = mapchooserState();
+  if (voteRunning || Vote.isActive() || endVote.running || endVote.finished) return false;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
   buildBallot().then(ballot => {
     if (ballot === null) {
@@ -273,6 +285,12 @@ function requestRtv(slot: number): void {
   pruneVoters();
   if (voteRunning || votedThisMap) {
     Chat.toSlot(slot, Translations.translate(slot, voteRunning ? "Rtv Vote Already Running" : "Rtv Vote Already Happened"));
+    return;
+  }
+  // SM parity: RTV yields to the end-of-map vote while it runs, and closes once it has chosen.
+  const endVote = mapchooserState();
+  if (endVote.running || endVote.finished) {
+    Chat.toSlot(slot, Translations.translate(slot, endVote.running ? "Rtv Vote Already Running" : "Rtv Map Vote Finished"));
     return;
   }
   // rtv_initialdelay — refuse player RTV during a map's opening window (SM parity; sm_forcertv bypasses it).
@@ -347,6 +365,14 @@ export async function OnPluginStart(): Promise<void> {
   watchOptional("@s2script/nextmap", (nextmap, scope) => {
     scope.own(nextmap.on("OnAutoMapChange", ({ currentMap: map }) =>
       pendingMapSource === map ? HookResult.Handled : HookResult.Continue));
+  });
+
+  // The end-of-map vote waits while our vote runs or our winner is queued.
+  watchOptional("@s2script/mapchooser", (service, scope) => {
+    mapchooser = service;
+    scope.own({ dispose() { mapchooser = null; } });
+    scope.own(service.on("OnMapVoteStart", () =>
+      voteRunning || pendingMap !== null ? HookResult.Handled : HookResult.Continue));
   });
 
   // Fill the renderer seam @s2script/votes leaves open. `show` is called on every cast and once a

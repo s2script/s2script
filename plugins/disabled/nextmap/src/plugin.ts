@@ -18,6 +18,8 @@ let readyChange: (() => void) | null = null;
 let matchEnded = false;
 let mapChanges: TypedPublishHandle<Contract>;
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
+let deferred = false; // an OnAutoMapChange consumer deferred the last attempt — retry, quietly
+let announced = "";    // the map the last "Changing to" line named, so a retry only speaks up for a new target
 let failNotified = false; // debounces the misconfiguration log so a persistent failure doesn't spam every tick
 
 const logErr = (e: unknown) => console.log("[nextmap] error: " + e);
@@ -69,6 +71,31 @@ function isValidEntry(e: MapEntry): boolean {
   return /^[A-Za-z0-9_]+$/.test(e.name) && (e.workshopId === null || /^[0-9]+$/.test(e.workshopId));
 }
 
+/** Resolve a map name for an override: maplist.txt first (keeps a workshop id), then an installed
+ *  map. Null when unknown or when the entry would not be safe to hand to the console. */
+function resolveEntry(map: string): MapEntry | null {
+  const entry = loadPool().find(e => e.name === map) ?? (Server.isMapValid(map) ? { name: map, workshopId: null } : null);
+  return entry !== null && isValidEntry(entry) ? entry : null;
+}
+
+/** Whether the map's time or round limit is (still) reached. An Extend raises the limit, which
+ *  cancels a change already counting down. */
+function limitReached(): boolean {
+  // Once the match is over there are no more rounds to extend into: the change must go ahead.
+  if (matchEnded) return true;
+  const tl = parseFloat(Server.getCvar("mp_timelimit"));
+  if (config.getBool("nextmap_use_timelimit") && tl > 0 && Server.gameTime >= tl * 60) return true;
+  const max = parseInt(Server.getCvar("mp_maxrounds"), 10);
+  return max > 0 && roundsPlayed >= max;
+}
+
+function announce(name: string, secs: number, waitForRound: boolean): void {
+  if (name === announced) return;
+  announced = name;
+  // Broadcast to everyone — no single recipient, so this resolves at the server default language.
+  Chat.toAll(Translations.translate(-1, waitForRound ? "Changing After Round" : "Changing To", name, secs));
+}
+
 /** Announce and count down; rotation optionally waits for a round boundary. Startup bypasses it. */
 function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMap), startup = false): void {
   if (changing) return;
@@ -89,19 +116,38 @@ function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMa
   failNotified = false; // a valid candidate — clear so a future failure re-logs
   const waitForRound = !startup && config.getBool("nextmap_wait_for_round");
   const secs = config.getInt("nextmap_change_delay");
-  console.log("[nextmap] changing to " + next.name + " after " + secs + "s" + (waitForRound ? " at the next round boundary" : ""));
+  const retry = deferred;
+  deferred = false;
+  console.log("[nextmap] changing to " + next.name + " after " + secs + "s" + (waitForRound ? " at the next round boundary" : "") + (retry ? " (retry)" : ""));
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
   // our delay fires, Server.mapName will have moved on and the stale changelevel is skipped below.
-  // Broadcast to everyone — no single recipient, so this resolves at the server default language.
-  Chat.toAll(Translations.translate(-1, waitForRound ? "Changing After Round" : "Changing To", next.name, secs));
+  // A retry after a deferral repeats nothing unless the target changed (announce dedupes by name).
+  announce(next.name, secs, waitForRound);
   const apply = () => {
     if (Server.mapName !== scheduledMap) {
       console.log("[nextmap] scheduled change to " + next.name + " skipped — map already changed to " + Server.mapName);
       return;
     }
+    // The limit was raised during the countdown (an Extend won): this change no longer applies.
+    if (!startup && !limitReached()) {
+      changing = false;
+      deferred = false;
+      announced = "";
+      console.log("[nextmap] scheduled change to " + next.name + " cancelled — the map limit was extended");
+      return;
+    }
+    // An override set during the countdown (a vote that closed after the limit was hit) wins.
+    const target = startup ? next : (override ?? next);
+    if (target.name !== next.name) announce(target.name, 0, false);
     // A vote winner takes priority even if its boundary handler ran first and queued a command.
-    if (!startup && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: next.name }) >= HookResult.Handled) return;
-    Server.command(next.workshopId ? "host_workshop_map " + next.workshopId : "changelevel " + next.name);
+    // Handled can also mean "not yet" (an end-of-map vote still open), so the change is re-armed:
+    // pollTick retries once the limit is still reached, and a map change ends it.
+    if (!startup && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: target.name }) >= HookResult.Handled) {
+      changing = false;
+      deferred = true;
+      return;
+    }
+    Server.command(target.workshopId ? "host_workshop_map " + target.workshopId : "changelevel " + target.name);
   };
   delay(secs * 1000).then(() => {
     if (Server.mapName !== scheduledMap || !waitForRound || matchEnded) apply();
@@ -137,7 +183,7 @@ function pollTick(): void {
   if (m !== currentMap) {                 // map changed — reset + seed nextlevel
     const startup = currentMap === ""; // consumed before scheduling; later maps keep normal rotation
     currentMap = m; roundsPlayed = 0; changing = false; override = null; failNotified = false;
-    readyChange = null; matchEnded = false;
+    readyChange = null; matchEnded = false; deferred = false; announced = "";
     const next = rotationNext(m); if (next && isValidEntry(next)) Server.setCvar("nextlevel", next.name);
     if (startup && config.getBool("nextmap_random_startup")) changeToStartupMap();
     return;
@@ -146,10 +192,25 @@ function pollTick(): void {
     const tl = parseFloat(Server.getCvar("mp_timelimit"));   // float cvar in CS2 — parseFloat for exact SM parity
     if (tl > 0 && Server.gameTime >= tl * 60) changeToNext();
   }
+  // A deferred change: no further round_end may come (the match is over), so retry here. If the
+  // limit was raised meanwhile (Extend), the deferral is over and the next change is a fresh one.
+  if (!changing && deferred) {
+    if (limitReached()) changeToNext();
+    else { deferred = false; announced = ""; }
+  }
 }
 
 export function OnPluginStart(): void {
-  mapChanges = publish("@s2script/nextmap", {});
+  mapChanges = publish("@s2script/nextmap", {
+    // The same override sm_setnextmap sets; mapchooser calls it with its vote's winner.
+    setNextMap(map: string): boolean {
+      const entry = resolveEntry(map);
+      if (entry === null) return false;
+      override = entry;
+      Server.setCvar("nextlevel", entry.name);
+      return true;
+    },
+  });
   translations.load("nextmap", "common");
 
   loadPool();   // eager: auto-generate maplist.txt now (if absent) so the operator can edit the

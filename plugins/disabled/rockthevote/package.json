@@ -5,7 +5,8 @@
   "main": "src/plugin.ts",
   "s2script": {
     "optionalPluginDependencies": {
-      "@s2script/nextmap": "^1.0.0"
+      "@s2script/nextmap": "^1.0.0",
+      "@s2script/mapchooser": "^1.0.0"
     },
     "interfaceProtocol": 2,
     "config": {
