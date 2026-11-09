@@ -1,5 +1,19 @@
 # @s2script/cli
 
+## 0.37.0
+
+### Minor Changes
+
+- bd0ef20: Reach the server's Steam session and download Steam Workshop items. `@s2script/sdk/steam` adds
+  `Steam` (`isAvailable`, `isLoggedOn`, `isSecure`, `steamId`, `publicIp`, `onConnected`,
+  `onDisconnected`, `onConnectFailure`) and `Workshop` (`download` → `Promise<{ id, result, ok }>`,
+  `request`, `state`, `isInstalled`, `downloadProgress`, `installInfo`, `suspendDownloads`,
+  `onDownloadResult`, `onItemInstalled`), plus the `WorkshopItemState` flags and common `SteamResult`
+  codes. Ids are decimal strings (a safe integer or `bigint` is accepted). This covers the workshop
+  half of ModSharp's `ISteamApi` and SourceMod's SteamWorks extension.
+- 307de91: Add `Server.commandEx(cmd)`, which runs a server console command and resolves with the console output it printed (SourceMod `ServerCommandEx`). `sm_rcon` in basecommands now uses it to send that output back to the admin who ran the command.
+- 6056112: Add SourceMod's admin-activity layer as `Activity` on `@s2script/sdk`: `show`/`showT` (ShowActivity2, governed by the `sm_show_activity` cvar), `log` (LogAction), `describe` (`%L`), `targetName`, `tag` and `flags`. It is engine-generic, so it moved out of `@s2script/cs2`; `@s2script/cs2`'s `Activity` is now a deprecated re-export of the same object, and `formatSource` reads `sm_show_activity` instead of always using the default. Adds `Server.getCvarFlags(name)` (SourceMod `GetConVarFlags`; `-1` if absent).
+
 ## 0.36.0
 
 ### Minor Changes
