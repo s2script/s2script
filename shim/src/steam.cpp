@@ -35,7 +35,10 @@ bool (*s_onOwnerThread)() = nullptr;
 bool s_initTried = false;
 
 // The interfaces are owned by Steam and live for one game-server session (one HSteamUser). They
-// are re-requested whenever the engine's session handle changes, and dropped when it is 0.
+// are re-requested whenever the engine's session handle changes, and dropped when it is 0. Guarded by
+// s_ifaceMu: the engine ops read them on the game thread, and nothing promises a Steam callback runs
+// there too.
+std::mutex s_ifaceMu;
 HSteamUser s_user = 0;
 ISteamGameServer* s_server = nullptr;
 ISteamUGC* s_ugc = nullptr;
@@ -61,8 +64,8 @@ void* OpenLoadedSteamApi() {
     return path.empty() ? nullptr : dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD);
 }
 
-// Resolve (or drop) the interfaces for the engine's current game-server session.
-void Refresh() {
+// Resolve (or drop) the interfaces for the engine's current game-server session. Caller holds s_ifaceMu.
+void RefreshLocked() {
     if (!s_getUser || !s_findOrCreate) return;
     const HSteamUser user = s_getUser();
     if (user == s_user && (s_ugc || user == 0)) return;
@@ -84,8 +87,10 @@ void Refresh() {
     }
 }
 
-ISteamUGC* Ugc() { Refresh(); return s_ugc; }
-ISteamGameServer* Server() { Refresh(); return s_server; }
+// The returned pointer stays valid for the session: Steam owns the object, and only a new session
+// (a different HSteamUser) replaces it.
+ISteamUGC* Ugc() { std::lock_guard<std::mutex> lock(s_ifaceMu); RefreshLocked(); return s_ugc; }
+ISteamGameServer* Server() { std::lock_guard<std::mutex> lock(s_ifaceMu); RefreshLocked(); return s_server; }
 
 // --- callbacks -----------------------------------------------------------------------------------
 
@@ -134,7 +139,6 @@ private:
 };
 
 GameServerCallback<SteamServersConnected_t> s_cbConnected([](const SteamServersConnected_t&) {
-    Refresh();
     Deliver(S2_STEAM_EVENT_CONNECTED, 0, 0, 0);
 });
 GameServerCallback<SteamServersDisconnected_t> s_cbDisconnected([](const SteamServersDisconnected_t& p) {
@@ -200,9 +204,12 @@ void S2Steam_Shutdown() {
     s_cbDownload.Unregister();
     s_cbInstalled.Unregister();
     s_onOwnerThread = nullptr;
-    s_user = 0;
-    s_server = nullptr;
-    s_ugc = nullptr;
+    {
+        std::lock_guard<std::mutex> iface(s_ifaceMu);
+        s_user = 0;
+        s_server = nullptr;
+        s_ugc = nullptr;
+    }
     // A later Load (Metamod reload of this module) resolves and registers again.
     s_initTried = false;
     std::lock_guard<std::mutex> lock(s_pendingMu);
