@@ -25,6 +25,7 @@ async function loadRtv({ runoff = true, pollFirst = true } = {}) {
     watchOptional() {},
     translations: { load() {} }, Translations: { translate: (_slot, key, ...args) => [key, ...args].join('|') },
     Chat: { toAll: text => chat.push(text) }, HookResult: { Handled: 2, Continue: 0 }, ADMFLAG: { CHANGEMAP: 8 },
+    Activity: { showT: (cmd, key) => cmd.replyT(key), show() {}, log() {}, describe: () => '' },
     Vote: {
       isActive: () => active !== null, registerTallyRenderer() {},
       start: options => { if (active || lock.refuse) return false; active = options; votes.push(options); return true; },
@@ -152,7 +153,7 @@ test('a ballot the vote slot refuses releases the RTV lock', async () => {
   host.lock.refuse = false;
   host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
   await new Promise(setImmediate);
-  assert.equal(reply, 'Rtv Forced');
+  assert.equal(reply, 'Initiated Vote Map');
   assert.ok(host.active, 'a later RTV can start');
 });
 
@@ -167,6 +168,6 @@ test('an RTV requested on the old map does not open after a map change', async (
   let reply;
   host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
   await new Promise(setImmediate);
-  assert.equal(reply, 'Rtv Forced');
+  assert.equal(reply, 'Initiated Vote Map');
   assert.ok(host.active, 'the new map can still vote');
 });
