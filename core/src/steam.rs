@@ -122,7 +122,18 @@ pub(crate) fn sweep() {
     crate::v8host::refresh_detour();
 }
 
+thread_local! {
+    /// True while `deliver_queued` runs. A listener can make Steam report an event on this thread
+    /// (an already-current item's DownloadItemResult inside `Workshop.download`); that nested
+    /// dispatch only queues, and the running drain reaches it after the current head.
+    static DRAINING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn deliver_queued() {
+    if DRAINING.with(|d| d.replace(true)) { return; }
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { DRAINING.with(|d| d.set(false)); } }
+    let _reset = Reset;
     loop {
         let Some(head) = QUEUE.with(|q| q.borrow().front().copied()) else { return };
         match deliver(head) {
@@ -501,6 +512,29 @@ mod tests {
         assert_eq!(js("st6", "out.join()"), r#"{"id":"77","result":1,"ok":true}"#);
         assert!(WAITERS.with(|w| w.borrow().is_empty()));
         assert_eq!(pending(), 0);
+        shutdown();
+    }
+
+    /// A listener whose download is answered inside DownloadItem: the nested result is queued
+    /// behind the running one, so no listener sees an event twice and nothing is dropped.
+    #[test]
+    fn a_result_reported_from_inside_a_listener_is_queued_behind_it() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(ops()));
+        create_plugin_context("st7");
+        eval_in_context_string("st7", r#"globalThis.seen = []; globalThis.out = [];
+            var W = __s2pkg_steam.Workshop;
+            W.onDownloadResult(function (e) {
+                seen.push(e.id + ":" + e.result);
+                if (e.id === "5") W.download(77).then(function (r) { out.push(r.id + ":" + r.result); });
+            }); "" "#);
+        dispatch_event(DOWNLOAD, 5, 2, 730);
+        dispatch_event(DOWNLOAD, 6, 1, 730);
+        sweep();
+        assert_eq!(js("st7", "seen.join()"), "5:2,77:1,6:1");
+        assert_eq!(js("st7", "out.join()"), "77:1");
+        assert_eq!(pending(), 0);
+        assert!(WAITERS.with(|w| w.borrow().is_empty()));
         shutdown();
     }
 
