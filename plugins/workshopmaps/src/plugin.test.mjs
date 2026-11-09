@@ -122,6 +122,18 @@ test('a timed-out item is asked for again without adding another waiter', async 
   assert.deepEqual(host.requests, ['1']);
 });
 
+test('a reconnect asks again for the download the pass is waiting on', async () => {
+  const host = loadPlugin({ maplist: 'a:1\nb:2' });
+  await host.start();
+  assert.deepEqual(host.requests, ['1']);
+  host.steam.loggedOn = false;          // the session drops mid-download, and its result is lost
+  await host.connect();
+  assert.deepEqual(host.asks, ['1'], 'the waiting item is requested again on reconnect');
+  assert.deepEqual(host.requests, ['1'], 'no second waiter for it');
+  await host.finish('1');               // the re-request's result settles the original wait
+  assert.deepEqual(host.requests, ['1', '2'], 'the pass moves on without sitting out the timeout');
+});
+
 test('sm_workshop_sync reports the list and starts a pass', async () => {
   const host = loadPlugin({ maplist: 'a:1\nb:2', installed: ['1'], loggedOn: false });
   await host.start();

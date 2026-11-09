@@ -89,7 +89,12 @@ async function sync(reason: string): Promise<void> {
 const logErr = (e: unknown) => console.log("[workshopmaps] error: " + e);
 
 export function OnPluginStart(): void {
-  Steam.onConnected(() => { sync("Steam connected").catch(logErr); });
+  Steam.onConnected(() => {
+    // A dropped session can lose an outstanding download's result. Ask again for every item still
+    // waiting, so the result arrives and the running pass moves on instead of sitting out its timeout.
+    for (const id of inflight.keys()) Workshop.request(id);
+    sync("Steam connected").catch(logErr);
+  });
   // Never gate the load on downloads that can take minutes.
   void sync("plugin start").catch(logErr);
 
