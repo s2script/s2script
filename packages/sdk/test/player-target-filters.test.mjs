@@ -13,20 +13,31 @@ const PLAYERS = {
   2: { team: 2, alive: true, bot: true },    // live T bot
   3: { team: 2, alive: false, bot: false },  // dead T
   4: { team: 1, alive: false, bot: false },  // spectator
+  5: { team: 3, alive: true, bot: true },    // live CT bot, taken over by slot 1
 };
+const TAKEOVER = { 1: 5 };                   // controller slot -> the bot slot whose body it plays
+const OFF = { m_bControllingBot: 16, m_hPawn: 24, m_iHealth: 32 };
 
 function load({ canTarget } = {}) {
   const at = (index) => PLAYERS[index - 1];
   function EntityRef(index, id) { this.index = index; this.id = id; }
   EntityRef.prototype.isValid = function () { return true; };
   EntityRef.prototype.readUInt8 = function () { return at(this.index)?.team ?? 0; };     // m_iTeamNum
-  EntityRef.prototype.readBool = function () { return at(this.index)?.alive ?? false; }; // m_bPawnIsAlive
-  EntityRef.prototype.readInt32 = function () { return 200 + this.index; };             // m_hPlayerPawn
-  EntityRef.prototype.readHandle = function () { return null; };
+  EntityRef.prototype.readBool = function (off) {                                     // m_bPawnIsAlive / m_bControllingBot
+    return off === OFF.m_bControllingBot ? (this.index - 1) in TAKEOVER : at(this.index)?.alive ?? false;
+  };
+  EntityRef.prototype.readInt32 = function (off) {
+    if (off === OFF.m_iHealth) return PLAYERS[this.index - 201]?.alive ? 100 : 0;      // a pawn's health
+    return 200 + this.index;                                                          // m_hPlayerPawn
+  };
+  EntityRef.prototype.readHandle = function (off) {                                    // m_hPawn during takeover
+    const bot = TAKEOVER[this.index - 1];
+    return off === OFF.m_hPawn && bot !== undefined ? new EntityRef(201 + bot, 0) : null;
+  };
   EntityRef.prototype.readString = function () { return ""; };
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/events" ? {} : null),
-    __s2_schema_offset: () => 8,
+    __s2_schema_offset: (_cls, field) => OFF[field] ?? 8,
     __s2_ent_id_for_index: () => 0,
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
     __s2_client_valid: (slot) => slot in PLAYERS,
@@ -49,23 +60,23 @@ const slots = (list) => [...list].map((p) => p.slot).sort((a, b) => a - b);
 
 test("generic group filters select from connected players", () => {
   const { Player } = load().__s2pkg_cs2;
-  assert.deepEqual(slots(Player.target("@all", -1)), [0, 1, 2, 3, 4]);
-  assert.deepEqual(slots(Player.target("@alive", -1)), [0, 2]);
-  assert.deepEqual(slots(Player.target("@dead", -1)), [1, 3, 4], "SM @dead includes spectators");
-  assert.deepEqual(slots(Player.target("@bots", -1)), [2]);
+  assert.deepEqual(slots(Player.target("@all", -1)), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(slots(Player.target("@alive", -1)), [0, 1, 2, 5], "a bot-takeover player is alive");
+  assert.deepEqual(slots(Player.target("@dead", -1)), [3, 4], "SM @dead includes spectators");
+  assert.deepEqual(slots(Player.target("@bots", -1)), [2, 5]);
   assert.deepEqual(slots(Player.target("@humans", -1)), [0, 1, 3, 4]);
 });
 
 test("team filters select by CS2 team number", () => {
   const { Player } = load().__s2pkg_cs2;
-  assert.deepEqual(slots(Player.target("@ct", -1)), [0, 1]);
+  assert.deepEqual(slots(Player.target("@ct", -1)), [0, 1, 5]);
   assert.deepEqual(slots(Player.target("@t", -1)), [2, 3]);
   assert.deepEqual(slots(Player.target("@spec", -1)), [4]);
 });
 
 test("caller-relative filters need a player caller", () => {
   const { Player } = load().__s2pkg_cs2;
-  assert.deepEqual(slots(Player.target("@!me", 0)), [1, 2, 3, 4]);
+  assert.deepEqual(slots(Player.target("@!me", 0)), [1, 2, 3, 4, 5]);
   assert.deepEqual(slots(Player.target("@!me", -1)), [], "console has no 'me'");
   assert.deepEqual(slots(Player.target("@aim", -1)), [], "console has no crosshair");
   assert.deepEqual(slots(Player.target("@CT", -1)), [], "filters are case-sensitive, as in SourceMod");
@@ -85,12 +96,24 @@ test("@aim resolves the hit entity against each player's own pawn", () => {
   assert.deepEqual(slots(Player.target("@aim", 0)), []);
   hit = { didHit: true, entity: { index: 201, id: 0 } };                  // the caller's own pawn
   assert.deepEqual(slots(Player.target("@aim", 0)), [], "@aim never targets the caller");
+  hit = { didHit: true, entity: { index: 206, id: 0 } };                  // the taken-over bot's body
+  assert.deepEqual(slots(Player.target("@aim", 0)), [1], "the player playing that body, not the bot");
+  hit = { didHit: true, entity: { index: 204, id: 0 } };
+  assert.deepEqual(slots(Player.target("@aim", 3)), [], "a dead caller has no crosshair in the world");
+});
+
+test("@aim traces from the body the caller is playing", () => {
+  const { Player, Pawn } = load().__s2pkg_cs2;
+  const from = [];
+  Pawn.prototype.aimTrace = function () { from.push(this.ref.index); return { didHit: true, entity: { index: 201, id: 0 } }; };
+  assert.deepEqual(slots(Player.target("@aim", 1)), [0]);
+  assert.deepEqual(from, [206], "slot 1 aims from the bot pawn it controls, not its dead own pawn");
 });
 
 test("filterImmunity applies to group filters", () => {
   const { Player } = load({ canTarget: (caller, target) => target !== 1 }).__s2pkg_cs2;
-  assert.deepEqual(slots(Player.target("@ct", 0, true)), [0], "immune slot 1 dropped");
-  assert.deepEqual(slots(Player.target("@ct", 0)), [0, 1], "no filter unless asked");
+  assert.deepEqual(slots(Player.target("@ct", 0, true)), [0, 5], "immune slot 1 dropped");
+  assert.deepEqual(slots(Player.target("@ct", 0)), [0, 1, 5], "no filter unless asked");
 });
 
 test("every filter publishes a group label for Activity.targetName", () => {

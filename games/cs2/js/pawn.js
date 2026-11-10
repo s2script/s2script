@@ -366,7 +366,21 @@
   // for an activity line (SM's tn_is_ml target_name): the phrase key is translated when the
   // operator's phrase files define it, else the English fallback is used. @ct/@t/@spec are CS2's
   // team numbers (Spectator=1/T=2/CT=3), which is why this table lives in the game package.
-  function isAlive(p) { return p.pawnIsAlive === true; }
+  // The body a player is playing as right now: the bot's pawn during a bot takeover (m_hPawn),
+  // else their own (m_hPlayerPawn, which stays their dead pawn for the whole takeover).
+  function activePawn(p) {
+    if (p.controllingBot === true) return p.controlledBotPawn;
+    return Pawn.forSlot(p.slot);
+  }
+  // Alive = their own pawn is alive, or they are playing a living bot. m_bPawnIsAlive alone would
+  // count a takeover player as dead while they are still in the round.
+  function isAlive(p) {
+    if (p.pawnIsAlive === true) return true;
+    if (p.controllingBot !== true) return false;
+    var bot = p.controlledBotPawn;
+    var hp = bot ? bot.health : null;
+    return typeof hp === "number" && hp > 0;
+  }
   function isBot(p) { return p._client.isBot === true; }
   function onTeam(t) { return function (p) { return p.teamNum === t; }; }
   var TARGET_FILTERS = {
@@ -385,22 +399,28 @@
   for (var fk in TARGET_FILTERS) labels[fk] = { key: TARGET_FILTERS[fk].label, fallback: TARGET_FILTERS[fk].fallback };
   globalThis.__s2_target_labels = Object.freeze(labels);
 
-  // @aim: the connected player whose pawn the caller's crosshair is on (SM's @aim). Matches the
-  // trace's hit entity against each player's own pawn ref rather than reading m_hController off
-  // whatever was hit, so a non-pawn hit can never be misread as a player.
+  // @aim: the connected player whose body the caller's crosshair is on (SM's @aim). Both ends use the
+  // body each player is actually playing (activePawn), so a bot takeover traces from and matches the
+  // bot's pawn; a player playing a bot wins over the bot that owns that body. Matches the hit entity
+  // against those pawn refs rather than reading m_hController off whatever was hit, so a non-pawn hit
+  // can never be misread as a player. A caller with no living body (dead, spectating) has no crosshair
+  // in the world and gets nothing.
   function aimTarget(callerSlot) {
-    var mine = Pawn.forSlot(callerSlot);
-    if (!mine || !globalThis.__s2pkg_trace) return [];
-    var hit = mine.aimTrace();
+    var caller = Player._fromSlotUnchecked(callerSlot);
+    if (!caller || !isAlive(caller) || !globalThis.__s2pkg_trace) return [];
+    var mine = activePawn(caller);
+    var hit = mine ? mine.aimTrace() : null;
     var ent = hit && hit.didHit ? hit.entity : null;
     if (!ent) return [];
-    var conn = Player.allConnected();
+    var conn = Player.allConnected(), owner = null;
     for (var i = 0; i < conn.length; i++) {
       if (conn[i].slot === callerSlot) continue;
-      var pw = Pawn.forSlot(conn[i].slot);
-      if (pw && pw.ref.index === ent.index && pw.ref.id === ent.id) return [conn[i]];
+      var pw = activePawn(conn[i]);
+      if (!pw || pw.ref.index !== ent.index || pw.ref.id !== ent.id) continue;
+      if (conn[i].controllingBot === true) return [conn[i]];
+      if (!owner) owner = conn[i];
     }
-    return [];
+    return owner ? [owner] : [];
   }
 
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
