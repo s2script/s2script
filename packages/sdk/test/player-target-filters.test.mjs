@@ -97,7 +97,7 @@ test("@aim resolves the hit entity against each player's own pawn", () => {
   hit = { didHit: true, entity: { index: 201, id: 0 } };                  // the caller's own pawn
   assert.deepEqual(slots(Player.target("@aim", 0)), [], "@aim never targets the caller");
   hit = { didHit: true, entity: { index: 206, id: 0 } };                  // the taken-over bot's body
-  assert.deepEqual(slots(Player.target("@aim", 0)), [1], "the player playing that body, not the bot");
+  assert.deepEqual(slots(Player.target("@aim", 0)), [5], "the bot that owns the body, whose player.pawn is what was hit");
   hit = { didHit: true, entity: { index: 204, id: 0 } };
   assert.deepEqual(slots(Player.target("@aim", 3)), [], "a dead caller has no crosshair in the world");
 });

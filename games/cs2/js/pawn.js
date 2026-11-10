@@ -399,12 +399,14 @@
   for (var fk in TARGET_FILTERS) labels[fk] = { key: TARGET_FILTERS[fk].label, fallback: TARGET_FILTERS[fk].fallback };
   globalThis.__s2_target_labels = Object.freeze(labels);
 
-  // @aim: the connected player whose body the caller's crosshair is on (SM's @aim). Both ends use the
-  // body each player is actually playing (activePawn), so a bot takeover traces from and matches the
-  // bot's pawn; a player playing a bot wins over the bot that owns that body. Matches the hit entity
-  // against those pawn refs rather than reading m_hController off whatever was hit, so a non-pawn hit
-  // can never be misread as a player. A caller with no living body (dead, spectating) has no crosshair
-  // in the world and gets nothing.
+  // @aim: the connected player whose pawn the caller's crosshair is on (SM's @aim). The trace starts
+  // from the body the caller is playing (activePawn: the bot's pawn during a takeover). The hit is
+  // matched against each player's OWN pawn (m_hPlayerPawn), which is what player.pawn returns, so
+  // the player handed back is the one whose pawn commands (slay, slap, freeze) act on the body that
+  // was hit: a taken-over bot's body resolves to the bot, never to the human whose player.pawn is
+  // still their corpse. Matching the ref (index + host id) rather than reading m_hController off
+  // whatever was hit means a non-pawn hit can never be misread as a player. A caller with no living
+  // body (dead, spectating) has no crosshair in the world and gets nothing.
   function aimTarget(callerSlot) {
     var caller = Player._fromSlotUnchecked(callerSlot);
     if (!caller || !isAlive(caller) || !globalThis.__s2pkg_trace) return [];
@@ -412,15 +414,13 @@
     var hit = mine ? mine.aimTrace() : null;
     var ent = hit && hit.didHit ? hit.entity : null;
     if (!ent) return [];
-    var conn = Player.allConnected(), owner = null;
+    var conn = Player.allConnected();
     for (var i = 0; i < conn.length; i++) {
       if (conn[i].slot === callerSlot) continue;
-      var pw = activePawn(conn[i]);
-      if (!pw || pw.ref.index !== ent.index || pw.ref.id !== ent.id) continue;
-      if (conn[i].controllingBot === true) return [conn[i]];
-      if (!owner) owner = conn[i];
+      var pw = Pawn.forSlot(conn[i].slot);
+      if (pw && pw.ref.index === ent.index && pw.ref.id === ent.id) return [conn[i]];
     }
-    return owner ? [owner] : [];
+    return [];
   }
 
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
