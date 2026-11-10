@@ -361,20 +361,72 @@
     return true;
   };
 
+  // SourceMod multi-target filters (ProcessTargetString's "@" strings). Each filter selects from
+  // the CONNECTED players (pawnless-safe, like SM's in-game set). `label`/`fallback` name the group
+  // for an activity line (SM's tn_is_ml target_name): the phrase key is translated when the
+  // operator's phrase files define it, else the English fallback is used. @ct/@t/@spec are CS2's
+  // team numbers (Spectator=1/T=2/CT=3), which is why this table lives in the game package.
+  function isAlive(p) { return p.pawnIsAlive === true; }
+  function isBot(p) { return p._client.isBot === true; }
+  function onTeam(t) { return function (p) { return p.teamNum === t; }; }
+  var TARGET_FILTERS = {
+    "@all":    { pick: function () { return true; },          label: "Target All Players",       fallback: "all players" },
+    "@alive":  { pick: isAlive,                                 label: "Target All Alive",         fallback: "all alive players" },
+    "@dead":   { pick: function (p) { return !isAlive(p); },  label: "Target All Dead",          fallback: "all dead players" },
+    "@bots":   { pick: isBot,                                   label: "Target All Bots",          fallback: "all bots" },
+    "@humans": { pick: function (p) { return !isBot(p); },    label: "Target All Humans",        fallback: "all humans" },
+    "@!me":    { pick: null, /* caller-relative, below */      label: "Target All But Yourself",  fallback: "all players but yourself" },
+    "@ct":     { pick: onTeam(3),                               label: "Target Counter-Terrorists", fallback: "all Counter-Terrorists" },
+    "@t":      { pick: onTeam(2),                               label: "Target Terrorists",        fallback: "all Terrorists" },
+    "@spec":   { pick: onTeam(1),                               label: "Target Spectators",        fallback: "all spectators" },
+  };
+  // Published for Activity.targetName (core reads it by pattern; the dependency points game -> core).
+  var labels = {};
+  for (var fk in TARGET_FILTERS) labels[fk] = { key: TARGET_FILTERS[fk].label, fallback: TARGET_FILTERS[fk].fallback };
+  globalThis.__s2_target_labels = Object.freeze(labels);
+
+  // @aim: the connected player whose pawn the caller's crosshair is on (SM's @aim). Matches the
+  // trace's hit entity against each player's own pawn ref rather than reading m_hController off
+  // whatever was hit, so a non-pawn hit can never be misread as a player.
+  function aimTarget(callerSlot) {
+    var mine = Pawn.forSlot(callerSlot);
+    if (!mine || !globalThis.__s2pkg_trace) return [];
+    var hit = mine.aimTrace();
+    var ent = hit && hit.didHit ? hit.entity : null;
+    if (!ent) return [];
+    var conn = Player.allConnected();
+    for (var i = 0; i < conn.length; i++) {
+      if (conn[i].slot === callerSlot) continue;
+      var pw = Pawn.forSlot(conn[i].slot);
+      if (pw && pw.ref.index === ent.index && pw.ref.id === ent.id) return [conn[i]];
+    }
+    return [];
+  }
+
   // Player.target(pattern, callerSlot, filterImmunity) -> Player[] — SM target-string resolution.
-  //   "#<userid>" -> that player; "@all" -> allConnected; "@me" -> the caller (empty from console);
+  //   "#<userid>" -> that player; "@me" -> the caller; "@aim" -> who the caller is aiming at;
+  //   "@all"/"@alive"/"@dead"/"@bots"/"@humans"/"@!me"/"@ct"/"@t"/"@spec" -> that group (TARGET_FILTERS);
   //   otherwise a case-insensitive name match (exact wins, else all partials). Empty on no match.
+  //   "@me"/"@!me"/"@aim" need a player caller (empty from the console).
   //   filterImmunity (default false): drop targets the caller can't act on (admin immunity); used by
   //   the destructive base commands. Degrades to no-filter if @s2script/admin isn't loaded.
   Player.target = function (pattern, callerSlot, filterImmunity) {
     if (typeof pattern !== "string" || pattern.length === 0) return [];
+    var hasCaller = typeof callerSlot === "number" && callerSlot >= 0;
     var res;
-    if (pattern === "@all") {
-      res = Player.allConnected();
+    var filter = Object.prototype.hasOwnProperty.call(TARGET_FILTERS, pattern) ? TARGET_FILTERS[pattern] : null;
+    if (pattern === "@!me") {
+      if (!hasCaller) return [];
+      res = Player.allConnected().filter(function (p) { return p.slot !== callerSlot; });
+    } else if (filter) {
+      res = Player.allConnected().filter(filter.pick);
     } else if (pattern === "@me") {
-      if (typeof callerSlot !== "number" || callerSlot < 0) return [];
+      if (!hasCaller) return [];
       var me = Player._fromSlotUnchecked(callerSlot);
       res = me ? [me] : [];
+    } else if (pattern === "@aim") {
+      if (!hasCaller) return [];
+      res = aimTarget(callerSlot);
     } else if (pattern.charAt(0) === "#") {
       var uid = parseInt(pattern.slice(1), 10);
       if (isNaN(uid)) return [];

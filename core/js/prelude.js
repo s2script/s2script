@@ -1933,6 +1933,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return two(d.getMonth() + 1) + "/" + two(d.getDate()) + "/" + d.getFullYear() + " - " +
       two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
   }
+  function __s2_actFilterLabel(pattern) {
+    var labels = globalThis.__s2_target_labels;
+    var p = String(pattern);
+    if (labels && Object.prototype.hasOwnProperty.call(labels, p)) {
+      var l = labels[p];
+      if (l && typeof l.key === "string" && typeof l.fallback === "string") return l;
+    }
+    return p === "@all" ? { key: "Target All Players", fallback: "all players" } : null;
+  }
   var __s2_activity_api = {
     // ShowActivity2's tag: the prefix of every activity line (colour tags expand in chat and are
     // stripped in a console). Mutable, per plugin context.
@@ -1968,18 +1977,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var pid = __s2_current_plugin();
       console.log(globalThis.__s2_colors.consoleLine("L " + __s2_actStamp() + ": " + (pid ? "[" + pid + "] " : "") + String(message)));
     },
-    // The target label for an activity line: one player's name, "all players" for @all, else "N players".
+    // The target label for an activity line (SM's target_name): one player's name; a multi-target
+    // filter's group label ("all alive players", "all Counter-Terrorists"); else "N players". The
+    // filter labels come from the game package (globalThis.__s2_target_labels: pattern ->
+    // {key, fallback}), because which "@" filters exist is a game fact; "@all" is the built-in default.
     targetName: function (pattern, targets) {
       var list = targets || [];
-      if (list.length === 1) {
+      if (list.length === 1 && !__s2_actFilterLabel(pattern)) {
         var c = __s2_actClient(list[0].slot);
         return (c && c.name) ? c.name : String(pattern);
       }
       if (list.length === 0) return String(pattern);
-      var key = pattern === "@all" ? "Target All Players" : "Target Players";
+      var group = __s2_actFilterLabel(pattern);
+      var key = group ? group.key : "Target Players";
       var out = __s2_actTranslate(-1, key, [list.length]);
       if (out !== key) return out;
-      return pattern === "@all" ? "all players" : list.length + " players";
+      return group ? group.fallback : list.length + " players";
     },
   };
   globalThis.__s2pkg_commands = { Commands: __s2_commands, Activity: __s2_activity_api };   // named exports `Commands` + `Activity`

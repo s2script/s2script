@@ -7976,6 +7976,32 @@
         shutdown();
     }
 
+    /// Activity.targetName names a multi-target filter by its group label (SourceMod's tn_is_ml
+    /// target_name), even when the filter matched one player. Which "@" filters exist is a game
+    /// fact, so the labels come from the game package's `__s2_target_labels`; `@all` is built in.
+    #[test]
+    fn activity_target_name_uses_game_filter_labels() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        let name = |pat: &str, n: usize| {
+            let list = (0..n).map(|i| format!("{{slot:{}}}", 40 + i)).collect::<Vec<_>>().join(",");
+            eval_in_context_string("p", &format!("__s2pkg_commands.Activity.targetName('{pat}', [{list}])"))
+        };
+        assert_eq!(name("@all", 3), "all players");
+        assert_eq!(name("@ct", 3), "3 players", "no game label published yet");
+        eval_in_context(
+            "p",
+            "globalThis.__s2_target_labels = { '@ct': { key: 'Target Counter-Terrorists', fallback: 'all Counter-Terrorists' } };",
+        )
+        .unwrap();
+        assert_eq!(name("@ct", 3), "all Counter-Terrorists");
+        assert_eq!(name("@ct", 1), "all Counter-Terrorists", "a group filter keeps its label for one match");
+        assert_eq!(name("@ct", 0), "@ct");
+        assert_eq!(name("bob", 2), "2 players");
+        shutdown();
+    }
+
     /// Translations slice: the pure formatting/lang-code test hooks (`__s2_tr_format`/`__s2_tr_langCode`).
     #[test]
     fn translations_format_and_langcode() {
