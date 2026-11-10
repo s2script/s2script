@@ -171,7 +171,7 @@ test("public policy methods accept canonical u64 identities, support offline sta
   assert.equal(f.events.length, 2, "invalid calls have no side effects");
 });
 
-test("mute state and both engine properties are updated before notification and survive reentrant changes", () => {
+test("mute state and the voice mute are updated before notification and survive reentrant changes", () => {
   const f = fixture();
   const p = f.addPlayer(VALID_A, 3);
   const observed = [];
@@ -187,12 +187,12 @@ test("mute state and both engine properties are updated before notification and 
 
   assert.equal(f.service.setMuted(VALID_A, true), false, "outer result reports the listener's current policy");
   assert.deepEqual(observed, [
-    { payload: { steamId: VALID_A, state: true }, queried: true, voiceMuted: true, abuseMute: true },
+    { payload: { steamId: VALID_A, state: true }, queried: true, voiceMuted: true, abuseMute: false },
     { payload: { steamId: VALID_A, state: false }, queried: false, voiceMuted: false, abuseMute: false },
   ]);
   assert.equal(f.service.isMuted(VALID_A), false);
   assert.equal(p.client.voiceMuted, false, "outer setter cannot overwrite the reentrant result");
-  assert.equal(p.hasCommunicationAbuseMute, false);
+  assert.equal(p.hasCommunicationAbuseMute, false, "never touches CS2's report-abuse mute flag");
 });
 
 test("command, silence, and menu paths converge on policy operations with snapshotted identities and honest counts", () => {
@@ -245,14 +245,14 @@ test("command, silence, and menu paths converge on policy operations with snapsh
   assert.ok(f.events.some(([name, payload]) => name === "OnClientGagChanged" && payload.steamId === menuTarget.steamId));
 });
 
-test("reconnect restores real voice mute and scoreboard state without a new notification", () => {
+test("reconnect restores the voice mute without a new notification", () => {
   const f = fixture();
   assert.equal(f.service.setMuted(VALID_A, true), true);
   const before = f.events.length;
   const p = f.addPlayer(VALID_A, 5);
   f.api.OnClientPutInServer(p.client);
   assert.equal(p.client.voiceMuted, true);
-  assert.equal(p.hasCommunicationAbuseMute, true);
+  assert.equal(p.hasCommunicationAbuseMute, false, "a reconnect never raises the report-abuse notice");
   assert.equal(f.events.length, before);
 });
 

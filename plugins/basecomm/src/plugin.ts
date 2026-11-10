@@ -5,9 +5,12 @@
 //    doesn't follow a slot to a reconnecting player.
 //  - MUTE (voice): REAL. Flips Client.voiceMuted — the shim's SetClientListening rewrite silences the
 //    sender's outgoing voice for every receiver (the CSSharp/Swiftly mechanism; supersedes the old
-//    best-effort m_bHasCommunicationAbuseMute plan). The schema flag is still written as a cosmetic
-//    scoreboard indicator only. Keyed by SteamID and re-asserted on putinserver so a mute survives a
-//    reconnect. sm_silence = gag + mute.
+//    best-effort m_bHasCommunicationAbuseMute plan). Like SourceMod, the muted player simply can't be
+//    heard; nothing else changes. basecomm never writes m_bHasCommunicationAbuseMute: that flag is
+//    CS2's matchmaking report-abuse mute, and setting it makes the client announce "<name> has been
+//    muted for receiving significantly more communications abuse reports than most players" to the
+//    whole server. Keyed by SteamID and re-asserted on putinserver so a mute survives a reconnect.
+//    sm_silence = gag + mute.
 
 import { command, topmenu, translations, publish, ADMFLAG, HookResult, Clients, Translations, Activity } from "@s2script/sdk";
 import type { Client, Command, PhraseKey, HookResultValue, TypedPublishHandle } from "@s2script/sdk";
@@ -36,7 +39,6 @@ function applyLiveMute(steamId: string, state: boolean): void {
   if (!player) return;
   const client = Clients.fromSlot(player.slot);
   if (client && client.steamId === steamId) client.voiceMuted = state;
-  if (player.steamId === steamId) player.hasCommunicationAbuseMute = state;
 }
 
 const basecomm = {
@@ -185,7 +187,4 @@ export function OnClientPutInServer(c: Client): void {
   const steamId = c.steamId;
   if (!basecomm.isMuted(steamId)) return;
   c.voiceMuted = true;
-  const player = livePlayer(steamId);
-  if (player && player.slot === c.slot && player.steamId === steamId)
-    player.hasCommunicationAbuseMute = true;
 }
