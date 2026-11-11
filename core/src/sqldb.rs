@@ -404,14 +404,22 @@ macro_rules! decode_row {
                             .map(DbValue::Text)
                             .unwrap_or(DbValue::Null),
                     },
-                    "DATETIME" | "TIMESTAMP" | "TIMESTAMPTZ" => match bounded_text!(i) {
+                    // Only Postgres TIMESTAMPTZ carries a zone. MySQL DATETIME/TIMESTAMP and
+                    // Postgres TIMESTAMP are naive (sqlx-mysql would also accept DateTime<Utc> for
+                    // them, which would wrongly stamp a server-local time as UTC), so decode naive.
+                    "TIMESTAMPTZ" => match bounded_text!(i) {
                         Ok(text) => DbValue::Text(text),
-                        Err(_) => match typed_text!(DateTime<Utc>, i, |t: DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()) {
-                            Some(text) => DbValue::Text(text),
-                            None => typed_text!(NaiveDateTime, i, |t: NaiveDateTime| t.to_string())
-                                .map(DbValue::Text)
-                                .unwrap_or(DbValue::Null),
-                        },
+                        Err(_) => typed_text!(DateTime<Utc>, i, |t: DateTime<Utc>| t
+                            .format("%Y-%m-%dT%H:%M:%S%.fZ")
+                            .to_string())
+                        .map(DbValue::Text)
+                        .unwrap_or(DbValue::Null),
+                    },
+                    "DATETIME" | "TIMESTAMP" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => typed_text!(NaiveDateTime, i, |t: NaiveDateTime| t.to_string())
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
                     },
                     // TIMETZ / MySQL YEAR: text, else the year as a number rendered to text.
                     "TIMETZ" | "YEAR" =>
