@@ -360,7 +360,16 @@ export declare const Player: {
   fromUserId(userId: number): Player | null;
   /** Every connected player regardless of pawn (the pawnless enumeration). Complements `all()`. */
   allConnected(): Player[];
-  /** Resolve a SourceMod target string to matching connected players. `#userid`/name/`@all`/`@me`; empty on no match. `callerSlot < 0` = server console (no `@me`). */
+  /**
+   * Resolve a SourceMod target string to matching connected players; empty on no match.
+   * - `#userid`, or a name (case-insensitive; an exact match wins, else every partial match)
+   * - `@me` the caller, `@aim` the player the caller is aiming at, `@!me` everyone but the caller
+   * - `@all`, `@alive`, `@dead`, `@bots`, `@humans`
+   * - `@ct`, `@t`, `@spec` (by team)
+   *
+   * `callerSlot < 0` = server console, which gets nothing for `@me`/`@aim`/`@!me`.
+   * `filterImmunity` (default false) drops targets the caller's admin immunity can't act on.
+   */
   target(pattern: string, callerSlot: number, filterImmunity?: boolean): Player[];
 };
 

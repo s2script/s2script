@@ -4,6 +4,11 @@
   "No matching players": "{green}[S2S]{default} No matching players",
   "Player no longer available": "{green}[S2S]{default} That player is no longer available",
   "Server console only": "{green}[S2S]{default} This command can only be run from the server console",
+  "Target All Alive": "all alive players",
+  "Target All Bots": "all bots",
+  "Target All But Yourself": "all players but yourself",
+  "Target All Dead": "all dead players",
+  "Target All Humans": "all humans",
   "Target All Players": "all players",
   "Target Players": "{1} players",
   "Unknown command": "{green}[S2S]{default} Unknown command"

@@ -235,6 +235,6 @@ export declare const Activity: {
   log(actor: ActivityActor, target: number | null, message: string): void;
   /** SourceMod `%L` for a slot or a command's caller: `Name<userid><steamid><>`, or `Console<0><Console><Console>` for the server. */
   describe(who: ActivityActor): string;
-  /** The target label for an activity line: the one player's name, "all players" for `@all`, else "N players". */
+  /** The target label for an activity line: the one player's name; a group filter's label (`@all` = "all players", and the game package's filters such as "all alive players"); else "N players". */
   targetName(pattern: string, targets: readonly { readonly slot: number }[]): string;
 };

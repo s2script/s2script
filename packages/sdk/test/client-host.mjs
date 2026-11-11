@@ -10,6 +10,7 @@ export function installClientHost(ctx, connectedSlots = []) {
     isValid() { return this.token !== 0 && this.token === current(this.slot); }
     get userId() { return this.isValid() ? ctx.__s2_client_userid?.(this.slot) ?? -1 : -1; }
     get steamId() { return this.isValid() ? ctx.__s2_client_steamid?.(this.slot) ?? '0' : '0'; }
+    get isBot() { return this.isValid() && ctx.__s2_client_isbot?.(this.slot) === true; }
     kick(reason) { reason = String(reason); if (this.isValid()) ctx.__s2_client_kick?.(this.slot, reason); }
   }
   ctx.__s2pkg_clients = { Client, _same: (a, b) => !!a && !!b && a.slot === b.slot && a.token === b.token,
