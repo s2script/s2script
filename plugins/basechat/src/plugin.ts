@@ -87,12 +87,22 @@ export function OnPluginStart(): void {
 
 // SourceMod basechat @ chat triggers, over the raw-chat subscriber.
 //   say      "@msg"            -> sm_say      (chat admins only)
-//   say      "@@target msg"    -> sm_psay     (chat admins only)
+//   say / say_team "@@target msg" -> sm_psay (chat admins only)
 //   say_team "@msg"            -> to admins   (anyone while `chat_mode` is on, the SM default; else admins)
 // Anything not allowed falls through as ordinary chat.
 export function OnClientSayCommand(slot: number, text: string, teamonly: boolean): HookResultValue {
   if (text[0] !== "@") return HookResult.Continue;
   const admin = isChatAdmin(slot);
+  // Match the private-message alias before the single-@ team-chat trigger.
+  if (text.startsWith("@@")) {
+    if (!admin) return HookResult.Continue;
+    const rest = text.slice(2).trim();
+    const sp = rest.indexOf(" ");
+    if (sp < 0) { Chat.toSlot(slot, Translations.translate(slot, "Usage Psay Trigger")); return HookResult.Handled; }
+    const t = resolveOne(rest.slice(0, sp), slot, (m) => Chat.toSlot(slot, m));
+    if (t) doPsay(slot, t, rest.slice(sp + 1).trim());
+    return HookResult.Handled;
+  }
   if (teamonly) {
     if (!admin && !config.getBool("chat_mode")) return HookResult.Continue;
     const body = text.slice(1).trim();
@@ -101,14 +111,6 @@ export function OnClientSayCommand(slot: number, text: string, teamonly: boolean
     return HookResult.Handled;
   }
   if (!admin) return HookResult.Continue; // non-admin @ in all chat = normal chat
-  if (text.startsWith("@@")) {
-    const rest = text.slice(2).trim();
-    const sp = rest.indexOf(" ");
-    if (sp < 0) { Chat.toSlot(slot, Translations.translate(slot, "Usage Psay Trigger")); return HookResult.Handled; }
-    const t = resolveOne(rest.slice(0, sp), slot, (m) => Chat.toSlot(slot, m));
-    if (t) doPsay(slot, t, rest.slice(sp + 1).trim());
-    return HookResult.Handled;
-  }
   const body = text.slice(1).trim();
   if (!body) return HookResult.Handled;
   doSay(slot, body);
