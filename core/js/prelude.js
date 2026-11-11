@@ -2491,6 +2491,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     Database.open resolves a name via databases.json (operator-owned; absent name -> sqlite). ---
   var __s2_db_drivers = {};
   var __s2_db_config = {};   // name -> {driver,host,port,user,password,database} from databases.json — IIFE-PRIVATE (credentials; never on globalThis)
+  // SourceMod's databases.cfg names the Postgres driver "pgsql"; "postgresql" is accepted too.
+  function __s2_db_remoteDriver(d) {
+    if (d === "mysql") return "mysql";
+    if (d === "postgres" || d === "pgsql" || d === "postgresql") return "postgres";
+    return null;
+  }
   function __s2_db_loadConfig() {
     var text = __s2_config_read_raw("databases");
     if (text == null) {
@@ -2503,13 +2509,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     for (var name in obj) {
       if (name === "_help" || !Object.prototype.hasOwnProperty.call(obj, name)) continue;
       var c = obj[name];
-      if (c && typeof c === "object" && (c.driver === "mysql" || c.driver === "postgres")) __s2_db_config[name] = c;
+      if (c && typeof c === "object" && __s2_db_remoteDriver(c.driver)) __s2_db_config[name] = c;
       else if (c && typeof c === "object" && c.driver !== "sqlite") console.log("[s2script] WARN: databases.json '" + name + "': unknown driver '" + c.driver + "' — using sqlite");
     }
   }
   function __s2_db_resolveConfig(connName) {
     var c = __s2_db_config[connName];
-    if (c) { return { driver: c.driver, name: connName, host: c.host, port: c.port, user: c.user, password: c.password, database: c.database }; }
+    // "pass" is SourceMod's databases.cfg key for the password.
+    if (c) { return { driver: __s2_db_remoteDriver(c.driver) || c.driver, name: connName, host: c.host, port: c.port, user: c.user, password: c.password != null ? c.password : c.pass, database: c.database }; }
     return { driver: "sqlite", name: connName };
   }
   // test hooks — secret-free: an injector (sets the private map) + a driver-ONLY (redacted) resolve.
