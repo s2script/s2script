@@ -1704,7 +1704,8 @@ static int s2_user_message_send(const int* slots, int slotCount) {
 
 // ---------------------------------------------------------------------------
 // UserMessage-interception slice. Doctrine: the ONE borrowed layout fact is
-// NetMessageInfo_t::m_MessageId (inetworkserializer.h:53 — never exercised by the send path);
+// NetMessageInfo_t::m_MessageId (inetworkserializer.h; a plain record field at +0x18 since CS2 build
+// 26598758, statically asserted there — never exercised by the send path);
 // validated fail-closed at subscribe (round-trip below) and on an observe-only first fire.
 // Hot path: a bitmap test on the id, S2_Ignore on miss before ANY reflection.
 // Block-scoped view statics are SEPARATE from the send builder's s_umInfo/s_umData/s_umMsg above,
@@ -1719,6 +1720,20 @@ static bool     s_inUserMsgDispatch = false;      // recursion guard (a mid-hook
 static google::protobuf::Message* s_hookMsg = nullptr;      // current intercepted message (block-scoped)
 static const uint64*              s_hookClients = nullptr;  // its recipient mask (null = broadcast); uint64 == the hook param type
 static int                        s_hookClientCount = 0;
+
+// The record's name without the " [<id>]" suffix CS2 appends since build 26598758 (Nov 11 2026):
+// "CUserMessageSayText2 [118]" -> "CUserMessageSayText2". Plugins and the core's mux key on the bare
+// proto type name, as they did before that build. Engine-owned record, so the copy is ours.
+static std::string S2_NetMessageName(const INetworkMessageInternal* info) {
+    const char* raw = info ? info->GetUnscopedName() : nullptr;
+    if (!raw) return std::string();
+    std::string name(raw);
+    const size_t open = name.rfind(" [");
+    if (open != std::string::npos && name.size() > open + 3 && name.back() == ']' &&
+        name.find_first_not_of("0123456789", open + 2) == name.size() - 1)
+        name.resize(open);
+    return name;
+}
 
 static inline bool s2_usermsg_bit(int id) {
     return id >= 0 && id < kUserMsgMaxId && (s_userMsgSubBits[id >> 6] & (1ull << (id & 63)));
@@ -1775,7 +1790,8 @@ static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonic
     if (!mi) { META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: "
                               "GetNetMessageInfo null for '%s'\n", name); return -1; }
     int id = (int)mi->m_MessageId;
-    const char* canonical = info->GetUnscopedName();
+    const std::string canonicalName = S2_NetMessageName(info);
+    const char* canonical = canonicalName.c_str();
     if (id < 0 || id >= kUserMsgMaxId || !canonical || !*canonical || !strstr(canonical, name)) {
         META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: '%s' -> id=%d "
                        "canonical='%s' (out of range or name mismatch — header layout drift?)\n",
@@ -5851,6 +5867,20 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 : nullptr;
             if (s_pNetworkMessages && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: NetworkMessages (%s)\n", verStr);
+                // Every INetworkMessages call is compiled against the vendored s2sdk header, so a CS2
+                // update that adds or removes a virtual sends those calls to other functions: the Nov 11
+                // 2026 update (build 26598758) removed three, and FindNetworkMessagePartial's slot then
+                // held FindNetworkGroup, whose -1 crashed the first user-message subscribe. Check the
+                // live CNetworkMessages vtable against its pin and degrade (chat print, user messages,
+                // client cvar queries) instead of calling into a layout this build was not made for.
+                static const S2VtableLayout kLayout = { "INetworkMessages", "libnetworksystem.so",
+                                                        "INetworkMessages_vtableSize" };
+                if (!S2_VerifyVtableSlots(kLayout, s_pNetworkMessages, nullptr, 0, nullptr)) {
+                    s_pNetworkMessages = nullptr;
+                    META_CONPRINTF("[s2script] ERROR: CNetworkMessages layout differs from the one this build "
+                                   "was compiled against — chat print, user messages and client cvar queries "
+                                   "are DISABLED until a build with the updated SDK header ships\n");
+                }
             } else {
                 s_pNetworkMessages = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkMessages (%s) — client_print chat degrades\n", verStr);
@@ -7085,11 +7115,11 @@ KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     (void)nSlot; (void)bLocalOnly; (void)nSize; (void)bufType;
     if (s_inUserMsgDispatch) return S2_Ignore();   // recursion guard (a mid-hook send re-enters here)
-    // Cheap gate FIRST: one virtual (GetNetMessageInfo) + one bitmap bit test on m_MessageId. A non-subscribed
+    // Cheap gate FIRST: one field read (m_MessageId) + one bitmap bit test. A non-subscribed
     // message costs exactly this before ANY reflection/strcmp/FFI/alloc/logging. Doctrine note on the ONE
     // borrowed layout fact (NetMessageInfo_t::m_MessageId): it is RANGE-CHECKED fail-closed at subscribe and
     // used only for this SELF-CONSISTENT pre-filter (subscribe and dispatch read the same offset); the
-    // AUTHORITATIVE dispatch key is GetUnscopedName() (a reliable virtual, no layout dependency). A drifted
+    // AUTHORITATIVE dispatch key is the record's name (S2_NetMessageName). A drifted
     // offset therefore degrades to at-worst a wasted dispatch the name-mux drops, or a fail-closed subscribe —
     // never a false suppression.
     NetMessageInfo_t* mi = pEvent ? pEvent->GetNetMessageInfo() : nullptr;
@@ -7107,7 +7137,8 @@ KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem
     static bool s_msgTraceOn = (getenv("S2_USERMSG_TRACE") != nullptr);
     static int  s_msgTraceLeft = 400;
     if (s_msgTraceOn && s_msgTraceLeft > 0 && mi && pEvent) {
-        const char* tn = pEvent->GetUnscopedName();
+        const std::string tnName = S2_NetMessageName(pEvent);
+        const char* tn = tnName.c_str();
         --s_msgTraceLeft;
         META_CONPRINTF("[s2script] MSGTRACE id=%d name=%s clients=%d\n",
                        (int)mi->m_MessageId, (tn && *tn) ? tn : "(none)", nClientCount);
@@ -7115,7 +7146,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem
     }
     // Consume a pending suppression BEFORE the subscription gate: this message is almost never one a
     // plugin subscribed to, so the gate below would drop us out before we could act on it. Matched by
-    // NAME (a reliable virtual) rather than a hardcoded id, so a build that renumbers messages still
+    // NAME (the record's, which leads with the proto type name) rather than a hardcoded id, so a build that renumbers messages still
     // works.
     if (s_legacyFilterActive && pEvent) {
         const char* ln = pEvent->GetUnscopedName();
@@ -7141,7 +7172,8 @@ KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem
     google::protobuf::Message* pb = pData
         ? reinterpret_cast<google::protobuf::Message*>(const_cast<CNetMessage*>(pData)->AsProto()) : nullptr;
     if (!pb) return S2_Ignore();
-    const char* nm = pEvent->GetUnscopedName();
+    const std::string nmName = S2_NetMessageName(pEvent);
+    const char* nm = nmName.c_str();
     // Observe-only first-fire, gated on the first SUBSCRIBED message that reaches here (deterministic — a
     // message a plugin actually asked for, NOT the arbitrary first engine post, which could be bodyless and
     // must never disable anything). Validate reflection is readable, log the operator banner, and NEVER

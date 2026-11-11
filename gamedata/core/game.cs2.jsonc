@@ -149,7 +149,14 @@
     // db675abb166a35d38011b53f85427b5cae65210e, Oct 22 2026 build). Slots 0-24 were checked against
     // the s2sdk inetchannelinfo.h order: GetAvgData (15) and GetAvgPackets (16) read the Steam
     // real-time status bytes/s and packets/s fields, so slot 14 is GetPeakJitter as the header says.
-    "INetChannelInfo_vtableSize":                 { "linuxsteamrt64": 89 },
+    // Nov 11 2026 (build 26598758, libnetworksystem BuildID see binaries/2026-11-11/README.md): CNetChan
+    // gained one virtual at slot 88, after every INetChannelInfo method, so the stats slots did not move.
+    "INetChannelInfo_vtableSize":                 { "linuxsteamrt64": 90 },
+    // Gates every compiled INetworkMessages call (chat print, user messages, client cvar queries). The pin
+    // is CNetworkMessages' vtable in libnetworksystem.so. The Nov 11 2026 update (build 26598758) took it
+    // from 40 to 37 slots and moved FindNetworkMessagePartial from 14 to 10; s2sdk's header was updated
+    // to match (slot test in the s2sdk commit message).
+    "INetworkMessages_vtableSize":                { "linuxsteamrt64": 37 },
     // Sound event lookups (Sound.duration / Sound.isValid). The object behind SoundOpSystem001 is a
     // CSoundOpSystem (libsoundsystem.so BuildID cc784b92…, Oct 22 2026) whose ISoundEventManager
     // base sits at +8: that vtable (@0x73c7b8) has offset-to-top -8 and the primary's type_info, and
