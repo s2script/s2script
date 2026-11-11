@@ -1,5 +1,16 @@
 # @s2script/cs2
 
+## 0.26.0
+
+### Minor Changes
+
+- be15583: `Player.target` resolves the rest of SourceMod's multi-target filters: `@alive`, `@dead`, `@bots`, `@humans`, `@!me`, `@aim`, and the CS2 team filters `@ct`, `@t` and `@spec`. `Activity.targetName` names a matched filter by its group ("all alive players", "all Counter-Terrorists") instead of a player count.
+
+### Patch Changes
+
+- Updated dependencies [be15583]
+  - @s2script/sdk@0.37.1
+
 ## 0.25.0
 
 ### Minor Changes
