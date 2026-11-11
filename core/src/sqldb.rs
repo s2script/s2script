@@ -405,8 +405,8 @@ macro_rules! decode_row {
                             .unwrap_or(DbValue::Null),
                     },
                     // Only Postgres TIMESTAMPTZ carries a zone. MySQL DATETIME/TIMESTAMP and
-                    // Postgres TIMESTAMP are naive (sqlx-mysql would also accept DateTime<Utc> for
-                    // them, which would wrongly stamp a server-local time as UTC), so decode naive.
+                    // Postgres TIMESTAMP are wall-clock values, so they render naive (no `Z`):
+                    // stamping a server-local time as UTC would shift it in JS `Date`.
                     "TIMESTAMPTZ" => match bounded_text!(i) {
                         Ok(text) => DbValue::Text(text),
                         Err(_) => typed_text!(DateTime<Utc>, i, |t: DateTime<Utc>| t
@@ -417,9 +417,18 @@ macro_rules! decode_row {
                     },
                     "DATETIME" | "TIMESTAMP" => match bounded_text!(i) {
                         Ok(text) => DbValue::Text(text),
-                        Err(_) => typed_text!(NaiveDateTime, i, |t: NaiveDateTime| t.to_string())
+                        Err(_) => match typed_text!(NaiveDateTime, i, |t: NaiveDateTime| t
+                            .to_string())
+                        {
+                            Some(text) => DbValue::Text(text),
+                            // sqlx-mysql decodes TIMESTAMP only as DateTime<Utc>, and it builds that
+                            // from the wire wall-clock unchanged, so render it naive again.
+                            None => typed_text!(DateTime<Utc>, i, |t: DateTime<Utc>| t
+                                .naive_utc()
+                                .to_string())
                             .map(DbValue::Text)
                             .unwrap_or(DbValue::Null),
+                        },
                     },
                     // TIMETZ / MySQL YEAR: text, else the year as a number rendered to text.
                     "TIMETZ" | "YEAR" =>
