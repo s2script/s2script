@@ -249,6 +249,25 @@ fn unloading_the_subscriber_stops_post_delivery() {
     teardown();
 }
 
+/// Every context reads the same post info, written once per command by core; plugin code can't
+/// reach the shared view (the native is gone once the prelude has taken it).
+#[test]
+fn post_info_is_shared_and_out_of_plugin_reach() {
+    setup();
+    create_plugin_context("q");
+    assert_eq!(eval_in_context_string("q", "typeof __s2_usercmd_post_info"), "undefined");
+    for id in ["p", "q"] {
+        eval_in_context(id, "globalThis.seen = []; __s2pkg_usercmd.UserCmd.onRun(function (c, i) { \
+            seen.push(i.slot + '/' + i.tick + '/' + i.commandNumber); }, { phase: 'post' });").unwrap();
+    }
+    dispatch_usercmd_post(3, 40, 7);
+    dispatch_usercmd_post(5, 41, 8);
+    for id in ["p", "q"] {
+        assert_eq!(eval_in_context_string(id, "seen.join(' ')"), "3/40/7 5/41/8", "context {id}");
+    }
+    teardown();
+}
+
 /// A steady-state post dispatch makes no Rust allocation: the subscriber list is cached, no
 /// arguments are built, and the shared fan-out's liveness check and re-entrancy marker reuse
 /// their storage. (V8's own heap is outside this counter; the prelude side reuses its objects.)

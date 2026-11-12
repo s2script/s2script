@@ -2921,8 +2921,8 @@ const USERCMD_POST_KEY: &str = "onRunPost";
 
 thread_local! {
     /// The post dispatch in progress: (slot, tick, command number). `Some` exactly while
-    /// `dispatch_usercmd_post` runs its handlers, which is what makes the command read-only and what
-    /// `__s2_usercmd_post_info` copies out. Saved and restored, so a nested dispatch cannot clear an
+    /// `dispatch_usercmd_post` runs its handlers, which is what makes the command read-only (the
+    /// shared `usercmd_post_info` slots mirror it for JS). Saved and restored, so a nested dispatch cannot clear an
     /// outer one's state.
     static USERCMD_POST_ACTIVE: std::cell::Cell<Option<(i32, i32, i32)>> = const { std::cell::Cell::new(None) };
     /// The post channel's subscriber list, reused while `USERCMD_MUX`'s version is unchanged, so a
@@ -2962,21 +2962,35 @@ fn s2_usercmd_read_move_buttons(scope: &mut v8::PinScope, args: v8::FunctionCall
     }));
 }
 
-/// `__s2_usercmd_post_info(out: Int32Array)` — copy the running post dispatch's (slot, tick,
-/// command number) into `out[0..3]`; `[-1, -1, -1]` outside one. The prelude's per-subscriber
-/// wrapper calls it once per call to refresh its one reused `info` object, so a post dispatch passes
-/// no arguments and allocates nothing. Too short an array is left untouched.
-fn s2_usercmd_post_info(_scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+/// The running post dispatch's (slot, tick, command number), in memory every plugin context holds an
+/// `Int32Array` view of (`__s2_usercmd_post_info`). `dispatch_usercmd_post` writes it once per
+/// command, so a subscriber's wrapper refreshes its `info` with three plain reads and no native call.
+/// `[-1, -1, -1]` outside a dispatch. Leaked once per thread: the views V8 holds must never dangle.
+mod usercmd_post_info {
+    use std::cell::Cell;
+    thread_local! {
+        static SLOTS: &'static [Cell<i32>; 3] = Box::leak(Box::new([Cell::new(-1), Cell::new(-1), Cell::new(-1)]));
+        pub(super) static STORE: v8::SharedRef<v8::BackingStore> = {
+            let ptr = SLOTS.with(|s| s.as_ptr() as *mut std::ffi::c_void);
+            // SAFETY: the memory lives for the thread and is only touched on it.
+            unsafe { v8::ArrayBuffer::new_backing_store_from_ptr(ptr, 12, keep, std::ptr::null_mut()) }.make_shared()
+        };
+    }
+    unsafe extern "C" fn keep(_: *mut std::ffi::c_void, _: usize, _: *mut std::ffi::c_void) {}
+    pub(super) fn set(v: (i32, i32, i32)) {
+        SLOTS.with(|s| { s[0].set(v.0); s[1].set(v.1); s[2].set(v.2); });
+    }
+}
+
+/// `__s2_usercmd_post_info() -> Int32Array` — a view of the shared post-info slots (see
+/// `usercmd_post_info`). The prelude takes it once per context and deletes the native, so plugin
+/// code can't reach the view.
+fn s2_usercmd_post_info(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Ok(out) = v8::Local::<v8::Int32Array>::try_from(args.get(0)) else { return };
-        if out.byte_length() < 12 { return; }
-        let (slot, tick, number) = USERCMD_POST_ACTIVE.with(|a| a.get()).unwrap_or((-1, -1, -1));
-        let dst = out.data() as *mut i32;
-        if dst.is_null() { return; }
-        unsafe {
-            dst.write_unaligned(slot);
-            dst.add(1).write_unaligned(tick);
-            dst.add(2).write_unaligned(number);
+        let store = usercmd_post_info::STORE.with(|s| s.clone());
+        let buffer = v8::ArrayBuffer::with_backing_store(scope, &store);
+        if let Some(view) = v8::Int32Array::new(scope, buffer, 0, 3) {
+            rv.set(view.into());
         }
     }));
 }
@@ -4514,9 +4528,13 @@ pub(crate) fn dispatch_usercmd_post(slot: i32, tick: i32, command_number: i32) {
     let Some(snap) = usercmd_post_snapshot() else { return };
     struct Restore(Option<(i32, i32, i32)>);
     impl Drop for Restore {
-        fn drop(&mut self) { USERCMD_POST_ACTIVE.with(|a| a.set(self.0)); }
+        fn drop(&mut self) {
+            USERCMD_POST_ACTIVE.with(|a| a.set(self.0));
+            usercmd_post_info::set(self.0.unwrap_or((-1, -1, -1)));
+        }
     }
     let _restore = Restore(USERCMD_POST_ACTIVE.with(|a| a.replace(Some((slot, tick, command_number)))));
+    usercmd_post_info::set((slot, tick, command_number));
     let _ = fan_out(&snap, "dispatch_usercmd_post", Instrument::none(), |_| Some(Vec::new()));
 }
 

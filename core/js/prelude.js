@@ -1643,8 +1643,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // phase "pre" (default): the raw handler gets (Cmd, {slot}) and its HookResult collapses.
   // phase "post": core calls a per-subscriber wrapper with NO arguments; the wrapper refreshes its one
-  // reused info object from the dispatch (one native call into a reused Int32Array) and calls the
-  // handler with the same Cmd singleton. The handler's return is dropped: the command already ran.
+  // reused info object from memory core writes once per command (an Int32Array view shared by every
+  // context, so no native call) and calls the handler with the same Cmd singleton. The handler's
+  // return is dropped: the command already ran. The view is captured here and its native deleted,
+  // so plugin code can't write what other subscribers read.
+  var postInfo = typeof __s2_usercmd_post_info === "function" ? __s2_usercmd_post_info() : new Int32Array([-1, -1, -1]);
+  delete globalThis.__s2_usercmd_post_info;
   function usercmdPhase(opts) {
     var phase = opts == null || opts.phase === undefined ? "pre" : opts.phase;
     if (phase !== "pre" && phase !== "post") {
@@ -1656,11 +1660,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     onRun: function (handler, opts) {
       if (usercmdPhase(opts) === "pre") return __s2_usercmd_subscribe(handler);
       if (typeof handler !== "function") throw new TypeError("onRunCmd: handler must be a function");
-      var buf = new Int32Array(3);
       var info = { slot: -1, tick: -1, commandNumber: -1 };
       return __s2_usercmd_subscribe(function () {
-        __s2_usercmd_post_info(buf);
-        info.slot = buf[0]; info.tick = buf[1]; info.commandNumber = buf[2];
+        info.slot = postInfo[0]; info.tick = postInfo[1]; info.commandNumber = postInfo[2];
         handler(Cmd, info);
       }, 1);
     },
