@@ -40,9 +40,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           # Changesets needs full history for changelogs / base comparison
           fetch-depth: 0

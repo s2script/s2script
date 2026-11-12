@@ -89,9 +89,9 @@ permissions:
 
 jobs:
   native:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with: { submodules: recursive }   # gen-licenses.sh reads the vendored third_party/ submodules
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

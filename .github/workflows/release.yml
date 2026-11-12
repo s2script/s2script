@@ -17,9 +17,9 @@ jobs:
   # artifact (release/bullseye/glibc 2.31) — to save ~4 minutes on a tag push where nobody
   # is iterating. Removing it also removed the deleted reusable build workflow's last consumer.
   release:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           submodules: recursive
 
