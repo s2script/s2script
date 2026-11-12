@@ -1616,39 +1616,47 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     CS2/protobuf name appears here. Cmd is ONE shared object (MF-3, the DamageInfo precedent does
   //     NOT apply — dispatch_usercmd fetches this exact singleton, not a per-handler `new Cmd()`); its
   //     accessors read/write the CURRENT usercmd via the natives and are valid only during dispatch. ---
+  // The post phase's shared snapshot (core/src/v8host.rs `usercmd_shared`): the shim copies each executed
+  // command into it once, so in "post" every getter below is a plain typed-array read. SV[18] (valid)
+  // is 0 outside a post dispatch, where the getters keep their native path. Taken here and the
+  // native deleted, so plugin code can't write what other subscribers read.
+  var snapBuf = typeof __s2_usercmd_snapshot === "function" ? __s2_usercmd_snapshot() : new ArrayBuffer(80);
+  delete globalThis.__s2_usercmd_snapshot;
+  var SF = new Float32Array(snapBuf, 0, 6);        // forward, side, up, pitch, yaw, roll
+  var SI = new Int32Array(snapBuf, 0, 20);         // [6] impulse, [7] command number, [16] slot, [17] tick, [18] valid
+  var SB = new BigUint64Array(snapBuf, 32, 4);     // buttons, pressed, changed, scroll
   var Cmd = {
-    get forwardMove() { return __s2_usercmd_read(0); },
+    get forwardMove() { return SI[18] ? SF[0] : __s2_usercmd_read(0); },
     set forwardMove(v) { __s2_usercmd_write(0, +v); },
-    get sideMove() { return __s2_usercmd_read(1); },
+    get sideMove() { return SI[18] ? SF[1] : __s2_usercmd_read(1); },
     set sideMove(v) { __s2_usercmd_write(1, +v); },
-    get upMove() { return __s2_usercmd_read(2); },
+    get upMove() { return SI[18] ? SF[2] : __s2_usercmd_read(2); },
     set upMove(v) { __s2_usercmd_write(2, +v); },
-    get impulse() { return __s2_usercmd_read(6); },
+    get impulse() { return SI[18] ? SI[6] : __s2_usercmd_read(6); },
     set impulse(v) { __s2_usercmd_write(6, +v); },
     // 64-bit pressed-button mask — a real bigint end-to-end (never a decimal string), per spec.
-    get buttons() { return __s2_usercmd_read_buttons(); },
+    get buttons() { return SI[18] ? SB[0] : __s2_usercmd_read_buttons(); },
     set buttons(v) { __s2_usercmd_write_buttons(v); },
     // Fields 3/4/5 (pitch/yaw/roll), read/written as one QAngle {x,y,z}.
-    get viewAngles() { return new QAngle(__s2_usercmd_read(3), __s2_usercmd_read(4), __s2_usercmd_read(5)); },
+    get viewAngles() {
+      return SI[18] ? new QAngle(SF[3], SF[4], SF[5])
+                    : new QAngle(__s2_usercmd_read(3), __s2_usercmd_read(4), __s2_usercmd_read(5));
+    },
     set viewAngles(a) { __s2_usercmd_write(3, +a.x); __s2_usercmd_write(4, +a.y); __s2_usercmd_write(5, +a.z); },
     clearSubtickMoves: function () { __s2_usercmd_clear_subtick(); },
     // The pawn's movement-services button state (read-only, both phases): what the PREVIOUS command
     // left in "pre", what THIS command left in "post". Assigning is ignored (never a strict-mode throw).
-    get pressedButtons() { return __s2_usercmd_read_move_buttons(0); },
+    get pressedButtons() { return SI[18] ? SB[1] : __s2_usercmd_read_move_buttons(0); },
     set pressedButtons(v) {},
-    get changedButtons() { return __s2_usercmd_read_move_buttons(1); },
+    get changedButtons() { return SI[18] ? SB[2] : __s2_usercmd_read_move_buttons(1); },
     set changedButtons(v) {},
-    get scrollButtons() { return __s2_usercmd_read_move_buttons(2); },
+    get scrollButtons() { return SI[18] ? SB[3] : __s2_usercmd_read_move_buttons(2); },
     set scrollButtons(v) {},
   };
   // phase "pre" (default): the raw handler gets (Cmd, {slot}) and its HookResult collapses.
   // phase "post": core calls a per-subscriber wrapper with NO arguments; the wrapper refreshes its one
-  // reused info object from memory core writes once per command (an Int32Array view shared by every
-  // context, so no native call) and calls the handler with the same Cmd singleton. The handler's
-  // return is dropped: the command already ran. The view is captured here and its native deleted,
-  // so plugin code can't write what other subscribers read.
-  var postInfo = typeof __s2_usercmd_post_info === "function" ? __s2_usercmd_post_info() : new Int32Array([-1, -1, -1]);
-  delete globalThis.__s2_usercmd_post_info;
+  // reused info object from the shared snapshot and calls the handler with the same Cmd singleton. The
+  // handler's return is dropped: the command already ran.
   function usercmdPhase(opts) {
     var phase = opts == null || opts.phase === undefined ? "pre" : opts.phase;
     if (phase !== "pre" && phase !== "post") {
@@ -1662,7 +1670,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       if (typeof handler !== "function") throw new TypeError("onRunCmd: handler must be a function");
       var info = { slot: -1, tick: -1, commandNumber: -1 };
       return __s2_usercmd_subscribe(function () {
-        info.slot = postInfo[0]; info.tick = postInfo[1]; info.commandNumber = postInfo[2];
+        info.slot = SI[16]; info.tick = SI[17]; info.commandNumber = SI[7];
         handler(Cmd, info);
       }, 1);
     },

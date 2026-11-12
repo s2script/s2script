@@ -29,6 +29,10 @@
  *
  * Lifetime is the same in both phases: `cmd` (and `info`) are valid only synchronously inside the
  * handler. Both are reused objects, so copy what you need instead of keeping them.
+ *
+ * **Cost.** In `"post"` the host copies each command (and the movement-services buttons) once, so
+ * every `cmd` field and `info` read is a plain memory read: read as many as you like. In `"pre"`
+ * each field read still goes to the engine.
  */
 import type { QAngle } from "./math";
 
@@ -79,14 +83,14 @@ export interface UserCmdView {
   /** The pressed-button mask (`IN_*` bit values, mirrors `pawn.buttons`). 64-bit — always a real `bigint`. */
   buttons: bigint;
   /**
-   * The pawn's movement-services "held" button state (`IN_*` bits; ModSharp `KeyButtons`). Read-only.
+   * The pawn's movement-services "held" button state (`IN_*` bits). Read-only.
    * In `"post"`: the state THIS command left. In `"pre"`: the state the PREVIOUS command left.
    * Unlike {@link buttons} (what the client sent), this is what the server applied.
    */
   readonly pressedButtons: bigint;
-  /** Buttons whose held state changed on the command that last ran (ModSharp `KeyChangedButtons`). Read-only. */
+  /** Buttons whose held state changed on the command that last ran. Read-only. */
   readonly changedButtons: bigint;
-  /** Scroll-wheel "buttons" of the command that last ran (ModSharp `ScrollButtons`). Read-only. */
+  /** Scroll-wheel "buttons" of the command that last ran. Read-only. */
   readonly scrollButtons: bigint;
   /** View angles for this tick ({x: pitch, y: yaw, z: roll}). Assigning writes all three fields. */
   viewAngles: QAngle;

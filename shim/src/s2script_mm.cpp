@@ -103,6 +103,7 @@
 #include <tier0/logging.h>     // ILoggingListener / LoggingContext_t (console capture)
 #include "console_capture.h"   // Server.commandEx: the engine-free capture policy
 #include "cvar_value.h"        // Server.setCvar: the bytes a cvar value really owns
+#include "usercmd_layout.h"    // usercmd post snapshot: direct field reads, trusted only after checking
 #include <vector>
 #include <iterator>
 #include <stdexcept>
@@ -3032,15 +3033,16 @@ static int PawnSlot(void* pawn) {
 // schema Pawn.forSlot(slot) read of the SAME player.
 static int DeriveUsercmdSlot(void* thisptr) { return PawnSlot(DeriveUsercmdPawn(thisptr)); }
 
-// A movement-services component's owning pawn: CPlayerPawnComponent::__m_pChainEntity (the same
-// field ModSharp's PlayerPawnComponent::GetPawn reads).
+// A movement-services component's owning pawn: CPlayerPawnComponent::__m_pChainEntity. That field is
+// a CNetworkVarChainer, whose base (CEntityOwnerPtr, a non-virtual CSmartPtr<CEntityInstance>) puts
+// the owning entity pointer at offset 0.
 static void* MovementServicesPawn(void* services) {
     static CachedSchemaOffset chain{"CPlayerPawnComponent", "__m_pChainEntity"};
     return PtrAt(services, chain.get());
 }
 
 // usercmd_read_move_buttons(which) -> CPlayer_MovementServices::m_nButtons.m_pButtonStates[which]
-// (0 pressed, 1 changed, 2 scroll — ModSharp's KeyButtons / KeyChangedButtons / ScrollButtons) for the
+// (0 pressed, 1 changed, 2 scroll) for the
 // player whose command is in scope. Post: the receiver IS the movement services that just ran it.
 // Pre: the batch receiver -> pawn -> m_pMovementServices, so pre reads the state the PREVIOUS command
 // left. 0 outside a dispatch, for an out-of-range `which`, or on any unresolved field.
@@ -3060,13 +3062,72 @@ static uint64_t s2_usercmd_read_move_buttons(int which) {
     return v;
 }
 
-// Post phase: one command finished running for `services`' pawn. slot from the pawn, tick from the
-// server globals, the command's own number from the (now read-only) command in scope.
-static void S2NamedUsercmdPostDispatchOp(void* services, void* /*message*/) {
+// The usercmd post snapshot reads the command at gamedata offsets once they have agreed with
+// reflection (usercmd_layout.h). Reset per Load, so a reload re-checks.
+static S2UsercmdLayout      s_usercmdLayout;
+static S2UsercmdLayoutCheck s_usercmdLayoutCheck;
+
+// Every snapshot field through reflection: right on any build, a descriptor walk per field.
+static void ReadUsercmdReflected(S2UsercmdFields& f) {
+    f.forwardMove = static_cast<float>(s2_usercmd_read(0));
+    f.leftMove = -static_cast<float>(s2_usercmd_read(1));     // read(1) is sideMove = -leftmove
+    f.upMove = static_cast<float>(s2_usercmd_read(2));
+    for (int i = 0; i < 3; ++i) f.angles[i] = static_cast<float>(s2_usercmd_read(3 + i));
+    f.impulse = static_cast<int32_t>(s2_usercmd_read(6));
+    f.commandNumber = static_cast<int32_t>(s2_usercmd_read(7));
+    f.buttons = s2_usercmd_read_buttons();
+}
+
+// The command's fields for the snapshot. Trusted layout: direct reads only. Still checking: both
+// ways, compared, and the reflected values used. Failed or no layout: reflection.
+static void ReadUsercmdForSnapshot(const void* message, S2UsercmdFields& f) {
+    using State = S2UsercmdLayoutCheck::State;
+    const State state = s_usercmdLayoutCheck.state();
+    if (state == State::Trusted && S2ReadUsercmdAt(s_usercmdLayout, message, f)) return;
+    ReadUsercmdReflected(f);
+    if (state != State::Checking) return;
+    S2UsercmdFields direct;
+    if (!S2ReadUsercmdAt(s_usercmdLayout, message, direct)) {
+        s_usercmdLayoutCheck.Fail("layout offsets incomplete in gamedata");
+    } else {
+        s_usercmdLayoutCheck.Observe(direct, f);
+    }
+    switch (s_usercmdLayoutCheck.state()) {
+        case State::Trusted:
+            META_CONPRINTF("[s2script] usercmd layout checked against reflection (%d commands) — post "
+                           "snapshot reads at gamedata offsets\n", S2UsercmdLayoutCheck::kRequired);
+            break;
+        case State::Failed:
+            META_CONPRINTF("[s2script] gamedata FAIL: UserCmd layout (%s) disagrees with reflection — "
+                           "post snapshot stays on reflection\n", s_usercmdLayoutCheck.failedField());
+            break;
+        default: break;
+    }
+}
+
+// Post phase: one command finished running for `services`' pawn. Copies the command and the
+// movement services' button state into one snapshot, so the handlers read plain memory.
+static void S2NamedUsercmdPostDispatchOp(void* services, void* message) {
+    static CachedSchemaOffset buttons{"CPlayer_MovementServices", "m_nButtons"};
+    static CachedSchemaOffset states{"CInButtonState", "m_pButtonStates"};
     if (!s2script_core_dispatch_usercmd_post) return;   // weak: an older core has no post phase
     const int slot = PawnSlot(MovementServicesPawn(services));
     if (slot < 0) return;
-    s2script_core_dispatch_usercmd_post(slot, s2_server_tick_count(), static_cast<int>(s2_usercmd_read(7)));
+    S2UsercmdFields f;
+    ReadUsercmdForSnapshot(message, f);
+    S2UsercmdSnapshot snap{};
+    snap.move[0] = f.forwardMove; snap.move[1] = -f.leftMove; snap.move[2] = f.upMove;
+    for (int i = 0; i < 3; ++i) snap.angles[i] = f.angles[i];
+    snap.impulse = f.impulse;
+    snap.command_number = f.commandNumber;
+    snap.buttons = f.buttons;
+    const int b = buttons.get(), st = states.get();
+    if (b >= 0 && st >= 0) {
+        std::memcpy(snap.move_buttons, static_cast<const char*>(services) + b + st, sizeof snap.move_buttons);
+    }
+    snap.slot = slot;
+    snap.tick = s2_server_tick_count();
+    s2script_core_dispatch_usercmd_post(&snap);
 }
 
 static int S2NamedUsercmdSlotOp(void* receiver) { return DeriveUsercmdSlot(receiver); }
@@ -6603,6 +6664,25 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
             // Usercmd post phase: CPlayer_MovementServices::RunCommand, the per-command run. Same
             // lazy shape as ProcessUsercmds: resolved here, hooked on the first post subscriber.
+            {
+                auto& offs = s_gdCore.offsets;
+                auto pick = [&](const char* k) { auto i = offs.find(k); return i != offs.end() ? i->second : -1; };
+                S2UsercmdLayout L;
+                L.base = pick("UserCmdPB_base");
+                L.buttonsPb = pick("BaseUserCmdPB_buttonState");
+                L.viewAngles = pick("BaseUserCmdPB_viewAngles");
+                L.commandNumber = pick("BaseUserCmdPB_legacyCommandNumber");
+                L.forwardMove = pick("BaseUserCmdPB_forwardMove");
+                L.leftMove = pick("BaseUserCmdPB_leftMove");
+                L.upMove = pick("BaseUserCmdPB_upMove");
+                L.impulse = pick("BaseUserCmdPB_impulse");
+                L.buttonState1 = pick("InButtonStatePB_buttonState1");
+                L.angleX = pick("MsgQAngle_x");
+                s_usercmdLayout = L;
+                s_usercmdLayoutCheck = S2UsercmdLayoutCheck{};
+                GamedataResult("UserCmd layout offsets", L.Complete(),
+                               "offset keys absent from gamedata (post snapshot uses reflection)");
+            }
             auto rcit = sigs.find("PlayerMovementServices_RunCommand");
             if (rcit == sigs.end()) {
                 GamedataResult("PlayerMovementServices_RunCommand", false, "signature absent from gamedata");

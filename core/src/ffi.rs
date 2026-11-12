@@ -594,14 +594,17 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
 }
 
 /// Shim → core: the post phase of the usercmd hook — one command the server actually ran for `slot`,
-/// after its movement was applied and written back to the pawn. `tick` is the server tick it ran
-/// in, `command_number` the command's own number. Runs the "post" subscribers synchronously; the
+/// after its movement was applied and written back to the pawn. `snapshot` (borrowed for the call)
+/// carries the slot, the server tick it ran in and the command's fields. Runs the "post" subscribers synchronously; the
 /// command is read-only and their returns are ignored. Declared weak on the shim side, like
 /// `s2script_core_dispatch_hook`.
 #[no_mangle]
-pub extern "C" fn s2script_core_dispatch_usercmd_post(slot: c_int, tick: c_int, command_number: c_int) {
+pub extern "C" fn s2script_core_dispatch_usercmd_post(snapshot: *const v8host::UsercmdSnapshot) {
     let _prof = crate::profiler::framework("dispatch_usercmd_post");
-    let _ = catch_unwind(|| v8host::dispatch_usercmd_post(slot, tick, command_number));
+    if snapshot.is_null() { return; }
+    // SAFETY: the shim passes a live snapshot borrowed for this call; copied before any JS runs.
+    let snap = unsafe { *snapshot };
+    let _ = catch_unwind(|| v8host::dispatch_usercmd_post(&snap));
 }
 
 /// Shim → core: a compiled inbound-hook thunk fired. `hook_id` is the shim hook slot (a compile-time

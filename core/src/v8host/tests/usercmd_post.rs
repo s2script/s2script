@@ -23,23 +23,29 @@ thread_local! {
     static MOVE_BUTTONS: Cell<[u64; 3]> = const { Cell::new([0; 3]) };
     static PRE_INSTALLS: Cell<i32> = const { Cell::new(0) };
     static POST_INSTALLS: Cell<i32> = const { Cell::new(0) };
+    /// Every per-field read op that reached the "shim".
+    static NATIVE_READS: Cell<i32> = const { Cell::new(0) };
 }
 
 extern "C" fn fake_ent_resolve(index: c_int, _serial: c_int) -> *mut c_void {
     if index == PAWN { PAWN_BUF.with(|b| b.get()) as *mut c_void } else { std::ptr::null_mut() }
 }
-extern "C" fn fake_read(field: c_int) -> f64 { if field == 0 { CMD_FORWARD.with(|c| c.get()) } else { 0.0 } }
+extern "C" fn fake_read(field: c_int) -> f64 {
+    NATIVE_READS.with(|c| c.set(c.get() + 1));
+    if field == 0 { CMD_FORWARD.with(|c| c.get()) } else { 0.0 }
+}
 extern "C" fn fake_write(field: c_int, value: f64) {
     WRITES.with(|w| w.borrow_mut().push("write"));
     if field == 0 { CMD_FORWARD.with(|c| c.set(value)); }
 }
-extern "C" fn fake_read_buttons() -> u64 { CMD_BUTTONS.with(|c| c.get()) }
+extern "C" fn fake_read_buttons() -> u64 { NATIVE_READS.with(|c| c.set(c.get() + 1)); CMD_BUTTONS.with(|c| c.get()) }
 extern "C" fn fake_write_buttons(mask: u64) {
     WRITES.with(|w| w.borrow_mut().push("write_buttons"));
     CMD_BUTTONS.with(|c| c.set(mask));
 }
 extern "C" fn fake_clear_subtick() { WRITES.with(|w| w.borrow_mut().push("clear_subtick")); }
 extern "C" fn fake_move_buttons(which: c_int) -> u64 {
+    NATIVE_READS.with(|c| c.set(c.get() + 1));
     MOVE_BUTTONS.with(|b| b.get()).get(which as usize).copied().unwrap_or(0)
 }
 extern "C" fn fake_pre_install() -> c_int { PRE_INSTALLS.with(|c| c.set(c.get() + 1)); 1 }
@@ -60,6 +66,7 @@ fn setup() {
     MOVE_BUTTONS.with(|b| b.set([0; 3]));
     PRE_INSTALLS.with(|c| c.set(0));
     POST_INSTALLS.with(|c| c.set(0));
+    NATIVE_READS.with(|c| c.set(0));
     let id = crate::entity_live::on_created(PAWN, 1);
     set_engine_ops(Some(S2EngineOps {
         ent_resolve: Some(fake_ent_resolve),
@@ -93,7 +100,21 @@ fn run_command(slot: i32, tick: i32, number: i32) {
     set_origin_x(origin_x() + forward);
     let pressed = CMD_BUTTONS.with(|c| c.get());
     MOVE_BUTTONS.with(|b| { let [old, _, _] = b.get(); b.set([pressed, old ^ pressed, 0]) });
-    dispatch_usercmd_post(slot, tick, number);
+    post(slot, tick, number);
+}
+
+/// The post dispatch with the snapshot the shim would copy from the fake command and services.
+fn post(slot: i32, tick: i32, number: i32) {
+    let snap = UsercmdSnapshot {
+        moves: [CMD_FORWARD.with(|c| c.get()) as f32, 0.0, 0.0],
+        command_number: number,
+        buttons: CMD_BUTTONS.with(|c| c.get()),
+        move_buttons: MOVE_BUTTONS.with(|b| b.get()),
+        slot,
+        tick,
+        ..Default::default()
+    };
+    dispatch_usercmd_post(&snap);
 }
 
 fn log() -> String { eval_in_context_string("p", "log.join(' ')") }
@@ -201,7 +222,7 @@ fn move_buttons_read_what_the_command_left() {
 #[test]
 fn each_phase_installs_its_own_detour_on_its_first_subscriber() {
     setup();
-    dispatch_usercmd_post(0, 1, 1);   // nobody subscribed: nothing runs, nothing installs
+    post(0, 1, 1);   // nobody subscribed: nothing runs, nothing installs
     assert_eq!((PRE_INSTALLS.with(|c| c.get()), POST_INSTALLS.with(|c| c.get())), (0, 0));
     eval_in_context("p", "__s2pkg_usercmd.UserCmd.onRun(function () {});").unwrap();
     assert_eq!((PRE_INSTALLS.with(|c| c.get()), POST_INSTALLS.with(|c| c.get())), (1, 0),
@@ -255,16 +276,46 @@ fn unloading_the_subscriber_stops_post_delivery() {
 fn post_info_is_shared_and_out_of_plugin_reach() {
     setup();
     create_plugin_context("q");
-    assert_eq!(eval_in_context_string("q", "typeof __s2_usercmd_post_info"), "undefined");
+    assert_eq!(eval_in_context_string("q", "typeof __s2_usercmd_snapshot"), "undefined");
     for id in ["p", "q"] {
         eval_in_context(id, "globalThis.seen = []; __s2pkg_usercmd.UserCmd.onRun(function (c, i) { \
             seen.push(i.slot + '/' + i.tick + '/' + i.commandNumber); }, { phase: 'post' });").unwrap();
     }
-    dispatch_usercmd_post(3, 40, 7);
-    dispatch_usercmd_post(5, 41, 8);
+    post(3, 40, 7);
+    post(5, 41, 8);
     for id in ["p", "q"] {
         assert_eq!(eval_in_context_string(id, "seen.join(' ')"), "3/40/7 5/41/8", "context {id}");
     }
+    teardown();
+}
+
+/// In post every `cmd` field comes from the snapshot the shim copied: no per-field native call.
+/// Outside a post dispatch (pre) the same getters still take the native path.
+#[test]
+fn post_reads_come_from_the_snapshot_without_native_calls() {
+    setup();
+    eval_in_context("p", r#"
+        __s2pkg_usercmd.UserCmd.onRun(function (c, i) {
+            log.push(c.forwardMove + '/' + c.sideMove + '/' + c.impulse + '/' + c.buttons + '/' +
+                     c.viewAngles.y + '/' + c.pressedButtons + '/' + c.changedButtons + '/' + c.scrollButtons);
+        }, { phase: 'post' });
+    "#).unwrap();
+    let snap = UsercmdSnapshot {
+        moves: [450.0, -225.0, 0.0],
+        angles: [10.0, 90.5, 0.0],
+        impulse: 101,
+        command_number: 7,
+        buttons: 1 << 33,
+        move_buttons: [2, 4, 8],
+        slot: 1,
+        tick: 50,
+    };
+    dispatch_usercmd_post(&snap);
+    assert_eq!(log(), "450/-225/101/8589934592/90.5/2/4/8");
+    assert_eq!(NATIVE_READS.with(|c| c.get()), 0, "post getters must read the shared snapshot");
+    // Outside the dispatch the snapshot is invalid again, so the view falls back to the natives.
+    eval_in_context("p", "__s2pkg_usercmd.Cmd.forwardMove;").unwrap();
+    assert_eq!(NATIVE_READS.with(|c| c.get()), 1);
     teardown();
 }
 
@@ -275,9 +326,9 @@ fn post_info_is_shared_and_out_of_plugin_reach() {
 fn post_dispatch_makes_no_rust_allocation() {
     setup();
     eval_in_context("p", "__s2pkg_usercmd.UserCmd.onRun(function (cmd, info) { info.slot; }, { phase: 'post' });").unwrap();
-    for i in 0..200 { dispatch_usercmd_post(0, i, i); }   // warm the cached list and the JIT
+    for i in 0..200 { post(0, i, i); }   // warm the cached list and the JIT
     let (allocs, _) = super::allocations::measure(|| {
-        for i in 0..1000 { dispatch_usercmd_post(0, i, i); }
+        for i in 0..1000 { post(0, i, i); }
     });
     assert_eq!(allocs, 0, "post dispatch allocated {allocs} times for 1000 calls x 1 subscriber");
     teardown();
@@ -291,14 +342,25 @@ fn usercmd_post_cost() {
     setup();
     let n = 200_000;
     let t = std::time::Instant::now();
-    for i in 0..n { dispatch_usercmd_post(0, i, i); }
+    for i in 0..n { post(0, i, i); }
     let idle = t.elapsed().as_nanos() as f64 / n as f64;
     eval_in_context("p", "__s2pkg_usercmd.UserCmd.onRun(function (cmd, info) { info.slot; }, { phase: 'post' });").unwrap();
-    for i in 0..20_000 { dispatch_usercmd_post(0, i, i); }
+    for i in 0..20_000 { post(0, i, i); }
     let t = std::time::Instant::now();
-    for i in 0..n { dispatch_usercmd_post(0, i, i); }
+    for i in 0..n { post(0, i, i); }
     let per = t.elapsed().as_nanos() as f64 / n as f64;
     println!("usercmd post dispatch: {idle:.1} ns/call with no subscriber, {per:.0} ns/call with 1");
+    // A recorder-shaped handler: every field, once per command.
+    teardown();
+    setup();
+    eval_in_context("p", "globalThis.acc = 0; __s2pkg_usercmd.UserCmd.onRun(function (c, i) { \
+        acc += c.forwardMove + c.sideMove + c.upMove + c.impulse + i.tick + i.commandNumber; \
+        if (c.buttons !== 0n || c.pressedButtons !== 0n) acc++; }, { phase: 'post' });").unwrap();
+    for i in 0..20_000 { post(0, i, i); }
+    let t = std::time::Instant::now();
+    for i in 0..n { post(0, i, i); }
+    let reads = t.elapsed().as_nanos() as f64 / n as f64;
+    println!("usercmd post dispatch reading 6 fields + buttons: {reads:.0} ns/call");
     teardown();
 }
 

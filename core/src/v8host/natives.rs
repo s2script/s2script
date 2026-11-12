@@ -189,7 +189,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     );
     // Usercmd post phase: movement-services buttons + the post dispatch's (slot, tick, number).
     set_native(scope, global_obj, "__s2_usercmd_read_move_buttons", s2_usercmd_read_move_buttons);
-    set_native(scope, global_obj, "__s2_usercmd_post_info", s2_usercmd_post_info);
+    set_native(scope, global_obj, "__s2_usercmd_snapshot", s2_usercmd_snapshot);
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
     set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);

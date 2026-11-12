@@ -2920,11 +2920,9 @@ fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallba
 const USERCMD_POST_KEY: &str = "onRunPost";
 
 thread_local! {
-    /// The post dispatch in progress: (slot, tick, command number). `Some` exactly while
-    /// `dispatch_usercmd_post` runs its handlers, which is what makes the command read-only (the
-    /// shared `usercmd_post_info` slots mirror it for JS). Saved and restored, so a nested dispatch cannot clear an
-    /// outer one's state.
-    static USERCMD_POST_ACTIVE: std::cell::Cell<Option<(i32, i32, i32)>> = const { std::cell::Cell::new(None) };
+    /// True exactly while `dispatch_usercmd_post` runs its handlers, which is what makes the command
+    /// read-only. Saved and restored, so a nested dispatch cannot clear an outer one's state.
+    static USERCMD_POST_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The post channel's subscriber list, reused while `USERCMD_MUX`'s version is unchanged, so a
     /// post dispatch copies no subscriber metadata (one runs per command per player).
     static USERCMD_POST_SNAPSHOT: std::cell::RefCell<Option<(u64, std::rc::Rc<[(String, u64, v8::Global<v8::Function>)]>)>>
@@ -2935,7 +2933,7 @@ thread_local! {
 /// command already ran, so a write could only corrupt the engine's copy of it; the shim refuses
 /// too (its post frame has no mutable command). Debug builds say so, once per process.
 fn usercmd_post_write_refused() -> bool {
-    if USERCMD_POST_ACTIVE.with(|a| a.get()).is_none() { return false; }
+    if !USERCMD_POST_ACTIVE.with(|a| a.get()) { return false; }
     #[cfg(debug_assertions)]
     {
         static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2962,36 +2960,69 @@ fn s2_usercmd_read_move_buttons(scope: &mut v8::PinScope, args: v8::FunctionCall
     }));
 }
 
-/// The running post dispatch's (slot, tick, command number), in memory every plugin context holds an
-/// `Int32Array` view of (`__s2_usercmd_post_info`). `dispatch_usercmd_post` writes it once per
-/// command, so a subscriber's wrapper refreshes its `info` with three plain reads and no native call.
-/// `[-1, -1, -1]` outside a dispatch. Leaked once per thread: the views V8 holds must never dangle.
-mod usercmd_post_info {
+/// One executed command as the shim copied it (`S2UsercmdSnapshot` in `s2script_core.h`; the two
+/// layouts must match field for field). 72 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct UsercmdSnapshot {
+    /// forward, side (+right), up
+    pub moves: [f32; 3],
+    /// pitch, yaw, roll
+    pub angles: [f32; 3],
+    pub impulse: i32,
+    pub command_number: i32,
+    /// The command's held-button mask.
+    pub buttons: u64,
+    /// The movement services' button state after the command: pressed, changed, scroll.
+    pub move_buttons: [u64; 3],
+    pub slot: i32,
+    pub tick: i32,
+}
+const _: () = assert!(std::mem::size_of::<UsercmdSnapshot>() == 72);
+
+/// The running post dispatch's snapshot, in memory every plugin context holds a view of
+/// (`__s2_usercmd_snapshot`). `dispatch_usercmd_post` copies the shim's snapshot here once per
+/// command and sets the `valid` word after it, so `UserCmdView` getters and the per-subscriber
+/// `info` read plain memory: no native call, no per-field engine walk. `valid` is 0 outside a post
+/// dispatch (the getters then take their native path, as in "pre"). Leaked once per thread: the
+/// views V8 holds must never dangle.
+mod usercmd_shared {
+    use super::UsercmdSnapshot;
     use std::cell::Cell;
+    /// Bytes the views cover: the snapshot, then the `valid` word, padded to 8.
+    pub(super) const LEN: usize = 80;
+    #[repr(C, align(8))]
+    struct Mem(Cell<[u8; LEN]>);
     thread_local! {
-        static SLOTS: &'static [Cell<i32>; 3] = Box::leak(Box::new([Cell::new(-1), Cell::new(-1), Cell::new(-1)]));
+        static MEM: &'static Mem = Box::leak(Box::new(Mem(Cell::new([0; LEN]))));
         pub(super) static STORE: v8::SharedRef<v8::BackingStore> = {
-            let ptr = SLOTS.with(|s| s.as_ptr() as *mut std::ffi::c_void);
+            let ptr = MEM.with(|m| m.0.as_ptr() as *mut std::ffi::c_void);
             // SAFETY: the memory lives for the thread and is only touched on it.
-            unsafe { v8::ArrayBuffer::new_backing_store_from_ptr(ptr, 12, keep, std::ptr::null_mut()) }.make_shared()
+            unsafe { v8::ArrayBuffer::new_backing_store_from_ptr(ptr, LEN, keep, std::ptr::null_mut()) }.make_shared()
         };
     }
     unsafe extern "C" fn keep(_: *mut std::ffi::c_void, _: usize, _: *mut std::ffi::c_void) {}
-    pub(super) fn set(v: (i32, i32, i32)) {
-        SLOTS.with(|s| { s[0].set(v.0); s[1].set(v.1); s[2].set(v.2); });
+    /// The whole region, for save/restore around a (nested) dispatch.
+    pub(super) fn get() -> [u8; LEN] { MEM.with(|m| m.0.get()) }
+    pub(super) fn put(bytes: [u8; LEN]) { MEM.with(|m| m.0.set(bytes)) }
+    /// Publish `snap` as the running command.
+    pub(super) fn publish(snap: &UsercmdSnapshot) {
+        let mut bytes = [0u8; LEN];
+        // SAFETY: UsercmdSnapshot is repr(C), plain data, 72 bytes.
+        let raw = unsafe { std::slice::from_raw_parts(snap as *const UsercmdSnapshot as *const u8, 72) };
+        bytes[..72].copy_from_slice(raw);
+        bytes[72..76].copy_from_slice(&1i32.to_ne_bytes());
+        put(bytes);
     }
 }
 
-/// `__s2_usercmd_post_info() -> Int32Array` — a view of the shared post-info slots (see
-/// `usercmd_post_info`). The prelude takes it once per context and deletes the native, so plugin
-/// code can't reach the view.
-fn s2_usercmd_post_info(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+/// `__s2_usercmd_snapshot() -> ArrayBuffer` — the shared snapshot region (see `usercmd_shared`).
+/// The prelude takes it once per context and deletes the native, so plugin code can't reach it.
+fn s2_usercmd_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let store = usercmd_post_info::STORE.with(|s| s.clone());
+        let store = usercmd_shared::STORE.with(|s| s.clone());
         let buffer = v8::ArrayBuffer::with_backing_store(scope, &store);
-        if let Some(view) = v8::Int32Array::new(scope, buffer, 0, 3) {
-            rv.set(view.into());
-        }
+        rv.set(buffer.into());
     }));
 }
 
@@ -4524,18 +4555,18 @@ pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
 /// lookup, and otherwise it reuses the cached subscriber list and passes the handlers no arguments
 /// (the prelude wrapper hands each its reused `UserCmdView` and `info`), so a steady-state dispatch
 /// makes no Rust allocation.
-pub(crate) fn dispatch_usercmd_post(slot: i32, tick: i32, command_number: i32) {
-    let Some(snap) = usercmd_post_snapshot() else { return };
-    struct Restore(Option<(i32, i32, i32)>);
+pub(crate) fn dispatch_usercmd_post(snap: &UsercmdSnapshot) {
+    let Some(subs) = usercmd_post_snapshot() else { return };
+    struct Restore(bool, [u8; usercmd_shared::LEN]);
     impl Drop for Restore {
         fn drop(&mut self) {
             USERCMD_POST_ACTIVE.with(|a| a.set(self.0));
-            usercmd_post_info::set(self.0.unwrap_or((-1, -1, -1)));
+            usercmd_shared::put(self.1);
         }
     }
-    let _restore = Restore(USERCMD_POST_ACTIVE.with(|a| a.replace(Some((slot, tick, command_number)))));
-    usercmd_post_info::set((slot, tick, command_number));
-    let _ = fan_out(&snap, "dispatch_usercmd_post", Instrument::none(), |_| Some(Vec::new()));
+    let _restore = Restore(USERCMD_POST_ACTIVE.with(|a| a.replace(true)), usercmd_shared::get());
+    usercmd_shared::publish(snap);
+    let _ = fan_out(&subs, "dispatch_usercmd_post", Instrument::none(), |_| Some(Vec::new()));
 }
 
 /// The post channel's subscribers, or `None` when it has none. Rebuilt only when `USERCMD_MUX`

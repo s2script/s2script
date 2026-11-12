@@ -48,6 +48,24 @@
     // persistent mismatch prints a named gamedata FAIL and disables the descriptor). Re-derive on
     // the update treadmill if transmit filtering reports FAILED; see docs/re-strategy.md.
     "CheckTransmitInfo_clientEntityIndex": { "linuxsteamrt64": 576 },
+    // The usercmd protobuf's generated layout (byte offsets into the message objects), for the post
+    // phase's once-per-command snapshot. Read off the generated reflection offset tables in
+    // libserver.so (build 26598758): CCSGOUserCmdPB.base 0x30; CBaseUserCmdPB legacy_command_number
+    // 0x50, buttonstates 0x38, viewangles 0x40, forwardmove 0x58, leftmove 0x5c, upmove 0x60, impulse
+    // 0x64; CInButtonStatePB.buttonstate1 0x18; CMsgQAngle.x 0x18 (y, z follow). NOT trusted on
+    // sight: the shim reads the first 64 commands both ways and compares with reflection; any
+    // disagreement prints a named gamedata FAIL and the snapshot stays on reflection (slower, never
+    // wrong). Re-derive on the update treadmill if that FAIL appears.
+    "UserCmdPB_base": { "linuxsteamrt64": 48 },
+    "BaseUserCmdPB_buttonState": { "linuxsteamrt64": 56 },
+    "BaseUserCmdPB_viewAngles": { "linuxsteamrt64": 64 },
+    "BaseUserCmdPB_legacyCommandNumber": { "linuxsteamrt64": 80 },
+    "BaseUserCmdPB_forwardMove": { "linuxsteamrt64": 88 },
+    "BaseUserCmdPB_leftMove": { "linuxsteamrt64": 92 },
+    "BaseUserCmdPB_upMove": { "linuxsteamrt64": 96 },
+    "BaseUserCmdPB_impulse": { "linuxsteamrt64": 100 },
+    "InButtonStatePB_buttonState1": { "linuxsteamrt64": 24 },
+    "MsgQAngle_x": { "linuxsteamrt64": 24 },
     // NOTE: the six 5D.2 engine-identity offsets (NetworkServerService.gameServer /
     // NetworkGameServer.clientCount+clientElems / ServerSideClient.name+signon+userId) were RETIRED in
     // the clientlist-fakeconvar-onmapstart slice — the client ops now use typed SDK virtuals
@@ -317,8 +335,8 @@
     // Usercmd POST phase: CPlayer_MovementServices::RunCommand(this /*rdi, kept in rbx*/, CUserCmd* cmd
     // /*rsi, kept in r13*/) -> void, the per-command run (movement, then the write-back to the pawn).
     // The batch entry above loops the commands; this runs one, so its post hook is "after this
-    // command". Pattern is ModSharp's (CPlayer_MovementServices::RunCommand); ModSharp identifies the
-    // function by its 'zorf' (0x7A6F7266) immediate, which this build has at +0x207. Build 26598758:
+    // command". The function carries a 'zorf' (0x7A6F7266) immediate at +0x207, which identifies it
+    // independently of the pattern. Build 26598758:
     // unique @0x17bd490, vtable SLOT 26 (+0xd0) of CPlayer_MovementServices_Humanoid. That slot index
     // was checked, not only membership: CCSPlayer_MovementServices overrides slot 26 (@0x15cec90) with a
     // check that tail-jumps here, so the hook fires only for commands that actually run. The

@@ -84,7 +84,7 @@ export interface CtxClients {
     opts?: { phase?: "pre" }
   ): void;
   /**
-   * `"post"` (ModSharp `PlayerRunCommand.InstallHookPost`): after THIS command ran — movement applied
+   * `"post"`: after THIS command ran — movement applied
    * and written back to the pawn, so pawn reads (origin, eye angles, velocity, flags, duck amount,
    * active weapon) return the post-command state. `cmd` is read-only (writes are ignored) and the
    * return value is ignored. `info.tick` is the server tick it ran in, `info.commandNumber` the
