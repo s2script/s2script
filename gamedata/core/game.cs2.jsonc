@@ -239,7 +239,7 @@
     "CHostStateMgr_SetPendingHostStateRequest": {
       "linuxsteamrt64": {
         "module": "libengine2.so",
-        "pattern": "55 48 89 E5 41 56 41 55 41 54 49 89 F4 53 48 83 7F 30 00 48 89 FB 74",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 49 89 F4 53 48 83 7F 30 00 48 89 FB 74 ? 8B 3D ? ? ? ? BE 02 00 00 00 E8 ? ? ? ? 84 C0 74 ? 48 8B 43 30 48 8D 15 ? ? ? ? BE 02 00 00 00 8B 3D ? ? ? ? 48 8B 48 10 44 8B 40 1C 48 85 C9 48 0F 44 CA 31 C0 48 8D 15 ? ? ? ?",
         "resolve": "direct",
         "validate": {
           "string-xref": { "at": 83, "dispOff": 3, "instrLen": 7, "expect": "Discarding pending request '%s, %u'\n" }
@@ -251,7 +251,7 @@
     "CNetworkGameServerBase_ReplyConnection": {
       "linuxsteamrt64": {
         "module": "libengine2.so",
-        "pattern": "55 41 B8 FF FF FF FF B9 00 01 00 00 48 89 E5 41 57 41 56 48 8D 95 ? ? ? ? 41 55 41 54 49 89 FC",
+        "pattern": "55 41 B8 FF FF FF FF B9 00 01 00 00 48 89 E5 41 57 41 56 48 8D 95 ? ? ? ? 41 55 41 54 49 89 FC 53 48 8D BD ? ? ? ? 48 89 F3 48 8D 35 ? ? ? ?",
         "resolve": "direct",
         "validate": {
           "string-xref": { "at": 44, "dispOff": 3, "instrLen": 7, "expect": "CNetworkGameServerBase::ReplyConnection" }
