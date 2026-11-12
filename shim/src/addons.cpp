@@ -646,6 +646,8 @@ void s2_addons_reset() {
         kv.second.own.clear();
         kv.second.downloaded.clear();
         kv.second.pending.clear();
+        // A handshake in progress starts over, so its connect timer restarts too.
+        if (kv.second.conn == ConnState::Connecting) kv.second.conn = ConnState::None;
     }
     g_timedOutSlots.clear();
     g_active = false;
