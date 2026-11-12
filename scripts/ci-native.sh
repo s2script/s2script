@@ -3,7 +3,15 @@
 # runs exactly this script and nothing else, and so does `make ci-native`. If a gate is not
 # in here, it does not run — do not add a gate step to the workflow YAML.
 #
-# Cheap gates first: a boundary violation should fail in seconds, not after a build.
+# The gates are grouped into SHARDS that share no build outputs, so CI runs each shard as its own
+# parallel job (a matrix over `ci-native.sh --list`) while a local run with no argument runs every
+# shard in sequence. A new gate goes into the shard whose build outputs it reads; a gate that reads
+# nothing goes into `fixtures`. Usage:
+#   scripts/ci-native.sh                # every shard (what `make ci-native` runs)
+#   scripts/ci-native.sh rust fixtures  # just these shards, in this order
+#   scripts/ci-native.sh --list         # the shard names, as JSON (the workflow's matrix)
+#
+# Cheap gates first within a shard: a boundary violation should fail in seconds, not after a build.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,6 +19,17 @@ if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: S2_BUILD_JOBS must be a positive integer" >&2
   exit 2
 fi
+
+SHARDS=(rust fixtures engine-function runtime)
+if [[ "${1:-}" == --list ]]; then
+  printf '['; sep=''; for s in "${SHARDS[@]}"; do printf '%s"%s"' "$sep" "$s"; sep=','; done; printf ']\n'
+  exit 0
+fi
+selected=("$@")
+[[ ${#selected[@]} -gt 0 ]] || selected=("${SHARDS[@]}")
+for want in "${selected[@]}"; do
+  case " ${SHARDS[*]} " in *" $want "*) ;; *) echo "error: unknown ci-native shard '$want' (have: ${SHARDS[*]})" >&2; exit 2 ;; esac
+done
 
 # The real-package core test invokes the SDK's function parser while cargo test runs below.
 # As in ci-js, only CI refreshes node_modules; local runs use the installed workspace.
@@ -30,243 +49,271 @@ if command -v ccache >/dev/null 2>&1; then
   LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
 fi
 
-# Fail fast on the complete optimized acceptance plugin: fixture-only host tests
-# cannot see plugin.cpp/SDK declaration errors. The final Bullseye/sniper build
-# and its source-bound symbol gates below remain mandatory.
-if [[ "$(uname -s)" == Linux ]]; then
-  echo "== early Release acceptance probe compile =="
-  cmake -S tools/khook-probe -B build/khook-probe-early -DCMAKE_BUILD_TYPE=Release \
+# --- rust: boundary/name/license gates, cargo build + the core test suites, the host shim -------
+shard_rust() {
+  # CI runs one job per shard from a static matrix; a shard missing there would silently never run.
+  echo "== ci-native.yml matrix lists every shard =="
+  matrix_line="shard: [$(IFS=,; echo "${SHARDS[*]}" | sed 's/,/, /g')]"
+  if ! grep -qxF "        $matrix_line" .github/workflows/ci-native.yml; then
+    echo "error: .github/workflows/ci-native.yml matrix must read '$matrix_line'" >&2
+    exit 1
+  fi
+
+  # Populates the cargo registry that check-licenses-generated.sh reads every locked crate's
+  # license text out of, and warms it for the build below.
+  echo "== cargo fetch --locked =="
+  cargo fetch --locked
+
+  echo "== check-core-boundary.sh (dependency closure + name gates) =="
+  bash scripts/check-core-boundary.sh
+
+  echo "== test-boundary-nameleak.sh =="
+  bash scripts/test-boundary-nameleak.sh
+
+  echo "== check-game-package-boundary.sh (+ self-test) =="
+  bash scripts/check-game-package-boundary.sh
+  bash scripts/check-game-package-boundary.sh --self-test
+
+  echo "== check-licenses-generated.sh =="
+  bash scripts/check-licenses-generated.sh
+
+  echo "== cargo build =="
+  cargo build
+
+  # Includes the integrated interop diagnostic/churn and protocol/API compatibility tests.
+  # scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
+  echo "== cargo test -p s2script-core =="
+  cargo test -p s2script-core
+  # The V8-host suite again, with consumer-side __s2_iface_call routed through protocol 2 interface
+  # facades (FACADE_SHIM in core/src/v8host/lifecycle.rs): a facade must keep every strict-copy rule.
+  echo "== cargo test -p s2script-core frame_tests (interface calls through facades) =="
+  S2_TEST_FACADE=1 cargo test -p s2script-core frame_tests
+  echo "== game-package portability (same native test executable, absent/present artifacts) =="
+  bash scripts/test-game-package-portability.sh
+  bash scripts/test-async-pressure.sh
+
+
+  # The sniper build (scripts/build-sniper.sh) runs in a container where the repo is /repo, so it
+  # leaves a CMakeCache.txt pointing at /repo. A later host build then dies with "current
+  # CMakeCache.txt directory ... is different". Detect a cache from a different source tree and
+  # discard it, rather than making every developer learn this by hitting it.
+  if [ -f build/shim/CMakeCache.txt ] && ! grep -q "CMAKE_HOME_DIRECTORY:INTERNAL=$PWD/shim\$" build/shim/CMakeCache.txt; then
+    echo "== discarding a CMake cache from another source tree (sniper build) =="
+    rm -rf build/shim
+  fi
+
+  echo "== shim build =="
+  cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
+    -DS2_CORE_LIB_DIR=debug \
     ${LAUNCHER[@]+"${LAUNCHER[@]}"}
-  cmake --build build/khook-probe-early --parallel "${S2_BUILD_JOBS:-2}"
-  # Controlled policy rejection must never alter/interpose the main DSO state.
-  if nm -D -C build/khook-probe-early/s2_khook_probe.so | grep -q 's2hook_detail::g_lifecycle'; then
-    echo "error: acceptance private lifecycle escaped into dynamic symbols" >&2
+  cmake --build build/shim -j
+
+  echo "== production interception inventory (stock KHook only) =="
+  # Inspect the linked production DSO, including local symbols; standalone tests
+  # intentionally retain the old decoder/relocator implementation.
+  if nm -C build/shim/s2script.so | grep -E 's2detour::(Install|RemoveAll|Remove|Relocate)' > build/shim/private-interception-symbols.txt; then
+    cat build/shim/private-interception-symbols.txt >&2
+    echo 'error: production private interception linkage remains' >&2
     exit 1
   fi
-  nm -C build/khook-probe-early/s2_khook_probe.so > build/khook-probe-early/local-symbols.txt
-  if ! grep -Eq ' [bd] s2hook_detail::g_lifecycle$' build/khook-probe-early/local-symbols.txt; then
-    echo "error: acceptance private lifecycle is not DSO-local" >&2
-    exit 1
+
+  echo "== libffi private static linkage =="
+  if ldd build/shim/s2script.so | grep -i libffi; then
+    echo 'FAIL: libffi must not be a runtime dependency' >&2; exit 1
   fi
-fi
+  if nm -D --defined-only build/shim/s2script.so | grep -E '[[:space:]]ffi_'; then
+    echo 'FAIL: private ffi symbols exported' >&2; exit 1
+  fi
 
-# Exercise the live verdict and explicit host-only build-mode controls.
-python3 tools/engine-function-probe/test_live.py
-python3 tools/engine-function-probe/test_build_live.py
+  echo "== ccommand_selftest (our CCommand tokenizer) =="
+  cmake --build build/shim --target ccommand_selftest -j >/dev/null
+  ./build/shim/ccommand_selftest
 
-# Compile the resident ABI probe as well as the standalone provider fixtures.
-# This creates no source-bound bundle/acceptance receipt and claims no live proof.
-if [[ "$(uname -s)" == Linux ]]; then
-  echo "== early Release engine-function resident probe compile =="
-  S2FN_SOURCE_REVISION="$(git rev-parse HEAD)" \
-  S2FN_BUILD_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
-    bash tools/engine-function-probe/build-live.sh --probe-only --compile-only
-fi
+  echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
+  bash scripts/check-shim-symbols.sh
 
-# Populates the cargo registry that check-licenses-generated.sh reads every locked crate's
-# license text out of, and warms it for the build below.
-echo "== cargo fetch --locked =="
-cargo fetch --locked
+}
 
-echo "== check-core-boundary.sh (dependency closure + name gates) =="
-bash scripts/check-core-boundary.sh
+# --- fixtures: standalone C++ / Python fixture gates (each builds its own scratch tree) ---------
+shard_fixtures() {
+  # Fail fast on the complete optimized acceptance plugin: fixture-only host tests
+  # cannot see plugin.cpp/SDK declaration errors. The final Bullseye/sniper build
+  # and its source-bound symbol gates below remain mandatory.
+  if [[ "$(uname -s)" == Linux ]]; then
+    echo "== early Release acceptance probe compile =="
+    cmake -S tools/khook-probe -B build/khook-probe-early -DCMAKE_BUILD_TYPE=Release \
+      ${LAUNCHER[@]+"${LAUNCHER[@]}"}
+    cmake --build build/khook-probe-early --parallel "${S2_BUILD_JOBS:-2}"
+    # Controlled policy rejection must never alter/interpose the main DSO state.
+    if nm -D -C build/khook-probe-early/s2_khook_probe.so | grep -q 's2hook_detail::g_lifecycle'; then
+      echo "error: acceptance private lifecycle escaped into dynamic symbols" >&2
+      exit 1
+    fi
+    nm -C build/khook-probe-early/s2_khook_probe.so > build/khook-probe-early/local-symbols.txt
+    if ! grep -Eq ' [bd] s2hook_detail::g_lifecycle$' build/khook-probe-early/local-symbols.txt; then
+      echo "error: acceptance private lifecycle is not DSO-local" >&2
+      exit 1
+    fi
+  fi
 
-echo "== test-boundary-nameleak.sh =="
-bash scripts/test-boundary-nameleak.sh
+  echo "== test-original-module.sh (verified original instruction images) =="
+  bash scripts/test-original-module.sh
 
-echo "== check-game-package-boundary.sh (+ self-test) =="
-bash scripts/check-game-package-boundary.sh
-bash scripts/check-game-package-boundary.sh --self-test
+  echo "== test-engine-resolver.sh (recipe-aware original-image resolution) =="
+  bash scripts/test-engine-resolver.sh
 
-echo "== test-original-module.sh (verified original instruction images) =="
-bash scripts/test-original-module.sh
+  echo "== test-engine-consumer.sh (production consumer delegation and retention) =="
+  bash scripts/test-engine-consumer.sh
 
-echo "== test-engine-resolver.sh (recipe-aware original-image resolution) =="
-bash scripts/test-engine-resolver.sh
+  echo "== test-sigscan.sh =="
+  bash scripts/test-sigscan.sh
 
-echo "== test-engine-consumer.sh (production consumer delegation and retention) =="
-bash scripts/test-engine-consumer.sh
+  echo "== test-gamedata.sh =="
+  bash scripts/test-gamedata.sh
 
-echo "== test-sigscan.sh =="
-bash scripts/test-sigscan.sh
+  echo "== check-deferred-sentinel.sh (S2_DISPATCH_DEFERRED: core == shim header) =="
+  bash scripts/check-deferred-sentinel.sh
 
-echo "== test-gamedata.sh =="
-bash scripts/test-gamedata.sh
+  echo "== check-engine-ops-order.sh (S2EngineOps field order: core == shim header) =="
+  bash scripts/check-engine-ops-order.sh
 
-echo "== check-deferred-sentinel.sh (S2_DISPATCH_DEFERRED: core == shim header) =="
-bash scripts/check-deferred-sentinel.sh
+  echo "== test-usermsg-fields.py (production protobuf reads and edits) =="
+  python3 scripts/test-usermsg-fields.py
 
-echo "== check-engine-ops-order.sh (S2EngineOps field order: core == shim header) =="
-bash scripts/check-engine-ops-order.sh
+  echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
+  bash scripts/test-defer-queue.sh
 
-echo "== test-usermsg-fields.py (production protobuf reads and edits) =="
-python3 scripts/test-usermsg-fields.py
+  echo "== test-console-capture.sh (Server.commandEx output bracketing, cap, timeout) =="
+  bash scripts/test-console-capture.sh
 
-echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
-bash scripts/test-defer-queue.sh
+  echo "== test-cvar-value.sh (Server.setCvar writes only the value's own bytes) =="
+  bash scripts/test-cvar-value.sh
 
-echo "== test-console-capture.sh (Server.commandEx output bracketing, cap, timeout) =="
-bash scripts/test-console-capture.sh
+  echo "== test-client-bootstrap.sh (unsigned userid sentinel and late-load occupancy) =="
+  bash scripts/test-client-bootstrap.sh
 
-echo "== test-cvar-value.sh (Server.setCvar writes only the value's own bytes) =="
-bash scripts/test-cvar-value.sh
+  echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
+  bash scripts/test-hook-dispatch.sh
 
-echo "== test-client-bootstrap.sh (unsigned userid sentinel and late-load occupancy) =="
-bash scripts/test-client-bootstrap.sh
+  echo "== test-engine-hook-invocation.sh (production declarative KHook callbacks) =="
+  bash scripts/test-engine-hook-invocation.sh
 
-echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
-bash scripts/test-hook-dispatch.sh
+  echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
+  bash scripts/test-named-hook-invocation.sh
 
-echo "== test-engine-hook-invocation.sh (production declarative KHook callbacks) =="
-bash scripts/test-engine-hook-invocation.sh
+  echo "== test-named-output-value.sh (production output value and allocator lifetime) =="
+  bash scripts/test-named-output-value.sh
 
-echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
-bash scripts/test-named-hook-invocation.sh
+  echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
+  bash scripts/test-khook-binding.sh
 
-echo "== test-named-output-value.sh (production output value and allocator lifetime) =="
-bash scripts/test-named-output-value.sh
+  echo "== test-khook-shutdown.sh (Unload Busy/Pending/Complete) =="
+  bash scripts/test-khook-shutdown.sh
 
-echo "== test-engine-function-copy.sh (native storage and actual Linux reader) =="
-bash scripts/test-engine-function-copy.sh
+  echo "== test-khook-command.py (production ClientCommand and registered dispatch) =="
+  python3 scripts/test-khook-command.py
 
-echo "== bounded engine function ABI / stock provider =="
-bash scripts/test-engine-function-abi.sh --stock-provider
+  echo "== native_fixture_test.py (production acceptance driver) =="
+  python3 tools/khook-probe/testdata/native_fixture_test.py
 
-echo "== test-engine-function-bridge.sh (shared targets and stock lifecycle) =="
-bash scripts/test-engine-function-bridge.sh --stock-provider
-echo "== engine function busy-caller real V8 spike =="
-bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
-echo "== engine function production registry / real outer frame proof =="
-S2FN_V8_DIAGNOSTICS=0 bash scripts/test-engine-function-v8-adapter.sh --stock-provider
-echo "== engine function stock peer order fixtures =="
-bash scripts/test-engine-function-live.sh --fixture-only --orders peer-first,s2-first
+  echo "== controlled_evidence_test.py (strict native verdict evidence) =="
+  python3 tools/khook-probe/testdata/controlled_evidence_test.py
 
-echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
-bash scripts/test-khook-binding.sh
+  echo "== test-khook-observer.sh (consumed FireEvent observer + suite A fixtures) =="
+  bash scripts/test-khook-observer.sh
 
-echo "== test-khook-shutdown.sh (Unload Busy/Pending/Complete) =="
-bash scripts/test-khook-shutdown.sh
+  echo "== test-install-metamod.sh (artifact verifier + install transaction) =="
+  bash scripts/cloud/test-install-metamod.sh
 
-echo "== test-khook-command.py (production ClientCommand and registered dispatch) =="
-python3 scripts/test-khook-command.py
+  echo "== test-metamod-build.py (unmodified source preparation + stale receipt invalidation) =="
+  python3 scripts/test-metamod-build.py
 
-echo "== native_fixture_test.py (production acceptance driver) =="
-python3 tools/khook-probe/testdata/native_fixture_test.py
+  echo "== test-khook-acceptance.py (suite A judge/registry) =="
+  python3 scripts/test-khook-acceptance.py
 
-echo "== controlled_evidence_test.py (strict native verdict evidence) =="
-python3 tools/khook-probe/testdata/controlled_evidence_test.py
+  echo "== test-khook-runtime-witness.py (mapped native module identity) =="
+  python3 scripts/test-khook-runtime-witness.py
 
-echo "== test-khook-observer.sh (consumed FireEvent observer + suite A fixtures) =="
-bash scripts/test-khook-observer.sh
+  echo "== test-khook-runtime-build.py (fresh source-bound acceptance bundle) =="
+  python3 scripts/test-khook-runtime-build.py
 
-echo "== test-install-metamod.sh (artifact verifier + install transaction) =="
-bash scripts/cloud/test-install-metamod.sh
+  echo "== test-khook-runtime-identity.py (installed runtime receipt) =="
+  python3 scripts/test-khook-runtime-identity.py
 
-echo "== test-metamod-build.py (unmodified source preparation + stale receipt invalidation) =="
-python3 scripts/test-metamod-build.py
+  echo "== test-khook-live.sh --self-test (shared judge via --from-file) =="
+  bash scripts/test-khook-live.sh --self-test
 
-echo "== test-khook-acceptance.py (suite A judge/registry) =="
-python3 scripts/test-khook-acceptance.py
+  echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
+  bash scripts/test-detour-reloc.sh
 
-echo "== test-khook-runtime-witness.py (mapped native module identity) =="
-python3 scripts/test-khook-runtime-witness.py
+  echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
+  bash scripts/check-hook-shapes.sh
 
-echo "== test-khook-runtime-build.py (fresh source-bound acceptance bundle) =="
-python3 scripts/test-khook-runtime-build.py
+  echo "== check-defer-selftest-gate.sh (S2_DEFER_SELFTEST: core == shim, registration-gated) =="
+  bash scripts/check-defer-selftest-gate.sh
 
-echo "== test-khook-runtime-identity.py (installed runtime receipt) =="
-python3 scripts/test-khook-runtime-identity.py
+  echo "== test-call-validate.sh (the descriptor validators: both gates must REJECT) =="
+  bash scripts/test-call-validate.sh
 
-echo "== test-khook-live.sh --self-test (shared judge via --from-file) =="
-bash scripts/test-khook-live.sh --self-test
+  echo "== test-plugin-function-overrides.sh (bounded immutable operator snapshots) =="
+  bash scripts/test-plugin-function-overrides.sh
 
-echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
-bash scripts/test-detour-reloc.sh
+  echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
+  bash scripts/check-gamedata-owners.sh
 
-echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
-bash scripts/check-hook-shapes.sh
+  echo '== check-call-descriptors.sh (every shipped `calls`/`hooks` descriptor is well-formed) =='
+  bash scripts/check-call-descriptors.sh
 
-echo "== check-defer-selftest-gate.sh (S2_DEFER_SELFTEST: core == shim, registration-gated) =="
-bash scripts/check-defer-selftest-gate.sh
+  echo "== check-gamedata-sigs.sh (no build-specific operands in a signature) =="
+  bash scripts/check-gamedata-sigs.sh
 
-echo "== test-call-validate.sh (the descriptor validators: both gates must REJECT) =="
-bash scripts/test-call-validate.sh
+  echo "== check-invoke-abi.sh (declared-call float ABI) =="
+  bash scripts/check-invoke-abi.sh
 
-echo "== test-plugin-function-overrides.sh (bounded immutable operator snapshots) =="
-bash scripts/test-plugin-function-overrides.sh
+}
 
-echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
-bash scripts/check-gamedata-owners.sh
+# --- engine-function: the ABI build that the bridge, V8 adapter and live fixtures all read ------
+shard_engine_function() {
+  # Exercise the live verdict and explicit host-only build-mode controls.
+  python3 tools/engine-function-probe/test_live.py
+  python3 tools/engine-function-probe/test_build_live.py
 
-echo '== check-call-descriptors.sh (every shipped `calls`/`hooks` descriptor is well-formed) =='
-bash scripts/check-call-descriptors.sh
+  # Compile the resident ABI probe as well as the standalone provider fixtures.
+  # This creates no source-bound bundle/acceptance receipt and claims no live proof.
+  if [[ "$(uname -s)" == Linux ]]; then
+    echo "== early Release engine-function resident probe compile =="
+    S2FN_SOURCE_REVISION="$(git rev-parse HEAD)" \
+    S2FN_BUILD_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+      bash tools/engine-function-probe/build-live.sh --probe-only --compile-only
+  fi
 
-echo "== check-licenses-generated.sh =="
-bash scripts/check-licenses-generated.sh
+  echo "== test-engine-function-copy.sh (native storage and actual Linux reader) =="
+  bash scripts/test-engine-function-copy.sh
 
-echo "== cargo build =="
-cargo build
+  echo "== bounded engine function ABI / stock provider =="
+  bash scripts/test-engine-function-abi.sh --stock-provider
 
-# Includes the integrated interop diagnostic/churn and protocol/API compatibility tests.
-# scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
-echo "== cargo test -p s2script-core =="
-cargo test -p s2script-core
-# The V8-host suite again, with consumer-side __s2_iface_call routed through protocol 2 interface
-# facades (FACADE_SHIM in core/src/v8host/lifecycle.rs): a facade must keep every strict-copy rule.
-echo "== cargo test -p s2script-core frame_tests (interface calls through facades) =="
-S2_TEST_FACADE=1 cargo test -p s2script-core frame_tests
-echo "== game-package portability (same native test executable, absent/present artifacts) =="
-bash scripts/test-game-package-portability.sh
-bash scripts/test-async-pressure.sh
+  echo "== test-engine-function-bridge.sh (shared targets and stock lifecycle) =="
+  bash scripts/test-engine-function-bridge.sh --stock-provider
+  echo "== engine function busy-caller real V8 spike =="
+  bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
+  echo "== engine function production registry / real outer frame proof =="
+  S2FN_V8_DIAGNOSTICS=0 bash scripts/test-engine-function-v8-adapter.sh --stock-provider
+  echo "== engine function stock peer order fixtures =="
+  bash scripts/test-engine-function-live.sh --fixture-only --orders peer-first,s2-first
 
+}
 
-echo "== check-gamedata-sigs.sh (no build-specific operands in a signature) =="
-bash scripts/check-gamedata-sigs.sh
+# --- runtime: the Bullseye/sniper Docker build and the source-bound acceptance bundle -----------
+shard_runtime() {
+  # The acceptance bundle includes a freshly built .s2sp with its own identity.
+  echo "== build-khook-runtime.py (native consumers and stamped fixture) =="
+  python3 scripts/build-khook-runtime.py
 
-echo "== check-invoke-abi.sh (declared-call float ABI) =="
-bash scripts/check-invoke-abi.sh
+}
 
-# The sniper build (scripts/build-sniper.sh) runs in a container where the repo is /repo, so it
-# leaves a CMakeCache.txt pointing at /repo. A later host build then dies with "current
-# CMakeCache.txt directory ... is different". Detect a cache from a different source tree and
-# discard it, rather than making every developer learn this by hitting it.
-if [ -f build/shim/CMakeCache.txt ] && ! grep -q "CMAKE_HOME_DIRECTORY:INTERNAL=$PWD/shim\$" build/shim/CMakeCache.txt; then
-  echo "== discarding a CMake cache from another source tree (sniper build) =="
-  rm -rf build/shim
-fi
-
-echo "== shim build =="
-cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
-  -DS2_CORE_LIB_DIR=debug \
-  ${LAUNCHER[@]+"${LAUNCHER[@]}"}
-cmake --build build/shim -j
-
-echo "== production interception inventory (stock KHook only) =="
-# Inspect the linked production DSO, including local symbols; standalone tests
-# intentionally retain the old decoder/relocator implementation.
-if nm -C build/shim/s2script.so | grep -E 's2detour::(Install|RemoveAll|Remove|Relocate)' > build/shim/private-interception-symbols.txt; then
-  cat build/shim/private-interception-symbols.txt >&2
-  echo 'error: production private interception linkage remains' >&2
-  exit 1
-fi
-
-echo "== libffi private static linkage =="
-if ldd build/shim/s2script.so | grep -i libffi; then
-  echo 'FAIL: libffi must not be a runtime dependency' >&2; exit 1
-fi
-if nm -D --defined-only build/shim/s2script.so | grep -E '[[:space:]]ffi_'; then
-  echo 'FAIL: private ffi symbols exported' >&2; exit 1
-fi
-
-echo "== ccommand_selftest (our CCommand tokenizer) =="
-cmake --build build/shim --target ccommand_selftest -j >/dev/null
-./build/shim/ccommand_selftest
-
-echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
-bash scripts/check-shim-symbols.sh
-
-# The acceptance bundle includes a freshly built .s2sp with its own identity.
-echo "== build-khook-runtime.py (native consumers and stamped fixture) =="
-python3 scripts/build-khook-runtime.py
-
-echo "ci-native: all native gates passed"
+for shard in "${selected[@]}"; do
+  echo "#### ci-native shard: $shard ####"
+  "shard_${shard//-/_}"
+done
+echo "ci-native: all native gates passed (${selected[*]})"

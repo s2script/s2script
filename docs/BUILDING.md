@@ -113,6 +113,9 @@ make ci-js        # scripts/ci-js.sh — codegen freshness, plugin typecheck, ex
 else, so a new gate is added to the script, never to the workflow YAML. `npm ci` (the
 `package-lock.json` drift guard) is CI-only — run `CI=1 make ci-js` to include it.
 `make check-boundary` still runs the core→games boundary check on its own.
+`ci-native.sh` is split into shards (`rust`, `fixtures`, `engine-function`, `runtime`) that
+share no build outputs; CI runs one parallel job per shard, and `scripts/ci-native.sh <shard>`
+runs just one locally. With no argument it runs them all, which is what `make ci-native` does.
 
 The boundary checks are the load-bearing ones: the core is engine-generic and must never learn a
 CS2 name. Dependencies point one way — game → core, never core → game.
