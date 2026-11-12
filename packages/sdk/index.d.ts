@@ -46,5 +46,6 @@ export * from "./usermessages";
 export * from "./voice";
 export * from "./stringtables";
 export * from "./steam";
+export * from "./addons";
 export * from "./votes";
 export * from "./ws";

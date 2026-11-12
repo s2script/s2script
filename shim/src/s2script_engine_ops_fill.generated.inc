@@ -238,3 +238,16 @@
     ops.steam_ugc_download_info = &s2_steam_ugc_download_info;
     ops.steam_ugc_install_info = &s2_steam_ugc_install_info;
     ops.steam_ugc_suspend = &s2_steam_ugc_suspend;
+    // --- Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake) ---
+    ops.addons_status = &s2_addons_status;
+    ops.addons_mount = &s2_addons_mount;
+    ops.addons_unmount = &s2_addons_unmount;
+    ops.addons_set_extra = &s2_addons_set_extra;
+    ops.addons_set_client_global = &s2_addons_set_client_global;
+    ops.addons_set_client = &s2_addons_set_client;
+    ops.addons_configure = &s2_addons_configure;
+    ops.addons_clear_client_cache = &s2_addons_clear_client_cache;
+    ops.addons_reset = &s2_addons_reset;
+    ops.addons_current_map = &s2_addons_current_map;
+    ops.addons_mounted = &s2_addons_mounted;
+    ops.addons_client_list = &s2_addons_client_list;

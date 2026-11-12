@@ -74,6 +74,7 @@ mod sm_command;
 mod profiler;
 mod sqldb;
 mod steam;
+mod addons;
 mod stringtables;
 mod ui_pool;
 mod usermsg;

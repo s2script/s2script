@@ -272,6 +272,18 @@ typedef long long (*s2_steam_ugc_state_fn)(uint64_t id);
 typedef int (*s2_steam_ugc_download_info_fn)(uint64_t id, uint64_t* downloaded, uint64_t* total);
 typedef int (*s2_steam_ugc_install_info_fn)(uint64_t id, uint64_t* size_on_disk, char* folder, int cap, uint32_t* timestamp);
 typedef int (*s2_steam_ugc_suspend_fn)(int suspend);
+typedef int (*s2_addons_status_fn)(void);
+typedef int (*s2_addons_mount_fn)(const char* id, const char* folder, int add_to_tail);
+typedef int (*s2_addons_unmount_fn)(const char* id);
+typedef void (*s2_addons_set_extra_fn)(const char* csv);
+typedef void (*s2_addons_set_client_global_fn)(const char* csv);
+typedef void (*s2_addons_set_client_fn)(const char* xuid, const char* csv);
+typedef void (*s2_addons_configure_fn)(double extra_timeout, double connect_timeout, int cache_clients, double cache_seconds);
+typedef void (*s2_addons_clear_client_cache_fn)(const char* xuid);
+typedef void (*s2_addons_reset_fn)(void);
+typedef int (*s2_addons_current_map_fn)(char* out, int cap);
+typedef int (*s2_addons_mounted_fn)(char* out, int cap);
+typedef int (*s2_addons_client_list_fn)(const char* xuid, char* out, int cap);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -513,4 +525,17 @@ typedef struct {
     s2_steam_ugc_download_info_fn steam_ugc_download_info;
     s2_steam_ugc_install_info_fn steam_ugc_install_info;
     s2_steam_ugc_suspend_fn steam_ugc_suspend;
+    /* --- Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake) --- */
+    s2_addons_status_fn addons_status;
+    s2_addons_mount_fn addons_mount;
+    s2_addons_unmount_fn addons_unmount;
+    s2_addons_set_extra_fn addons_set_extra;
+    s2_addons_set_client_global_fn addons_set_client_global;
+    s2_addons_set_client_fn addons_set_client;
+    s2_addons_configure_fn addons_configure;
+    s2_addons_clear_client_cache_fn addons_clear_client_cache;
+    s2_addons_reset_fn addons_reset;
+    s2_addons_current_map_fn addons_current_map;
+    s2_addons_mounted_fn addons_mounted;
+    s2_addons_client_list_fn addons_client_list;
 } S2EngineOps;

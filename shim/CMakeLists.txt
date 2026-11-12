@@ -96,6 +96,8 @@ add_library(s2script SHARED
     src/sdkhooks_vp.cpp
     # Steam game-server services (@s2script/sdk/steam): borrows the engine's libsteam_api session.
     src/steam.cpp
+    # Native addon mounting + the client addon handshake (@s2script/sdk/addons).
+    src/addons.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete

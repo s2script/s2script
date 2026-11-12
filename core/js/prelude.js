@@ -1277,6 +1277,59 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     }
   };
   globalThis.__s2pkg_steam = { Steam: Steam, Workshop: Workshop, WorkshopItemState: WorkshopItemState, SteamResult: SteamResult };
+  // @s2script/sdk/addons — workshop addons mounted on the server and pushed to clients (core/src/addons.rs).
+  // Ids cross as decimal strings; lists cross as one comma-separated string in load order.
+  function __s2_addon_ids(list) {
+    var out = [];
+    if (list == null) return out;
+    if (!Array.isArray(list)) list = [list];
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i], id = typeof v === "bigint" ? v.toString() : String(v == null ? "" : v).trim();
+      if (/^[0-9]{1,20}$/.test(id) && !/^0+$/.test(id) && out.indexOf(id) < 0) out.push(id);
+    }
+    return out;
+  }
+  function __s2_addon_split(csv) { return csv ? String(csv).split(",").filter(function (s) { return s.length > 0; }) : []; }
+  function __s2_addon_xuid(v) {
+    if (v == null) return "";
+    var s = typeof v === "bigint" ? v.toString() : String(v);
+    return /^[0-9]{1,20}$/.test(s) ? s : "";
+  }
+  var __s2_mount_results = { 1: "mounted", 0: "already", "-1": "unavailable", "-2": "invalid", "-3": "missing" };
+  var Addons = {
+    status: function () {
+      var s = __s2_addons_status();
+      return { mount: (s & 1) !== 0, mapAddons: (s & 2) !== 0, clientHandshake: (s & 4) !== 0 };
+    },
+    mount: function (id, folder, opts) {
+      var ids = __s2_addon_ids([id]);
+      if (!ids.length) return "invalid";
+      var r = __s2_addons_mount(ids[0], String(folder == null ? "" : folder), !!(opts && opts.tail));
+      return __s2_mount_results[r] || "unavailable";
+    },
+    unmount: function (id) {
+      var ids = __s2_addon_ids([id]);
+      return ids.length ? __s2_addons_unmount(ids[0]) : false;
+    },
+    mounted: function () { return __s2_addon_split(__s2_addons_mounted()); },
+    setExtraAddons: function (ids) { __s2_addons_set_list(0, __s2_addon_ids(ids).join(",")); },
+    setClientAddons: function (ids, steamId) {
+      if (steamId == null) { __s2_addons_set_list(1, __s2_addon_ids(ids).join(",")); return; }
+      var x = __s2_addon_xuid(steamId);
+      if (!x) throw new TypeError("setClientAddons: steamId must be a SteamID64");
+      __s2_addons_set_list(2, __s2_addon_ids(ids).join(","), x);
+    },
+    clientAddons: function (steamId) { return __s2_addon_split(__s2_addons_client_list(__s2_addon_xuid(steamId))); },
+    configure: function (o) {
+      o = o || {};
+      var num = function (v, d) { return typeof v === "number" && isFinite(v) && v >= 0 ? v : d; };
+      __s2_addons_configure(num(o.extraAddonTimeout, 10), num(o.connectTimeout, 30), !!o.cacheClients, num(o.cacheSeconds, 0));
+    },
+    clearClientCache: function (steamId) { __s2_addons_clear_cache(__s2_addon_xuid(steamId)); },
+    currentMap: function () { return __s2_addon_split(__s2_addons_current_map()); },
+    owner: function () { return __s2_addons_owner(); }
+  };
+  globalThis.__s2pkg_addons = { Addons: Addons };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -3135,7 +3188,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
       "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http", "__s2pkg_files",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
-      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_steam", "__s2pkg_usermessages",
+      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_steam", "__s2pkg_addons", "__s2pkg_usermessages",
       "__s2pkg_usercmd", "__s2pkg_interfaces",
     ];
     for (var i = 0; i < names.length; i++) {

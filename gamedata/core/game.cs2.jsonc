@@ -91,6 +91,24 @@
     // [rdi+0x48] as the CPlayerSlot argument into ISource2GameClients. ModSharp's m_Slot agrees.
     // The cvar-response hook also requires the slot it reads to be a connected human client.
     "CServerSideClient_m_nClientSlot": { "linuxsteamrt64": 72 },
+    // Native addon mounting (shim/src/addons.cpp). All verified on build 26598758 (Nov 11 2026).
+    // CServerSideClient::SendNetMessage(const CNetMessage*, NetChannelBufType_t): slot 16 is the
+    // 3-argument method that forwards to the HLTV sink at [this+0x148] when [this+0x142] is set
+    // (m_bIsHLTV / m_pTvStreamSink); slot 15 is ExecuteStringCommand, slot 14 Clear.
+    "CServerSideClient_SendNetMessage": { "linuxsteamrt64": 16 },
+    // CServerSideClientBase::m_SteamID (uint64, the class is packed). ProcessClientInfo compares
+    // [this+0xab] with the friends id it writes to [this+0xc3] and logs "Client with SteamID %s tried
+    // to send ClientInfo with SteamID %s"; 0xc3 = 0xab + 3 * 8 (m_LastSteamID, m_AuthSessionSteamID).
+    "CServerSideClient_m_SteamID": { "linuxsteamrt64": 171 },
+    // CNetworkGameServerBase::m_szAddonName (CUtlString): ReplyConnection reads [this+0x178] into
+    // S2C_CONNECTION and logs it as "Sending S2C_CONNECTION to %s [addons:'%s']".
+    "CNetworkGameServerBase_m_szAddonName": { "linuxsteamrt64": 376 },
+    // CHostStateRequest (0x68 bytes, freed with size 0x68 by SetPendingHostStateRequest): for a
+    // level load it copies +0x28 (level name), +0x58 (addons) and +0x60 (KeyValues*) into the
+    // manager, and +0x38 (save game) for a load-save request.
+    "CHostStateRequest_m_LevelName": { "linuxsteamrt64": 40 },
+    "CHostStateRequest_m_Addons":    { "linuxsteamrt64": 88 },
+    "CHostStateRequest_m_pKV":       { "linuxsteamrt64": 96 },
     // Interface HOOK slots: the vtable index each KHook installs on, and the live slot count of
     // the object it hooks (the pin). S2_ResolveHookSlots checks them as each interface is
     // acquired: a pin mismatch disables every hook on that interface, and a failed entry disables
@@ -157,6 +175,13 @@
     // from 40 to 37 slots and moved FindNetworkMessagePartial from 14 to 10; s2sdk's header was updated
     // to match (slot test in the s2sdk commit message).
     "INetworkMessages_vtableSize":                { "linuxsteamrt64": 37 },
+    // CFileSystem_Stdio (libfilesystem_stdio.so), the object behind VFileSystem017. The addon
+    // mounts call it through the vendored s2sdk ifilesystem.h, so the whole layout is pinned.
+    // Verified on build 26598758: FileExists 21 (names itself), AddSearchPath 31 (libengine2 calls
+    // +0xf8 with "USRLOCAL"/"DEFAULT_WRITE_PATH"), RemoveSearchPath 32 (+0x100), IsDirectory 50
+    // (+0x190 with "GAME"), IsFileInUntrustedAddon 113 (the header's last); 114..127 are the
+    // implementation's own.
+    "IFileSystem_vtableSize":                     { "linuxsteamrt64": 128 },
     // Sound event lookups (Sound.duration / Sound.isValid). The object behind SoundOpSystem001 is a
     // CSoundOpSystem (libsoundsystem.so BuildID cc784b92…, Oct 22 2026) whose ISoundEventManager
     // base sits at +8: that vtable (@0x73c7b8) has offset-to-top -8 and the primary's type_info, and
@@ -208,6 +233,31 @@
   // docs/superpowers/specs/2026-07-03-slice-5d1b-sigscan-spike-findings.md). A missing/stale
   // signature degrades (s_pGameEventManager stays null -> event ops no-op), never crashes.
   "signatures": {
+    // Native addon mounting (shim/src/addons.cpp). CHostStateMgr::SetPendingHostStateRequest(mgr,
+    // request): every map load passes through it, so its addon list gets our extra addons. Unique
+    // on build 26598758 @0x3850c0; it logs "Discarding pending request '%s, %u'".
+    "CHostStateMgr_SetPendingHostStateRequest": {
+      "linuxsteamrt64": {
+        "module": "libengine2.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 49 89 F4 53 48 83 7F 30 00 48 89 FB 74",
+        "resolve": "direct",
+        "validate": {
+          "string-xref": { "at": 83, "dispOff": 3, "instrLen": 7, "expect": "Discarding pending request '%s, %u'\n" }
+        }
+      }
+    },
+    // CNetworkGameServerBase::ReplyConnection(server, client): builds S2C_CONNECTION from the
+    // server's addon list. Unique on build 26598758 @0x4fad80; it names itself for its profiler scope.
+    "CNetworkGameServerBase_ReplyConnection": {
+      "linuxsteamrt64": {
+        "module": "libengine2.so",
+        "pattern": "55 41 B8 FF FF FF FF B9 00 01 00 00 48 89 E5 41 57 41 56 48 8D 95 ? ? ? ? 41 55 41 54 49 89 FC",
+        "resolve": "direct",
+        "validate": {
+          "string-xref": { "at": 44, "dispOff": 3, "instrLen": 7, "expect": "CNetworkGameServerBase::ReplyConnection" }
+        }
+      }
+    },
     // IGameEventManager2 global in libserver.so. GAMEEVENTSMANAGER002 is NOT a registered
     // interface in CS2 (in zero modules), so the manager is reached via this ctor-body signature:
     // find the ctor, its sole E8 caller, the preceding lea r14 -> the global instance (offset-to-top 0).

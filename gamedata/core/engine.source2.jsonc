@@ -18,6 +18,9 @@
     // INetworkMessages — used by client_print to FindNetworkMessage + AllocateMessage (Slice 6.1).
     // Interface string from inetworkmessages.h NETWORKMESSAGES_INTERFACE_VERSION macro.
     "NetworkMessages": "NetworkMessagesVersion001",
+    // IFileSystem — addon search paths (@s2script/sdk/addons). s2sdk interfaces.h
+    // FILESYSTEM_INTERFACE_VERSION; served by libfilesystem_stdio.so.
+    "FileSystem": "VFileSystem017",
     // ISoundOpSystem — its sound event manager base backs Sound.duration / Sound.isValid.
     "SoundOpSystem": "SoundOpSystem001",
     // INetworkStringTableContainer — backs @s2script/sdk/stringtables. s2sdk

@@ -6814,6 +6814,7 @@ pub(crate) fn register_builtin_stores() {
     crate::client::register_store();
     crate::server_capture::register_store();
     crate::steam::register_store();
+    crate::addons::register_store();
     crate::surface_leases::register_store();
     crate::shared_entity_switch::register_store();
 

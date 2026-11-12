@@ -1,0 +1,50 @@
+{
+  "name": "@s2script/addonmanager",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {
+    "config": {
+      "addons_extra": {
+        "type": "string",
+        "default": "",
+        "description": "Workshop addons to download, mount on the server and send to every client, in load order, separated by commas or spaces (MultiAddonManager's mm_extra_addons)."
+      },
+      "addons_client_extra": {
+        "type": "string",
+        "default": "",
+        "description": "Workshop addons only clients load, separated by commas or spaces (mm_client_extra_addons)."
+      },
+      "addons_extra_timeout": {
+        "type": "float",
+        "default": 10,
+        "description": "Seconds a client has to reconnect after being sent away for an extra addon, for that addon to count as downloaded (mm_extra_addons_timeout)."
+      },
+      "addons_connection_timeout": {
+        "type": "float",
+        "default": 30,
+        "description": "Seconds a client may stay on its first addon download before it is dropped; 0 never drops (mm_addon_connection_timeout)."
+      },
+      "addons_mount_download": {
+        "type": "bool",
+        "default": false,
+        "description": "Ask Steam for an update every time an addon is mounted, even when it is installed (mm_addon_mount_download)."
+      },
+      "addons_cache_clients": {
+        "type": "bool",
+        "default": false,
+        "description": "Remember which addons each client has, so map changes and rejoins skip the reconnects (mm_cache_clients_with_addons)."
+      },
+      "addons_cache_duration": {
+        "type": "float",
+        "default": 0,
+        "description": "Seconds a remembered list lasts after the client was last seen; 0 is forever (mm_cache_clients_duration)."
+      },
+      "addons_block_disconnect_messages": {
+        "type": "bool",
+        "default": false,
+        "description": "Hide the \"loop shutdown\" disconnect message players see when someone reconnects for an addon (mm_block_disconnect_messages)."
+      }
+    }
+  }
+}
