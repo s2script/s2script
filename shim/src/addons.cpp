@@ -137,7 +137,9 @@ void WriteUtlString(void* base, int offset, const char* value) {
 
 // --- state ----------------------------------------------------------------------------------------
 
-enum class ConnState { None, Connecting, Joined };
+// Active: fully in game. Its signon is over, so no SignonState it is sent is rewritten until the
+// next map change starts a new signon.
+enum class ConnState { None, Connecting, Joined, Active };
 
 struct ClientState {
     double lastActive = 0;          // last time the server sent this client anything
@@ -261,7 +263,12 @@ KHook::Return<void> HostStatePre(void* /*mgr*/, void* request) {
         const bool stockMap = g_engine.fs && !level.empty() && g_engine.fs->FileExists(vpk.c_str(), "MOD");
         if (!addons.empty()) loading = addons;
         else if (stockMap) loading.clear();
-    } else if (kvName && strcasecmp(kvName, "ChangeLevel") != 0) {
+    } else if (kvName && strcasecmp(kvName, "ChangeLevel") == 0) {
+        // changelevel keeps the current workshop addon, unless it moves to a stock map.
+        const std::string level = ReadUtlString(req, g_engine.reqLevelNameOffset);
+        const std::string vpk = "maps/" + level + ".vpk";
+        if (g_engine.fs && !level.empty() && g_engine.fs->FileExists(vpk.c_str(), "MOD")) loading.clear();
+    } else if (kvName) {
         // "map_workshop" names its addon in customgamemode; any other request loads a stock map.
         loading.clear();
         if (strcasecmp(kvName, "map_workshop") == 0 && g_tier0.kvFindKey && g_tier0.kvGetString) {
@@ -379,6 +386,7 @@ KHook::Return<bool> SendNetMessagePre(ClientReceiver* client, const CNetMessage*
     if (r->GetEnumValue(*m, fState) == kChangelevel) {
         // The engine's own map change. A client can only take one addon per change, so keep the
         // first and send the rest one by one afterwards.
+        c.conn = ConnState::Joined;   // a new signon starts
         AddonList listed = ParseList(r->GetString(*m, fAddons).c_str());
         if (!listed.empty()) {
             if (listed.size() > 1) r->SetString(m, fAddons, listed.front());
@@ -387,6 +395,7 @@ KHook::Return<bool> SendNetMessagePre(ClientReceiver* client, const CNetMessage*
         return S2_Ignore(true);
     }
 
+    if (c.conn == ConnState::Active) return S2_Ignore(true);
     AddonList want = ClientAddonsLocked(xuid);
     want.erase(std::remove_if(want.begin(), want.end(),
                               [&](const std::string& id) { return Contains(c.downloaded, id); }),
@@ -462,6 +471,9 @@ void S2Addons_OnStartupServer() {
     std::lock_guard<std::mutex> lock(g_mu);
     g_currentMap = g_loadingMap;
     g_timedOutSlots.clear();
+    // A new map is a new signon for everyone still connected.
+    for (auto& kv : g_clients)
+        if (kv.second.conn == ConnState::Active) kv.second.conn = ConnState::Joined;
     if (!g_engine.fs || !g_active) return;
     // Two or more addons leave empty search paths behind that break file writes.
     g_engine.fs->RemoveSearchPath("", "GAME");
@@ -485,6 +497,7 @@ void S2Addons_OnClientActive(uint64_t xuid) {
     std::lock_guard<std::mutex> lock(g_mu);
     auto it = g_clients.find(xuid);
     if (it == g_clients.end()) return;
+    it->second.conn = ConnState::Active;
     if (!g_cacheClients) it->second.downloaded.clear();
 }
 
@@ -620,7 +633,8 @@ void s2_addons_reset() {
     g_mounted.clear();
     g_extra.clear();
     g_clientGlobal.clear();
-    for (auto& kv : g_clients) kv.second.own.clear();
+    g_clients.clear();
+    g_timedOutSlots.clear();
     g_active = false;
 }
 
