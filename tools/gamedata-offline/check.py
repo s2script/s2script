@@ -294,6 +294,7 @@ PINS = [
     ('ICvar_vtableSize', 'libtier0.so', 'CCvar', 0),
     ('IVEngineServer2_vtableSize', 'libengine2.so', 'CEngineServer', 0),
     ('INetChannelInfo_vtableSize', 'libnetworksystem.so', 'CNetChan', 0),
+    ('INetworkMessages_vtableSize', 'libnetworksystem.so', 'CNetworkMessages', 0),
     ('ISoundEventManager_vtableSize', 'libsoundsystem.so', 'CSoundOpSystem', -8),
     ('INetworkStringTableContainer_vtableSize', 'libengine2.so', 'CNetworkStringTableContainer', 0),
     ('INetworkStringTable_vtableSize', 'libengine2.so', 'CNetworkStringTable', 0),
