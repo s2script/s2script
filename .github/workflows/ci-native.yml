@@ -89,9 +89,9 @@ permissions:
 
 jobs:
   native:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with: { submodules: recursive }   # gen-licenses.sh reads the vendored third_party/ submodules
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -112,9 +112,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends autoconf automake libtool libltdl-dev gdb
       - name: native gate suite
         run: |
-          # Only this disposable GitHub runner may change the kernel core policy.
-          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted ]] || {
-            echo 'FAIL core capture requires a disposable GitHub runner' >&2; exit 2;
+          # Only a disposable CI runner may change the kernel core policy: a GitHub-hosted
+          # runner, or a Blacksmith runner (an ephemeral VM that reports itself as self-hosted).
+          [[ "$GITHUB_ACTIONS" == true && ( "$RUNNER_ENVIRONMENT" == github-hosted || "$RUNNER_NAME" == blacksmith-* ) ]] || {
+            echo 'FAIL core capture requires a disposable CI runner' >&2; exit 2;
           }
           diagnostic_dir="$PWD/build/engine-function-v8-diagnostics"
           mkdir -p "$diagnostic_dir/cores" "$diagnostic_dir/artifact"

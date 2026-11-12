@@ -56,10 +56,10 @@ permissions:
 
 jobs:
   js:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       # No submodules: nothing in the JS gate reads third_party/, so the checkout stays cheap.
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
       - uses: actions/setup-node@v4
         with:
           # Must match changesets.yml so the two can never disagree about `npm ci`.
