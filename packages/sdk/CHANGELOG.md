@@ -1,5 +1,11 @@
 # @s2script/cli
 
+## 0.39.0
+
+### Minor Changes
+
+- 913bad2: `clients.onRunCmd(handler, { phase: "post" })` and the `OnPlayerRunCmdPost(cmd, info)` export: a usercmd hook that runs once per executed command, after its movement was applied to the pawn. Read-only `cmd`, `info` = `{ slot, tick, commandNumber }`. `UserCmdView` gains read-only `pressedButtons`, `changedButtons` and `scrollButtons` from the pawn's movement services.
+
 ## 0.38.0
 
 ### Minor Changes
