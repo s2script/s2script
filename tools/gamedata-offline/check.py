@@ -299,6 +299,7 @@ PINS = [
     ('INetworkStringTableContainer_vtableSize', 'libengine2.so', 'CNetworkStringTableContainer', 0),
     ('INetworkStringTable_vtableSize', 'libengine2.so', 'CNetworkStringTable', 0),
     ('IEntityResourceManifestBuilder_vtableSize', 'libserver.so', 'CGameEntitySystem', 0),
+    ('IFileSystem_vtableSize', 'libfilesystem_stdio.so', 'CFileSystem_Stdio', 0),
 ]
 PIN_CLASS = {k.removesuffix('_vtableSize'): (m, c, o) for k, m, c, o in PINS}
 # Bare vtable indices that are not behind an interface pin.
@@ -307,6 +308,7 @@ EXTRA_INDEX = {
     'CBaseEntity_Teleport': ('libserver.so', 'CBaseEntity', 0),
     'CGameRulesGameSystem_OnPrecacheResource': ('libserver.so', 'CGameRulesGameSystem', 0),
     'CServerSideClient_ProcessRespondCvarValue': ('libengine2.so', 'CServerSideClient', 0),
+    'CServerSideClient_SendNetMessage': ('libengine2.so', 'CServerSideClient', 0),
     'CCSPlayer_ItemServices_RemoveWeapons': ('libserver.so', 'CCSPlayer_ItemServices', 0),
 }
 

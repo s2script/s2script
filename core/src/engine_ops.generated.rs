@@ -296,6 +296,18 @@ pub type SteamUgcStateFn = extern "C" fn(id: u64) -> i64;
 pub type SteamUgcDownloadInfoFn = extern "C" fn(id: u64, downloaded: *mut u64, total: *mut u64) -> c_int;
 pub type SteamUgcInstallInfoFn = extern "C" fn(id: u64, size_on_disk: *mut u64, folder: *mut c_char, cap: c_int, timestamp: *mut u32) -> c_int;
 pub type SteamUgcSuspendFn = extern "C" fn(suspend: c_int) -> c_int;
+pub type AddonsStatusFn = extern "C" fn() -> c_int;
+pub type AddonsMountFn = extern "C" fn(id: *const c_char, folder: *const c_char, add_to_tail: c_int) -> c_int;
+pub type AddonsUnmountFn = extern "C" fn(id: *const c_char) -> c_int;
+pub type AddonsSetExtraFn = extern "C" fn(csv: *const c_char);
+pub type AddonsSetClientGlobalFn = extern "C" fn(csv: *const c_char);
+pub type AddonsSetClientFn = extern "C" fn(xuid: *const c_char, csv: *const c_char);
+pub type AddonsConfigureFn = extern "C" fn(extra_timeout: f64, connect_timeout: f64, cache_clients: c_int, cache_seconds: f64);
+pub type AddonsClearClientCacheFn = extern "C" fn(xuid: *const c_char);
+pub type AddonsResetFn = extern "C" fn();
+pub type AddonsCurrentMapFn = extern "C" fn(out: *mut c_char, cap: c_int) -> c_int;
+pub type AddonsMountedFn = extern "C" fn(out: *mut c_char, cap: c_int) -> c_int;
+pub type AddonsClientListFn = extern "C" fn(xuid: *const c_char, out: *mut c_char, cap: c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -542,6 +554,19 @@ pub struct S2EngineOps {
     pub steam_ugc_download_info: Option<SteamUgcDownloadInfoFn>,
     pub steam_ugc_install_info: Option<SteamUgcInstallInfoFn>,
     pub steam_ugc_suspend: Option<SteamUgcSuspendFn>,
+    // --- Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake) ---
+    pub addons_status: Option<AddonsStatusFn>,
+    pub addons_mount: Option<AddonsMountFn>,
+    pub addons_unmount: Option<AddonsUnmountFn>,
+    pub addons_set_extra: Option<AddonsSetExtraFn>,
+    pub addons_set_client_global: Option<AddonsSetClientGlobalFn>,
+    pub addons_set_client: Option<AddonsSetClientFn>,
+    pub addons_configure: Option<AddonsConfigureFn>,
+    pub addons_clear_client_cache: Option<AddonsClearClientCacheFn>,
+    pub addons_reset: Option<AddonsResetFn>,
+    pub addons_current_map: Option<AddonsCurrentMapFn>,
+    pub addons_mounted: Option<AddonsMountedFn>,
+    pub addons_client_list: Option<AddonsClientListFn>,
 }
 
 impl S2EngineOps {

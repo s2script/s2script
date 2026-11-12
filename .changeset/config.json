@@ -27,6 +27,7 @@
     "@s2script/reservedslots",
     "@s2script/rockthevote",
     "@s2script/workshopmaps",
+    "@s2script/addonmanager",
     "@s2script/zones"
   ]
 }

@@ -2145,6 +2145,114 @@
       "c_ret": "int",
       "c_params": "int suspend",
       "shim": "s2_steam_ugc_suspend"
+    },
+    {
+      "name": "addons_status",
+      "alias": "AddonsStatusFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_addons_status"
+    },
+    {
+      "name": "addons_mount",
+      "alias": "AddonsMountFn",
+      "rust": "extern \"C\" fn(id: *const c_char, folder: *const c_char, add_to_tail: c_int) -> c_int",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "int",
+      "c_params": "const char* id, const char* folder, int add_to_tail",
+      "shim": "s2_addons_mount"
+    },
+    {
+      "name": "addons_unmount",
+      "alias": "AddonsUnmountFn",
+      "rust": "extern \"C\" fn(id: *const c_char) -> c_int",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "int",
+      "c_params": "const char* id",
+      "shim": "s2_addons_unmount"
+    },
+    {
+      "name": "addons_set_extra",
+      "alias": "AddonsSetExtraFn",
+      "rust": "extern \"C\" fn(csv: *const c_char)",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "void",
+      "c_params": "const char* csv",
+      "shim": "s2_addons_set_extra"
+    },
+    {
+      "name": "addons_set_client_global",
+      "alias": "AddonsSetClientGlobalFn",
+      "rust": "extern \"C\" fn(csv: *const c_char)",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "void",
+      "c_params": "const char* csv",
+      "shim": "s2_addons_set_client_global"
+    },
+    {
+      "name": "addons_set_client",
+      "alias": "AddonsSetClientFn",
+      "rust": "extern \"C\" fn(xuid: *const c_char, csv: *const c_char)",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "void",
+      "c_params": "const char* xuid, const char* csv",
+      "shim": "s2_addons_set_client"
+    },
+    {
+      "name": "addons_configure",
+      "alias": "AddonsConfigureFn",
+      "rust": "extern \"C\" fn(extra_timeout: f64, connect_timeout: f64, cache_clients: c_int, cache_seconds: f64)",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "void",
+      "c_params": "double extra_timeout, double connect_timeout, int cache_clients, double cache_seconds",
+      "shim": "s2_addons_configure"
+    },
+    {
+      "name": "addons_clear_client_cache",
+      "alias": "AddonsClearClientCacheFn",
+      "rust": "extern \"C\" fn(xuid: *const c_char)",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "void",
+      "c_params": "const char* xuid",
+      "shim": "s2_addons_clear_client_cache"
+    },
+    {
+      "name": "addons_reset",
+      "alias": "AddonsResetFn",
+      "rust": "extern \"C\" fn()",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "void",
+      "c_params": "void",
+      "shim": "s2_addons_reset"
+    },
+    {
+      "name": "addons_current_map",
+      "alias": "AddonsCurrentMapFn",
+      "rust": "extern \"C\" fn(out: *mut c_char, cap: c_int) -> c_int",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "int",
+      "c_params": "char* out, int cap",
+      "shim": "s2_addons_current_map"
+    },
+    {
+      "name": "addons_mounted",
+      "alias": "AddonsMountedFn",
+      "rust": "extern \"C\" fn(out: *mut c_char, cap: c_int) -> c_int",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "int",
+      "c_params": "char* out, int cap",
+      "shim": "s2_addons_mounted"
+    },
+    {
+      "name": "addons_client_list",
+      "alias": "AddonsClientListFn",
+      "rust": "extern \"C\" fn(xuid: *const c_char, out: *mut c_char, cap: c_int) -> c_int",
+      "group": "Addons (shim/src/addons.cpp, IFileSystem + host-state + client handshake)",
+      "c_ret": "int",
+      "c_params": "const char* xuid, char* out, int cap",
+      "shim": "s2_addons_client_list"
     }
   ]
 }

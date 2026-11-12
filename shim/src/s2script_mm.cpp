@@ -81,6 +81,8 @@
 #include "named_hooks.h"    // checked chat/output/usercmd/precache bindings
 #include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
 #include "steam.h"          // Steam game-server services + workshop (@s2script/sdk/steam)
+#include "addons.h"         // native addon mounting + the client addon handshake (@s2script/sdk/addons)
+#include <filesystem/ifilesystem.h>   // IFileSystem (addon search paths), slot-pinned below
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -4646,6 +4648,64 @@ static void InstallCvarResponseHook() {
                    reinterpret_cast<void*>(resolved.target.address),receipt.id);
 }
 
+// Native addon mounting (addons.cpp). Gathers every engine fact the module needs and hands it
+// over; each missing fact turns off the part that needs it there, with one named line.
+static void InstallAddonHooks(ISmmAPI* ismm) {
+    S2AddonsEngine eng;
+    // IFileSystem: every call is compiled against the vendored header, so the live vtable must
+    // match the pin first (a moved AddSearchPath would otherwise run some other method).
+    {
+        auto vit = s_gdCore.interfaces.find("FileSystem");
+        const char* ver = vit != s_gdCore.interfaces.end() ? vit->second.c_str() : FILESYSTEM_INTERFACE_VERSION;
+        CreateInterfaceFn fsFactory = ismm ? ismm->GetFileSystemFactory(false) : nullptr;
+        int ret = 0;
+        auto* fs = fsFactory ? reinterpret_cast<IFileSystem*>(fsFactory(ver, &ret)) : nullptr;
+        if (fs && ret == 0) {
+            static const S2VtableLayout kLayout = { "IFileSystem", "libfilesystem_stdio.so", "IFileSystem_vtableSize" };
+            if (S2_VerifyVtableSlots(kLayout, fs, nullptr, 0, nullptr)) eng.fs = fs;
+        } else {
+            META_CONPRINTF("[s2script] WARN: interface MISSING: FileSystem (%s) — addon mounting off\n", ver);
+        }
+    }
+    auto sigAddr = [](const char* name) -> void* {
+        auto& sigs = s_gdCore.signatures;
+        auto it = sigs.find(name);
+        if (it == sigs.end()) { GamedataResult(name, false, "signature absent from gamedata"); return nullptr; }
+        const int64_t off = ResolveSigValidated(name, it->second);
+        ModText mt = FindModuleText(it->second.module.c_str());
+        if (off == s2sig::kFail || !mt.text) return nullptr;   // the reason is already recorded
+        return const_cast<uint8_t*>(mt.text) + off;
+    };
+    eng.hostStateRequestFn = sigAddr("CHostStateMgr_SetPendingHostStateRequest");
+    eng.replyConnectionFn = sigAddr("CNetworkGameServerBase_ReplyConnection");
+    auto pick = [](const char* k) {
+        auto i = s_gdCore.offsets.find(k);
+        const int v = i != s_gdCore.offsets.end() ? i->second : -1;
+        GamedataResult(k, v >= 0, "offset key absent from gamedata");
+        return v;
+    };
+    eng.reqLevelNameOffset = pick("CHostStateRequest_m_LevelName");
+    eng.reqAddonsOffset = pick("CHostStateRequest_m_Addons");
+    eng.reqKeyValuesOffset = pick("CHostStateRequest_m_pKV");
+    eng.serverAddonNameOffset = pick("CNetworkGameServerBase_m_szAddonName");
+    eng.clientSteamIdOffset = pick("CServerSideClient_m_SteamID");
+    eng.clientSlotOffset = s_clientSlotOffset;
+    const int sendIdx = pick("CServerSideClient_SendNetMessage");
+    if (sendIdx >= 0) {
+        std::string reason;
+        if (!s2resolve::ResolveVirtualSlot("libengine2.so", "CServerSideClient", sendIdx, eng.sendNetMessage, reason)) {
+            eng.sendNetMessage = {};
+            META_CONPRINTF("[s2script] WARN: CServerSideClient::SendNetMessage structural lookup failed (%s)\n",
+                           reason.c_str());
+        }
+    }
+    if (s_pNetworkMessages) eng.signonInfo = s_pNetworkMessages->FindNetworkMessagePartial("SignonState");
+    eng.kick = [](int slot, const char* reason) {
+        S2Engine_KickClient(slot, reason, NETWORK_DISCONNECT_TIMEDOUT);
+    };
+    S2Addons_Init(eng);
+}
+
 // Post one allocated net message to a single connected human slot. Bots have no net channel.
 static int S2_PostToSlot(int slot, INetworkMessageInternal* info, CNetMessage* data) {
     if (!s_pGameEventSystem || slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
@@ -6526,6 +6586,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // this installs ONCE here — no lazy StartupServer retry.
         InstallPrecacheHook();
         InstallCvarResponseHook();
+        InstallAddonHooks(ismm);
 
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
@@ -6769,7 +6830,7 @@ static void S2Shutdown_ResetLoad() {
 static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit& p) {
     return S2HookInventoryCanRemoveSync(S2NormalHookInventory(), p) &&
         S2SdkhooksVpCanUnloadSync(p) && S2EngineHooksCanUnloadSync(p) &&
-        S2NamedHooksCanUnloadSync(p);
+        S2NamedHooksCanUnloadSync(p) && S2AddonsHooksCanUnloadSync(p);
 }
 
 static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
@@ -6828,13 +6889,13 @@ static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
 
     return S2HookInventoryBeginRemoveSync(S2NormalHookInventory(), permit) &&
         S2SdkhooksVpUnloadSync(permit) && S2EngineHooksUnloadSync(permit) &&
-        S2NamedHooksUnloadSync(permit);
+        S2NamedHooksUnloadSync(permit) && S2AddonsHooksUnloadSync(permit);
 }
 
 static bool S2_NormalHooksRemovalComplete() {
     return S2HookInventoryRemovalComplete(S2NormalHookInventory()) &&
         S2SdkhooksVpRemovalComplete() && S2EngineHooksRemovalComplete() &&
-        S2NamedHooksRemovalComplete();
+        S2NamedHooksRemovalComplete() && S2AddonsHooksRemovalComplete();
 }
 
 static bool S2_FinishUnloadCleanup() {
@@ -7006,6 +7067,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // the no-core-subscribers path. This is target-local collection, not quiescence.
     struct FunctionMaintenance { ~FunctionMaintenance() { s2bridge::Global().Collect(); } } function_maintenance;
     if (obs) S2InstallLifecycleHooks();
+    if (obs) S2Addons_Frame();   // kicks clients whose addon download timed out (never inside a hook)
     if (obs && s_retrySubsOnFrame) {
         s_retrySubsOnFrame = false;
         S2_RetryPendingSubscriptions(m_coreDispatchReady, "first frame", /*final=*/true);
@@ -7272,6 +7334,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_OnClientConnected(ISource2GameClients* 
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
     S2_BeginClientXuid(s, xuid, fakePlayer);   // before dispatch: basebans reads it in "connect"
+    if (!fakePlayer) S2Addons_OnClientConnected(xuid);   // before S2C_CONNECTION: addon handshake
     S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
     return S2_Ignore();
 }
@@ -7290,6 +7353,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientActive(ISource2GameClients* clien
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     S2_RecordClientXuid(s, xuid);
+    S2Addons_OnClientActive(xuid);
     MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
     S2_DispatchClientEvent("active", s, s2script_core_client_ensure(s));
     return S2_Ignore();
@@ -7307,6 +7371,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientDisconnect(ISource2GameClients* c
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     S2_RecordClientXuid(s, xuid);   // the departing identity snapshot below reads it
+    S2Addons_OnClientDisconnect(xuid);
     // Copy every string now: callbacks may re-enter engine code or replace the occupant.
     const uint64_t token = s2script_core_client_generation(s);
     auto copy = [](const char* p) { return std::string(p ? p : ""); };
@@ -7404,6 +7469,9 @@ KHook::Return<void> S2ScriptPlugin::Hook_StartupServer(INetworkServerService* ns
     // and a queued IGameEvent duplicate must not outlive the map (the same reset the retired
     // s_pendingRespawn/s_pendingTerminate drains did at Unload).
     S2Defer_Flush("map start");
+    // Addons: the map that just loaded is the current one, and our mounts go back on top in list
+    // order. Before the map_start dispatch, so a plugin reading Addons.currentMap() sees this map.
+    S2Addons_OnStartupServer();
     // This is the POST StartupServer hook: read the new server's occupancy, not the previous
     // map's tracked signon. Map teardown can remove clients without a disconnect callback.
     // Retire only absent slots; actual survivors keep their connection generation and policy.

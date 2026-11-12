@@ -98,6 +98,9 @@ node --test plugins/disabled/mapchooser/src/plugin.test.mjs plugins/disabled/map
 echo "== workshopmaps download tests =="
 node --test plugins/workshopmaps/src/plugin.test.mjs
 
+echo "== addonmanager mount, download and command tests =="
+node --test plugins/addonmanager/src/plugin.test.mjs
+
 echo "== zones operation and consumer attachment tests =="
 node --test plugins/zones/src/plugin.test.mjs
 

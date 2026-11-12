@@ -140,6 +140,9 @@
     "./steam": {
       "types": "./steam.d.ts"
     },
+    "./addons": {
+      "types": "./addons.d.ts"
+    },
     "./voice": {
       "types": "./voice.d.ts"
     },
