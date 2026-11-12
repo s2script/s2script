@@ -593,6 +593,17 @@ pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
     catch_unwind(|| v8host::dispatch_usercmd(slot)).unwrap_or(0)
 }
 
+/// Shim → core: the post phase of the usercmd hook — one command the server actually ran for `slot`,
+/// after its movement was applied and written back to the pawn. `tick` is the server tick it ran
+/// in, `command_number` the command's own number. Runs the "post" subscribers synchronously; the
+/// command is read-only and their returns are ignored. Declared weak on the shim side, like
+/// `s2script_core_dispatch_hook`.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_usercmd_post(slot: c_int, tick: c_int, command_number: c_int) {
+    let _prof = crate::profiler::framework("dispatch_usercmd_post");
+    let _ = catch_unwind(|| v8host::dispatch_usercmd_post(slot, tick, command_number));
+}
+
 /// Shim → core: a compiled inbound-hook thunk fired. `hook_id` is the shim hook slot (a compile-time
 /// constant inside that thunk, and an id core itself handed out at registration); `arg_view` is an
 /// OPAQUE pointer to the thunk's own stack-frame arg view, which core reads and writes ONLY through

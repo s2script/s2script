@@ -227,6 +227,13 @@ int s2script_core_dispatch_game_event_pre(const char* name);
  * and always still calls the original trampoline (server-authoritative — a suppressed cmd is a ZEROED
  * cmd, not a skipped call). catch_unwind -> 0 (fail-open: a core bug must never corrupt player input). */
 int s2script_core_dispatch_usercmd(int slot);
+/* Shim -> core: the post phase of the usercmd hook. Called once per command the server actually ran,
+ * after movement for it was applied and written back to the pawn (the per-command run's post hook).
+ * slot = the player's slot, tick = the server tick it ran in, command_number = the command's own
+ * number. The command in scope is READ-ONLY: the shim's write ops find no mutable command, and core
+ * no-ops its write natives. Return value ignored (the command already ran). Weak, like
+ * dispatch_hook: a shim paired with an older core skips the post phase instead of failing dlopen. */
+void s2script_core_dispatch_usercmd_post(int slot, int tick, int command_number) __attribute__((weak));
 /* Shim -> core: called by the PostEventAbstract PRE hook on a bitmap-hit outbound user message
  * (usermsg-hook slice). name = the message's canonical GetUnscopedName() (the dispatch key), id =
  * its m_MessageId. The shim sets the block-scoped current-message statics BEFORE this call and nulls

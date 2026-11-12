@@ -9,7 +9,7 @@
 // shipped release. Copy a recipe into your own plugin rather than loading this.
 import { RECIPES } from "./recipes/index.ts";
 import { command, HookResult } from "@s2script/sdk";
-import type { Client, EntityRef, HookResultValue, PrecacheContext, UserCmdView } from "@s2script/sdk";
+import type { Client, EntityRef, HookResultValue, PrecacheContext, UserCmdPostInfo, UserCmdView } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   for (const recipe of RECIPES) {
@@ -48,6 +48,10 @@ export function OnPlayerRunCmd(cmd: UserCmdView, info: { slot: number }): HookRe
     if (typeof v === "number") acc = Math.max(acc ?? 0, v);
   }
   return acc as HookResultValue | undefined;
+}
+
+export function OnPlayerRunCmdPost(cmd: UserCmdView, info: UserCmdPostInfo): void {
+  for (const r of RECIPES) r.OnPlayerRunCmdPost?.(cmd, info);
 }
 
 export function OnClientConnected(c: Client): void | Promise<void> {

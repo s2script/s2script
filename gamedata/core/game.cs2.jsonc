@@ -314,6 +314,26 @@
         "resolve": "direct"
       }
     },
+    // Usercmd POST phase: CPlayer_MovementServices::RunCommand(this /*rdi, kept in rbx*/, CUserCmd* cmd
+    // /*rsi, kept in r13*/) -> void, the per-command run (movement, then the write-back to the pawn).
+    // The batch entry above loops the commands; this runs one, so its post hook is "after this
+    // command". Pattern is ModSharp's (CPlayer_MovementServices::RunCommand); ModSharp identifies the
+    // function by its 'zorf' (0x7A6F7266) immediate, which this build has at +0x207. Build 26598758:
+    // unique @0x17bd490, vtable SLOT 26 (+0xd0) of CPlayer_MovementServices_Humanoid. That slot index
+    // was checked, not only membership: CCSPlayer_MovementServices overrides slot 26 (@0x15cec90) with a
+    // check that tail-jumps here, so the hook fires only for commands that actually run. The
+    // CUserCmd's protobuf is at +0x10, the same struct ProcessUsercmds walks.
+    "PlayerMovementServices_RunCommand": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 49 89 F5 41 54 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 4C 89 EE",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "55 48 89 E5 41 57 41 56 41 55 49 89 F5",
+          "vtable-member": "CPlayer_MovementServices_Humanoid"
+        }
+      }
+    },
     // GetLegacyGameEventListener(int slot) -> IGameEventListener2* : the CS2 engine helper that returns a
     // client's per-client legacy game-event listener (a frameless leaf that loads a global array base,
     // bounds-checks the slot, and indexes it). event_fire_to_client (SourceMod FireToClient parity) calls

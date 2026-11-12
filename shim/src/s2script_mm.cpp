@@ -2760,6 +2760,12 @@ static int s2_cvar_set(const char* name, const char* value) {
 // see s2_usercmd_subscribe), so there is zero overhead until a plugin actually wants per-tick input.
 // ---------------------------------------------------------------------------
 static void*             s_pProcessUsercmdsAddr    = nullptr;   // sig-resolved address (Load) — NOT yet installed
+// The usercmd POST phase hooks the per-command run instead: CPlayer_MovementServices::RunCommand
+// (void(services, CUserCmd*), vtable slot 26 of CPlayer_MovementServices_Humanoid). The batch entry
+// above sees every command before any of them runs; RunCommand runs them one at a time (movement,
+// then the write-back to the pawn), so its post hook is the "after this command" point. Resolved at
+// Load, installed lazily on the first post subscriber.
+static void*             s_pRunCommandAddr         = nullptr;
 
 // SUBTICK VERDICT (live human spike, 2026-07-14): a coarse forwardmove=0 write ALONE (no subtick clear)
 // stopped the player — subtick_moves do NOT override the coarse fields. So neutralizing a BLOCKED cmd
@@ -2789,6 +2795,7 @@ struct UsercmdFieldCache {
     const google::protobuf::FieldDescriptor* buttonsPbF    = nullptr;
     const google::protobuf::FieldDescriptor* buttonState1F = nullptr;
     const google::protobuf::FieldDescriptor* subtickMovesF = nullptr;
+    const google::protobuf::FieldDescriptor* cmdNumberF    = nullptr;   // read-only (field 7)
 };
 
 static const UsercmdFieldCache& GetUsercmdFieldCache() {
@@ -2810,6 +2817,7 @@ static const UsercmdFieldCache& GetUsercmdFieldCache() {
             s_cache.viewAnglesF   = baseD->FindFieldByName("viewangles");
             s_cache.buttonsPbF    = baseD->FindFieldByName("buttons_pb");
             s_cache.subtickMovesF = baseD->FindFieldByName("subtick_moves");
+            s_cache.cmdNumberF    = baseD->FindFieldByName("legacy_command_number");
             if (s_cache.viewAnglesF && s_cache.viewAnglesF->cpp_type() == FD::CPPTYPE_MESSAGE) {
                 const auto* vaD = s_cache.viewAnglesF->message_type();
                 if (vaD) {
@@ -2864,6 +2872,9 @@ static double s2_usercmd_read(int field) {
         case 6:   // impulse
             if (!c.impulseF || c.impulseF->cpp_type() != FD::CPPTYPE_INT32) return 0.0;
             return static_cast<double>(br->GetInt32(base, c.impulseF));
+        case 7:   // command number (read-only; no write case)
+            if (!c.cmdNumberF || c.cmdNumberF->cpp_type() != FD::CPPTYPE_INT32) return 0.0;
+            return static_cast<double>(br->GetInt32(base, c.cmdNumberF));
         default:
             return 0.0;   // out-of-range field -> no-op (the native is plugin-reachable with any int)
     }
@@ -2874,7 +2885,7 @@ static double s2_usercmd_read(int field) {
 // abort). field 1 writes leftmove = -value (MF-2). NO auto-subtick-clear — the spike verdict found a
 // coarse write alone takes effect; callers wanting a clear call usercmd_clear_subtick explicitly.
 static void s2_usercmd_write(int field, double value) {
-    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmdMutable());
     if (!current) return;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF) return;
@@ -2940,7 +2951,7 @@ static uint64_t s2_usercmd_read_buttons() {
 // s2_usercmd_write_buttons(mask) — overwrite base.buttons_pb.buttonstate1. is_repeated()/cpp_type()
 // guarded. No-op on any guard failure.
 static void s2_usercmd_write_buttons(uint64_t mask) {
-    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmdMutable());
     if (!current) return;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF || !c.buttonsPbF || !c.buttonState1F) return;
@@ -2962,7 +2973,7 @@ static void s2_usercmd_write_buttons(uint64_t mask) {
 // s2_usercmd_clear_subtick() — drop base.subtick_moves (an OPTIONAL helper; see S2_SUBTICK_CLEAR_ON_BLOCK
 // above — the write ops never call this automatically).
 static void s2_usercmd_clear_subtick() {
-    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmdMutable());
     if (!current) return;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF || !c.subtickMovesF) return;
@@ -2980,22 +2991,82 @@ static void s2_usercmd_clear_subtick() {
 // docs/superpowers/plans/2026-07-14-usercmd-primitive.md, Step 1b). LIVE-VERIFIED against a human-joined
 // server (Task 5, 2026-07-14): the logged slot matches the tester's known slot and a schema
 // Pawn.forSlot(slot) read of the SAME player. The recipe is documented inline below.
-static int DeriveUsercmdSlot(void* thisptr) {
-    if (!thisptr) return -1;
-    // this+0x7c0 holds the firing PAWN's entity handle (the game decodes it via `shr $9 & 0x3f` [chunk]
-    // + `& 0x1ff` [slot-in-chunk] to look the pawn up in the entity system). The LIVE GATE (2026-07-14,
-    // Task 5) proved `(idx>>9)&0x3f` is the entity-system CHUNK, NOT the player slot (a slot-0 human read
-    // slot=1). Correct path: resolve the pawn -> read m_hController -> the CONTROLLER's entity index - 1
-    // IS the 0-based player slot (controllers are entities 1..64). Degrades to -1 on any miss.
+// A schema offset resolved by name once and then reused: these run per command per player. A miss
+// (-1) is not cached, so a class the schema registers late still resolves on a later call.
+struct CachedSchemaOffset {
+    const char* cls; const char* field; int value=-1;
+    int get() { if (value < 0) value = s2_schema_offset(cls, field); return value; }
+};
+
+static void* PtrAt(void* base, int off) {
+    if (!base || off < 0) return nullptr;
+    return *reinterpret_cast<void* const*>(reinterpret_cast<const char*>(base) + off);
+}
+
+// The firing PAWN from the batch entry's `this`. `this+0x7c0` holds the pawn's entity handle
+// (spike-derived from disassembly of the resolved ProcessUsercmds on OUR libserver.so —
+// docs/superpowers/plans/2026-07-14-usercmd-primitive.md, Step 1b). The game decodes it via
+// `shr $9 & 0x3f` [chunk] + `& 0x1ff` [slot-in-chunk]; the low 15 bits are the entity index.
+static void* DeriveUsercmdPawn(void* thisptr) {
+    if (!thisptr) return nullptr;
     uint16_t raw = *reinterpret_cast<const uint16_t*>(reinterpret_cast<const char*>(thisptr) + 0x7c0);
-    void* pawn = s2_ent_by_index(static_cast<int>(raw & 0x7fff));   // low 15 bits = the pawn's entity index
+    return s2_ent_by_index(static_cast<int>(raw & 0x7fff));
+}
+
+// A pawn's player slot: m_hController -> the CONTROLLER's entity index - 1 (controllers are entities
+// 1..64). The LIVE GATE (2026-07-14, Task 5) proved the handle's chunk bits are NOT the slot (a slot-0
+// human read slot=1) and live-verified this path against Pawn.forSlot. -1 on any miss.
+static int PawnSlot(void* pawn) {
+    static CachedSchemaOffset controller{"CBasePlayerPawn", "m_hController"};
     if (!pawn) return -1;
-    int off = s2_schema_offset("CBasePlayerPawn", "m_hController");
+    int off = controller.get();
     if (off < 0) return -1;
     uint32 hController = *reinterpret_cast<const uint32*>(reinterpret_cast<const char*>(pawn) + off);
     int ci = CEntityHandle(hController).GetEntryIndex();            // controller entity index, or -1
     int slot = ci - 1;
     return (slot >= 0 && slot < 64) ? slot : -1;
+}
+
+// Derive the firing player's SLOT from the batch entry's `this`. LIVE-VERIFIED against a
+// human-joined server (Task 5, 2026-07-14): the logged slot matches the tester's known slot and a
+// schema Pawn.forSlot(slot) read of the SAME player.
+static int DeriveUsercmdSlot(void* thisptr) { return PawnSlot(DeriveUsercmdPawn(thisptr)); }
+
+// A movement-services component's owning pawn: CPlayerPawnComponent::__m_pChainEntity (the same
+// field ModSharp's PlayerPawnComponent::GetPawn reads).
+static void* MovementServicesPawn(void* services) {
+    static CachedSchemaOffset chain{"CPlayerPawnComponent", "__m_pChainEntity"};
+    return PtrAt(services, chain.get());
+}
+
+// usercmd_read_move_buttons(which) -> CPlayer_MovementServices::m_nButtons.m_pButtonStates[which]
+// (0 pressed, 1 changed, 2 scroll — ModSharp's KeyButtons / KeyChangedButtons / ScrollButtons) for the
+// player whose command is in scope. Post: the receiver IS the movement services that just ran it.
+// Pre: the batch receiver -> pawn -> m_pMovementServices, so pre reads the state the PREVIOUS command
+// left. 0 outside a dispatch, for an out-of-range `which`, or on any unresolved field.
+static uint64_t s2_usercmd_read_move_buttons(int which) {
+    static CachedSchemaOffset services{"CBasePlayerPawn", "m_pMovementServices"};
+    static CachedSchemaOffset buttons{"CPlayer_MovementServices", "m_nButtons"};
+    static CachedSchemaOffset states{"CInButtonState", "m_pButtonStates"};
+    if (which < 0 || which > 2) return 0;
+    bool post = false;
+    void* receiver = S2NamedCurrentUsercmdReceiver(&post);
+    if (!receiver) return 0;
+    void* ms = post ? receiver : PtrAt(DeriveUsercmdPawn(receiver), services.get());
+    const int b = buttons.get(), st = states.get();
+    if (!ms || b < 0 || st < 0) return 0;
+    uint64_t v = 0;
+    std::memcpy(&v, reinterpret_cast<const char*>(ms) + b + st + which * 8, sizeof v);
+    return v;
+}
+
+// Post phase: one command finished running for `services`' pawn. slot from the pawn, tick from the
+// server globals, the command's own number from the (now read-only) command in scope.
+static void S2NamedUsercmdPostDispatchOp(void* services, void* /*message*/) {
+    if (!s2script_core_dispatch_usercmd_post) return;   // weak: an older core has no post phase
+    const int slot = PawnSlot(MovementServicesPawn(services));
+    if (slot < 0) return;
+    s2script_core_dispatch_usercmd_post(slot, s2_server_tick_count(), static_cast<int>(s2_usercmd_read(7)));
 }
 
 static int S2NamedUsercmdSlotOp(void* receiver) { return DeriveUsercmdSlot(receiver); }
@@ -3019,6 +3090,22 @@ static int Shim_UsercmdHookInstall() {
         return 1;
     }
     META_CONPRINTF("[s2script] WARN: ProcessUsercmds checked hook failed (%s) — UserCmd.onRun off\n",
+                   receipt.reason.c_str());
+    return 0;
+}
+
+// usercmd_post_hook_install: called by core on the first post-phase subscribe. Same lazy, idempotent
+// shape as Shim_UsercmdHookInstall, over the per-command run. 1 iff installed, else 0 (the post
+// phase then never fires; pre is unaffected).
+static int Shim_UsercmdPostHookInstall() {
+    if (!s_pRunCommandAddr) return 0;   // RunCommand signature unresolved on this build
+    const auto receipt=S2NamedInstallUsercmdPost();
+    if (receipt.Accepted()) {
+        META_CONPRINTF("[s2script] RunCommand checked hook accepted @%p (usercmd post phase, lazy; id=%u)\n",
+                       s_pRunCommandAddr,receipt.id);
+        return 1;
+    }
+    META_CONPRINTF("[s2script] WARN: RunCommand checked hook failed (%s) — usercmd post phase off\n",
                    receipt.reason.c_str());
     return 0;
 }
@@ -5600,10 +5687,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     namedOps.usercmd_slot=&S2NamedUsercmdSlotOp;
     namedOps.usercmd_dispatch=&S2NamedUsercmdDispatchOp;
     namedOps.usercmd_neutralize=&S2NamedUsercmdNeutralizeOp;
+    namedOps.usercmd_post_dispatch=&S2NamedUsercmdPostDispatchOp;
     namedOps.precache=&S2NamedPrecacheOp;
     namedOps.cvar_response=&S2NamedCvarResponseOp;
     S2NamedHooksSetOps(namedOps);
     S2NamedSetUsercmdTarget(nullptr);
+    S2NamedSetUsercmdPostTarget(nullptr);
+    s_pRunCommandAddr = nullptr;
 
     // deferred-dispatch: hand the engine-free queue its engine ops before anything can push to it.
     S2_InstallDeferOps();
@@ -6510,6 +6600,21 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] ProcessUsercmds resolved @%p (UserCmd.onRun; lazy install)\n",
                                    s_pProcessUsercmdsAddr);
                 }   // puOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Usercmd post phase: CPlayer_MovementServices::RunCommand, the per-command run. Same
+            // lazy shape as ProcessUsercmds: resolved here, hooked on the first post subscriber.
+            auto rcit = sigs.find("PlayerMovementServices_RunCommand");
+            if (rcit == sigs.end()) {
+                GamedataResult("PlayerMovementServices_RunCommand", false, "signature absent from gamedata");
+            } else {
+                int64_t rcOff = ResolveSigValidated("PlayerMovementServices_RunCommand", rcit->second);
+                ModText rcmt = FindModuleText(rcit->second.module.c_str());
+                if (rcOff != s2sig::kFail && rcmt.text) {
+                    s_pRunCommandAddr = const_cast<uint8_t*>(rcmt.text) + rcOff;
+                    S2NamedSetUsercmdPostTarget(s_pRunCommandAddr);
+                    META_CONPRINTF("[s2script] RunCommand resolved @%p (usercmd post phase; lazy install)\n",
+                                   s_pRunCommandAddr);
+                }
             }
         }
         // Load the engine-identity offsets (Slice 5D.2). Absent/typoed keys stay -1 -> degrade.

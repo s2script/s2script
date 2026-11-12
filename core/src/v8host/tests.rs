@@ -10749,3 +10749,6 @@ mod realm_tests;
 
 #[path = "tests/extensions.rs"]
 mod extensions_tests;
+
+#[path = "tests/usercmd_post.rs"]
+mod usercmd_post;

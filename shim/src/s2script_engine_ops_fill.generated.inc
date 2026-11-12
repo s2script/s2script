@@ -251,3 +251,6 @@
     ops.addons_current_map = &s2_addons_current_map;
     ops.addons_mounted = &s2_addons_mounted;
     ops.addons_client_list = &s2_addons_client_list;
+    // --- Usercmd post phase (after a command's movement ran) ---
+    ops.usercmd_post_hook_install = &Shim_UsercmdPostHookInstall;
+    ops.usercmd_read_move_buttons = &s2_usercmd_read_move_buttons;

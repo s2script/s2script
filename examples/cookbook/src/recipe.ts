@@ -13,7 +13,7 @@
  * subscriptions, do not start work. Commands are prefixed `sm_` so the whole
  * cookbook is greppable in a console autocomplete.
  */
-import type { Client, EntityRef, HookResultValue, PrecacheContext, UserCmdView } from "@s2script/sdk";
+import type { Client, EntityRef, HookResultValue, PrecacheContext, UserCmdPostInfo, UserCmdView } from "@s2script/sdk";
 
 export interface Recipe {
   /** Short id, matching the file name (e.g. "http"). */
@@ -26,6 +26,7 @@ export interface Recipe {
   OnPrecache?(pc: PrecacheContext): void;
   OnEntityCreated?(entity: EntityRef | null, className: string): void;
   OnPlayerRunCmd?(cmd: UserCmdView, info: { slot: number }): HookResultValue | void;
+  OnPlayerRunCmdPost?(cmd: UserCmdView, info: UserCmdPostInfo): void;
   OnClientConnected?(c: Client): void | Promise<void>;
   OnClientPutInServer?(c: Client): void | Promise<void>;
   OnClientActive?(c: Client): void | Promise<void>;

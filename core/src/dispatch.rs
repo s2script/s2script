@@ -20,23 +20,45 @@ use crate::v8host::{clone_plugin_context, log_warn, owner_is_live, with_host_iso
 thread_local! {
     // Plugin generations currently executing host-entered JavaScript. An entry tagged with a
     // function target means that generation is inside a call to, or a callback of, that target.
-    static BUSY_PARENTS: std::cell::RefCell<Vec<(String,u64,Option<i64>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    //
+    // A stack whose popped entries are kept (`.1` is the live depth), so an entry's owner `String`
+    // is reused by the next push at that depth: every subscriber call of every fan-out pushes one,
+    // and copying the owner id into a fresh `String` each time was a heap allocation per call.
+    static BUSY_PARENTS: std::cell::RefCell<(Vec<(String,u64,Option<i64>)>, usize)> =
+        const { std::cell::RefCell::new((Vec::new(), 0)) };
+}
+fn push_busy(owner:&str,generation:u64,target:Option<i64>) {
+    BUSY_PARENTS.with(|b| {
+        let (stack, depth) = &mut *b.borrow_mut();
+        if let Some(slot) = stack.get_mut(*depth) {
+            slot.0.clear();
+            slot.0.push_str(owner);
+            slot.1 = generation;
+            slot.2 = target;
+        } else {
+            stack.push((owner.into(), generation, target));
+        }
+        *depth += 1;
+    });
 }
 pub(crate) struct ParentBusy;
 impl ParentBusy {
-    pub(crate) fn enter(owner:&str,generation:u64)->Self {
-        BUSY_PARENTS.with(|b|b.borrow_mut().push((owner.into(),generation,None))); Self
-    }
+    pub(crate) fn enter(owner:&str,generation:u64)->Self { push_busy(owner,generation,None); Self }
     pub(crate) fn enter_target(owner:&str,generation:u64,target:i64)->Self {
-        BUSY_PARENTS.with(|b|b.borrow_mut().push((owner.into(),generation,Some(target)))); Self
+        push_busy(owner,generation,Some(target)); Self
     }
 }
-impl Drop for ParentBusy { fn drop(&mut self) {BUSY_PARENTS.with(|b|{b.borrow_mut().pop();});} }
+impl Drop for ParentBusy {
+    fn drop(&mut self) { BUSY_PARENTS.with(|b| { let d = &mut b.borrow_mut().1; *d = d.saturating_sub(1); }); }
+}
 /// A plugin generation is excluded from a function dispatch only while it is already inside that
 /// same target (a nested invocation from its own call or callback). Being busy in an unrelated
 /// command, timer or event must not hide its subscriptions from a function it caused to run.
 pub(crate) fn parent_busy(owner:&str,generation:u64,target:i64)->bool {
-    BUSY_PARENTS.with(|b|b.borrow().iter().any(|(id,g,t)|id==owner && *g==generation && *t==Some(target)))
+    BUSY_PARENTS.with(|b| {
+        let (stack, depth) = &*b.borrow();
+        stack[..*depth].iter().any(|(id,g,t)|id==owner && *g==generation && *t==Some(target))
+    })
 }
 
 thread_local! {

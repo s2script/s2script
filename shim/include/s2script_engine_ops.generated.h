@@ -284,6 +284,8 @@ typedef void (*s2_addons_reset_fn)(void);
 typedef int (*s2_addons_current_map_fn)(char* out, int cap);
 typedef int (*s2_addons_mounted_fn)(char* out, int cap);
 typedef int (*s2_addons_client_list_fn)(const char* xuid, char* out, int cap);
+typedef int (*s2_usercmd_post_hook_install_fn)(void);
+typedef uint64_t (*s2_usercmd_read_move_buttons_fn)(int which);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -538,4 +540,7 @@ typedef struct {
     s2_addons_current_map_fn addons_current_map;
     s2_addons_mounted_fn addons_mounted;
     s2_addons_client_list_fn addons_client_list;
+    /* --- Usercmd post phase (after a command's movement ran) --- */
+    s2_usercmd_post_hook_install_fn usercmd_post_hook_install;
+    s2_usercmd_read_move_buttons_fn usercmd_read_move_buttons;
 } S2EngineOps;

@@ -2253,6 +2253,24 @@
       "c_ret": "int",
       "c_params": "const char* xuid, char* out, int cap",
       "shim": "s2_addons_client_list"
+    },
+    {
+      "name": "usercmd_post_hook_install",
+      "alias": "UsercmdPostHookInstallFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Usercmd post phase (after a command's movement ran)",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "Shim_UsercmdPostHookInstall"
+    },
+    {
+      "name": "usercmd_read_move_buttons",
+      "alias": "UsercmdReadMoveButtonsFn",
+      "rust": "extern \"C\" fn(c_int) -> u64",
+      "group": "Usercmd post phase (after a command's movement ran)",
+      "c_ret": "uint64_t",
+      "c_params": "int which",
+      "shim": "s2_usercmd_read_move_buttons"
     }
   ]
 }

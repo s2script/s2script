@@ -2808,20 +2808,28 @@ fn s2_iface_forward(
 
 
 
-/// `__s2_usercmd_subscribe(handler)` — subscribe a JS fn to `UserCmd.onRun` (usercmd primitive Task 2).
-/// Owner-tracked, fixed mux key "onRun" (usercmd has no name dimension). On the FIRST-EVER subscribe (the mux was empty), calls the (Task 3) `usercmd_hook_install`
-/// engine op so the shim lazily installs its per-tick input-processing detour — mirrors `s2_entity_listener_on`'s
-/// lazy-install trigger (zero overhead when no plugin subscribes). Degrade-never-crash: no op → the
-/// subscribe still records, the engine just never delivers.
+/// `__s2_usercmd_subscribe(handler, phase?)` — subscribe a JS fn to `UserCmd.onRun`.
+/// `phase` 0 (or absent) = pre, mux key "onRun": before the command runs, writable, `HookResult`
+/// collapses. `phase` 1 = post, mux key "onRunPost": after the command ran, read-only, returns ignored.
+///
+/// Each phase has its own lazy engine detour, installed on that channel's first subscriber (the
+/// install ops are idempotent, so the per-channel `first` is enough — and it has to be per channel:
+/// a whole-store emptiness test would never install the pre detour once a post subscriber exists).
+/// Degrade-never-crash: no op → the subscribe still records, the engine just never delivers.
 fn s2_usercmd_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
-        // WHOLE-STORE emptiness, not the helper's per-channel `was_first`: the input detour is
-        // installed once for the process, not once per channel. Sampled BEFORE subscribing.
-        let first_ever = USERCMD_MUX.with(|m| m.borrow().is_empty());
-        let Some((sub_id, _)) = subscribe_into(scope, &args, &USERCMD_MUX, "onRun", 0) else { return };
-        if first_ever {
-            if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.usercmd_hook_install) {
+        let post = args.length() >= 2 && args.get(1).int32_value(scope).unwrap_or(0) == 1;
+        let key = if post { USERCMD_POST_KEY } else { "onRun" };
+        let Some((sub_id, first)) = subscribe_into(scope, &args, &USERCMD_MUX, key, 0) else { return };
+        if first {
+            let ops = ENGINE_OPS.with(|o| o.get());
+            let install = if post {
+                ops.and_then(|o| o.usercmd_post_hook_install)
+            } else {
+                ops.and_then(|o| o.usercmd_hook_install)
+            };
+            if let Some(func) = install {
                 let _ = func();
             }
         }
@@ -2852,6 +2860,7 @@ fn s2_usercmd_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
 /// alone takes effect) — see `__s2_usercmd_clear_subtick` for the separate opt-in helper.
 fn s2_usercmd_write(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if usercmd_post_write_refused() { return; }
         if args.length() < 2 { return; }
         let field = args.get(0).int32_value(scope).unwrap_or(-1);
         let value = args.get(1).number_value(scope).unwrap_or(0.0);
@@ -2881,6 +2890,7 @@ fn s2_usercmd_read_buttons(scope: &mut v8::PinScope, _args: v8::FunctionCallback
 /// `to_big_int`; a non-bigint/non-numeric argument degrades to `0`). No-op with no op / out of dispatch.
 fn s2_usercmd_write_buttons(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if usercmd_post_write_refused() { return; }
         if args.length() < 1 { return; }
         let mask = args.get(0).to_big_int(scope).map(|bi| bi.u64_value().0).unwrap_or(0);
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
@@ -2895,6 +2905,7 @@ fn s2_usercmd_write_buttons(scope: &mut v8::PinScope, args: v8::FunctionCallback
 /// automatically. No-op with no op / out of dispatch / no subtick moves on this build.
 fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if usercmd_post_write_refused() { return; }
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(func) = ops.usercmd_clear_subtick else { return };
         func();
@@ -2904,6 +2915,71 @@ fn s2_usercmd_clear_subtick(_scope: &mut v8::PinScope, _args: v8::FunctionCallba
 
 
 
+
+/// The `USERCMD_MUX` channel the post phase subscribes on.
+const USERCMD_POST_KEY: &str = "onRunPost";
+
+thread_local! {
+    /// The post dispatch in progress: (slot, tick, command number). `Some` exactly while
+    /// `dispatch_usercmd_post` runs its handlers, which is what makes the command read-only and what
+    /// `__s2_usercmd_post_info` copies out. Saved and restored, so a nested dispatch cannot clear an
+    /// outer one's state.
+    static USERCMD_POST_ACTIVE: std::cell::Cell<Option<(i32, i32, i32)>> = const { std::cell::Cell::new(None) };
+    /// The post channel's subscriber list, reused while `USERCMD_MUX`'s version is unchanged, so a
+    /// post dispatch copies no subscriber metadata (one runs per command per player).
+    static USERCMD_POST_SNAPSHOT: std::cell::RefCell<Option<(u64, std::rc::Rc<[(String, u64, v8::Global<v8::Function>)]>)>>
+        = const { std::cell::RefCell::new(None) };
+}
+
+/// Every usercmd write native calls this first: true (refuse) while a post dispatch runs. The
+/// command already ran, so a write could only corrupt the engine's copy of it; the shim refuses
+/// too (its post frame has no mutable command). Debug builds say so, once per process.
+fn usercmd_post_write_refused() -> bool {
+    if USERCMD_POST_ACTIVE.with(|a| a.get()).is_none() { return false; }
+    #[cfg(debug_assertions)]
+    {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log_warn("WARN: usercmd: a write in an onRunCmd \"post\" handler was ignored \
+                      (the command already ran; post is read-only — modify input in \"pre\")");
+        }
+    }
+    true
+}
+
+/// `__s2_usercmd_read_move_buttons(which) -> bigint` — the in-scope player's movement-services
+/// button state: 0 pressed, 1 changed, 2 scroll. Post reads what this command left; pre reads what
+/// the previous one left. `0n` with no op / out of dispatch.
+fn s2_usercmd_read_move_buttons(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let which = if args.length() >= 1 { args.get(0).int32_value(scope).unwrap_or(-1) } else { -1 };
+        let value: u64 = (|| {
+            let ops = ENGINE_OPS.with(|o| o.get())?;
+            let func = ops.usercmd_read_move_buttons?;
+            Some(func(which))
+        })().unwrap_or(0);
+        rv.set(v8::BigInt::new_from_u64(scope, value).into());
+    }));
+}
+
+/// `__s2_usercmd_post_info(out: Int32Array)` — copy the running post dispatch's (slot, tick,
+/// command number) into `out[0..3]`; `[-1, -1, -1]` outside one. The prelude's per-subscriber
+/// wrapper calls it once per call to refresh its one reused `info` object, so a post dispatch passes
+/// no arguments and allocates nothing. Too short an array is left untouched.
+fn s2_usercmd_post_info(_scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(out) = v8::Local::<v8::Int32Array>::try_from(args.get(0)) else { return };
+        if out.byte_length() < 12 { return; }
+        let (slot, tick, number) = USERCMD_POST_ACTIVE.with(|a| a.get()).unwrap_or((-1, -1, -1));
+        let dst = out.data() as *mut i32;
+        if dst.is_null() { return; }
+        unsafe {
+            dst.write_unaligned(slot);
+            dst.add(1).write_unaligned(tick);
+            dst.add(2).write_unaligned(number);
+        }
+    }));
+}
 
 /// `__s2_map_start_subscribe(handler)` — subscribe a JS fn to the map-start event. Owner-tracked
 /// (mirrors `__s2_chat_on_message`); fixed mux key "". The handler receives the map name string.
@@ -4425,6 +4501,45 @@ pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
         Some(vec![cmd_val, ctx_val])
     });
     result as i32
+}
+
+/// The post phase: one command finished running for `slot` (movement applied and written back to
+/// the pawn). Runs the "post" subscribers synchronously; their returns are ignored.
+///
+/// Built for a per-command, per-player rate: with no post subscriber it returns after one channel
+/// lookup, and otherwise it reuses the cached subscriber list and passes the handlers no arguments
+/// (the prelude wrapper hands each its reused `UserCmdView` and `info`), so a steady-state dispatch
+/// makes no Rust allocation.
+pub(crate) fn dispatch_usercmd_post(slot: i32, tick: i32, command_number: i32) {
+    let Some(snap) = usercmd_post_snapshot() else { return };
+    struct Restore(Option<(i32, i32, i32)>);
+    impl Drop for Restore {
+        fn drop(&mut self) { USERCMD_POST_ACTIVE.with(|a| a.set(self.0)); }
+    }
+    let _restore = Restore(USERCMD_POST_ACTIVE.with(|a| a.replace(Some((slot, tick, command_number)))));
+    let _ = fan_out(&snap, "dispatch_usercmd_post", Instrument::none(), |_| Some(Vec::new()));
+}
+
+/// The post channel's subscribers, or `None` when it has none. Rebuilt only when `USERCMD_MUX`
+/// changed since the last call.
+fn usercmd_post_snapshot() -> Option<std::rc::Rc<[(String, u64, v8::Global<v8::Function>)]>> {
+    let version = USERCMD_MUX.with(|m| {
+        let m = m.borrow();
+        m.has_subscribers(USERCMD_POST_KEY).then(|| m.version())
+    });
+    let Some(version) = version else {
+        USERCMD_POST_SNAPSHOT.with(|c| c.borrow_mut().take());
+        return None;
+    };
+    USERCMD_POST_SNAPSHOT.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((v, snap)) = c.as_ref() {
+            if *v == version { return Some(snap.clone()); }
+        }
+        let snap: std::rc::Rc<[_]> = USERCMD_MUX.with(|m| m.borrow().snapshot(USERCMD_POST_KEY)).into();
+        *c = Some((version, snap.clone()));
+        Some(snap)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -6881,10 +6996,17 @@ pub(crate) fn register_builtin_stores() {
     // USERCMD_MUX: the input-processing detour stays installed for the process lifetime — no follow-up.
     crate::owner_stores::register(
         "USERCMD_MUX",
-        Box::new(|owner| { USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { USERCMD_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|owner| {
+            USERCMD_MUX.with(|m| m.borrow_mut().remove_by_owner(owner));
+            USERCMD_POST_SNAPSHOT.with(|c| c.borrow_mut().take());
+        }),
+        Box::new(|ids| {
+            USERCMD_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); });
+            USERCMD_POST_SNAPSHOT.with(|c| c.borrow_mut().take());
+        }),
         Box::new(|| {
             USERCMD_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+            USERCMD_POST_SNAPSHOT.with(|c| c.borrow_mut().take());
         }),
     );
 

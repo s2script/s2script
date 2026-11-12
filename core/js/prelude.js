@@ -1632,8 +1632,42 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get viewAngles() { return new QAngle(__s2_usercmd_read(3), __s2_usercmd_read(4), __s2_usercmd_read(5)); },
     set viewAngles(a) { __s2_usercmd_write(3, +a.x); __s2_usercmd_write(4, +a.y); __s2_usercmd_write(5, +a.z); },
     clearSubtickMoves: function () { __s2_usercmd_clear_subtick(); },
+    // The pawn's movement-services button state (read-only, both phases): what the PREVIOUS command
+    // left in "pre", what THIS command left in "post". Assigning is ignored (never a strict-mode throw).
+    get pressedButtons() { return __s2_usercmd_read_move_buttons(0); },
+    set pressedButtons(v) {},
+    get changedButtons() { return __s2_usercmd_read_move_buttons(1); },
+    set changedButtons(v) {},
+    get scrollButtons() { return __s2_usercmd_read_move_buttons(2); },
+    set scrollButtons(v) {},
   };
-  var UserCmd = { onRun: function (handler) { return __s2_usercmd_subscribe(handler); } };
+  // phase "pre" (default): the raw handler gets (Cmd, {slot}) and its HookResult collapses.
+  // phase "post": core calls a per-subscriber wrapper with NO arguments; the wrapper refreshes its one
+  // reused info object from the dispatch (one native call into a reused Int32Array) and calls the
+  // handler with the same Cmd singleton. The handler's return is dropped: the command already ran.
+  function usercmdPhase(opts) {
+    var phase = opts == null || opts.phase === undefined ? "pre" : opts.phase;
+    if (phase !== "pre" && phase !== "post") {
+      throw new TypeError("onRunCmd: phase must be \"pre\" or \"post\" (got " + String(phase) + ")");
+    }
+    return phase;
+  }
+  var UserCmd = {
+    onRun: function (handler, opts) {
+      if (usercmdPhase(opts) === "pre") return __s2_usercmd_subscribe(handler);
+      if (typeof handler !== "function") throw new TypeError("onRunCmd: handler must be a function");
+      var buf = new Int32Array(3);
+      var info = { slot: -1, tick: -1, commandNumber: -1 };
+      return __s2_usercmd_subscribe(function () {
+        __s2_usercmd_post_info(buf);
+        info.slot = buf[0]; info.tick = buf[1]; info.commandNumber = buf[2];
+        handler(Cmd, info);
+      }, 1);
+    },
+    // Validates opts.phase without subscribing: ctx.clients.onRunCmd calls it at the call site, so
+    // a bad phase throws there rather than later from the deferred load-window registration.
+    checkPhase: usercmdPhase,
+  };
   // Cmd is exposed on the package object (NOT as a plugin-facing named export — it's a type-only
   // interface in index.d.ts) purely so dispatch_usercmd (core-side) can fetch this exact singleton
   // via globalThis.__s2pkg_usercmd.Cmd each dispatch.
@@ -2877,7 +2911,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onVoice:           function (h) { regFn(viaId(function () { return Cl.onVoice(h); })); },
           onCookiesCached:   function (h) { regFn(viaId(function () { return Ck.onCached(h); })); },
           onSay:             function (h) { regFn(viaId(function () { return __s2_chat_on_message(h); })); },
-          onRunCmd:          function (h) { regFn(viaId(function () { return Uc.onRun(h); })); },
+          onRunCmd:          function (h, o) { Uc.checkPhase(o); regFn(viaId(function () { return Uc.onRun(h, o); })); },
         },
         translations: {
           // Declare the phrase files this plugin uses. Nothing is loaded for a plugin automatically
@@ -3251,6 +3285,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (typeof exp.OnClientVoice === "function") ctx.clients.onVoice(exp.OnClientVoice);
         if (typeof exp.OnClientCookiesCached === "function") ctx.clients.onCookiesCached(exp.OnClientCookiesCached);
         if (typeof exp.OnPlayerRunCmd === "function") ctx.clients.onRunCmd(exp.OnPlayerRunCmd);
+        if (typeof exp.OnPlayerRunCmdPost === "function") ctx.clients.onRunCmd(exp.OnPlayerRunCmdPost, { phase: "post" });
         if (typeof exp.OnEntityCreated === "function") ctx.entities.onCreate("*", exp.OnEntityCreated);
         if (typeof exp.OnEntitySpawned === "function") ctx.entities.onSpawn("*", exp.OnEntitySpawned);
         if (typeof exp.OnEntityDestroyed === "function") ctx.entities.onDelete("*", exp.OnEntityDestroyed);
