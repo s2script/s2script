@@ -381,9 +381,11 @@ KHook::Return<bool> SendNetMessagePre(ClientReceiver* client, const CNetMessage*
     if (!fState || !fAddons || fState->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_ENUM ||
         fAddons->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING || fAddons->is_repeated())
         return S2_Ignore(true);
+    constexpr int kFull = 6;          // SIGNONSTATE_FULL
     constexpr int kChangelevel = 7;   // SIGNONSTATE_CHANGELEVEL
+    const int state = r->GetEnumValue(*m, fState);
 
-    if (r->GetEnumValue(*m, fState) == kChangelevel) {
+    if (state == kChangelevel) {
         // The engine's own map change. A client can only take one addon per change, so keep the
         // first and send the rest one by one afterwards.
         c.conn = ConnState::Joined;   // a new signon starts
@@ -400,7 +402,12 @@ KHook::Return<bool> SendNetMessagePre(ClientReceiver* client, const CNetMessage*
     want.erase(std::remove_if(want.begin(), want.end(),
                               [&](const std::string& id) { return Contains(c.downloaded, id); }),
                want.end());
-    if (want.empty()) return S2_Ignore(true);
+    if (want.empty()) {
+        // The signon reached FULL with nothing missing: the client is in game, even on a map change
+        // that does not call ClientActive again.
+        if (state == kFull) c.conn = ConnState::Active;
+        return S2_Ignore(true);
+    }
     c.pending = want.front();
     r->SetString(m, fAddons, want.front());
     r->SetEnumValue(m, fState, kChangelevel);
@@ -633,7 +640,13 @@ void s2_addons_reset() {
     g_mounted.clear();
     g_extra.clear();
     g_clientGlobal.clear();
-    g_clients.clear();
+    // Forget every client's addon state, but keep where each one is in its connection, so a player
+    // already in game is not walked through the handshake again until its next signon.
+    for (auto& kv : g_clients) {
+        kv.second.own.clear();
+        kv.second.downloaded.clear();
+        kv.second.pending.clear();
+    }
     g_timedOutSlots.clear();
     g_active = false;
 }
