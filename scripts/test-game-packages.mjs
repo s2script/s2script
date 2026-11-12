@@ -391,7 +391,7 @@ test("native CI installs locked parser dependencies before its real-package core
   const script = readFileSync(join(scriptsRoot, "ci-native.sh"), "utf8");
   const installs = [...script.matchAll(/^\s*npm ci\s*$/gm)];
   assert.equal(installs.length, 1);
-  const coreTests = [...script.matchAll(/^cargo test -p s2script-core\s*$/gm)];
+  const coreTests = [...script.matchAll(/^\s*cargo test -p s2script-core\s*$/gm)];
   assert.equal(coreTests.length, 1);
   const coreTest = coreTests[0].index;
   assert.ok(installs[0].index < coreTest);
