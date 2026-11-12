@@ -15,6 +15,8 @@ KHook::Return<void> ChatPre(void*,void*,bool,int,const char*);
 KHook::Return<void> OutputPre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                               CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
 KHook::Return<int> UsercmdPre(void*,void*,int,bool,float);
+KHook::Return<void> UsercmdRunPre(void*,void*);
+KHook::Return<void> UsercmdRunPost(void*,void*);
 KHook::Return<void> PrecachePre(PrecacheReceiver*,void*);
 KHook::Return<bool> InputPre(CEntityIdentity*,void*,CEntityInstance*,CEntityInstance*,
                              const CVariant*,void*,void*);
@@ -24,6 +26,7 @@ S2CheckedFunction<void,void*,void*,bool,int,const char*> g_chat(&ChatPre,nullptr
 S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                   CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*> g_output(&OutputPre,nullptr);
 S2CheckedFunction<int,void*,void*,int,bool,float> g_usercmd(&UsercmdPre,nullptr);
+S2CheckedFunction<void,void*,void*> g_usercmd_post(&UsercmdRunPre,&UsercmdRunPost);
 S2CheckedVirtual<PrecacheReceiver,void,void*> g_precache(&PrecachePre,nullptr);
 S2CheckedFunction<bool,CEntityIdentity*,void*,CEntityInstance*,CEntityInstance*,
                   const CVariant*,void*,void*> g_input(&InputPre,nullptr);
@@ -31,13 +34,30 @@ S2CheckedVirtual<CvarResponseReceiver,bool,const void*> g_cvar_response(&CvarRes
 
 S2NamedHookOps g_ops;
 const void* g_usercmd_target=nullptr;
+const void* g_usercmd_post_target=nullptr;
 s2resolve::VirtualSlotResolution g_precache_resolution;
 bool g_precache_filter_added=false;
 s2resolve::VirtualSlotResolution g_cvar_response_resolution;
 bool g_cvar_response_filter_added=false;
 
 struct PointerFrame { void* value; PointerFrame* previous; };
-thread_local PointerFrame* g_usercmd_frame=nullptr;
+// The command in scope. Pre and post share one stack so a nested dispatch restores the outer
+// frame whichever phase it was.
+struct UsercmdFrame { void* message; void* receiver; bool post; UsercmdFrame* previous; };
+thread_local UsercmdFrame* g_usercmd_frame=nullptr;
+class UsercmdScope {
+public:
+    UsercmdScope(void* message,void* receiver,bool post)
+        : frame_{message,receiver,post,g_usercmd_frame} { g_usercmd_frame=&frame_; }
+    ~UsercmdScope() { g_usercmd_frame=frame_.previous; }
+    UsercmdScope(const UsercmdScope&)=delete;
+    UsercmdScope& operator=(const UsercmdScope&)=delete;
+private:
+    UsercmdFrame frame_;
+};
+// A CUserCmd wraps its protobuf message at +0x10 (the same struct the batch entry walks with
+// stride 0x90; see gamedata/core ProcessUsercmds).
+constexpr size_t kUsercmdMessageOffset=0x10;
 thread_local PointerFrame* g_manifest_frame=nullptr;
 struct PrecacheFrame {
     S2NamedPrecacheFrameV1 value;
@@ -69,8 +89,8 @@ private:
     PointerFrame frame_;
 };
 
-std::array<S2CheckedBindingOps*,6> Inventory() {
-    return {{&g_chat,&g_output,&g_usercmd,&g_precache,&g_input,&g_cvar_response}};
+std::array<S2CheckedBindingOps*,7> Inventory() {
+    return {{&g_chat,&g_output,&g_usercmd,&g_precache,&g_input,&g_cvar_response,&g_usercmd_post}};
 }
 
 KHook::Return<void> ChatPre(void* controller,void* command,bool team,int number,const char* text) {
@@ -112,16 +132,33 @@ KHook::Return<int> UsercmdPre(void* receiver,void* commands,int count,bool,float
     const int slot=g_ops.usercmd_slot ? g_ops.usercmd_slot(receiver) : -1;
     if (commands && count>0) {
         constexpr size_t kStride=0x90;
-        constexpr size_t kMessageOffset=0x10;
         for (int i=0;i<count;++i) {
-            auto* command=static_cast<unsigned char*>(commands)+size_t(i)*kStride+kMessageOffset;
-            PointerScope scope(g_usercmd_frame,command);
+            auto* command=static_cast<unsigned char*>(commands)+size_t(i)*kStride+kUsercmdMessageOffset;
+            UsercmdScope scope(command,receiver,false);
             const int result=g_ops.usercmd_dispatch ? g_ops.usercmd_dispatch(slot) : 0;
             if (result>=2 && g_ops.usercmd_neutralize) g_ops.usercmd_neutralize();
         }
     }
     const auto action=S2_Ignore(0);
     if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Usercmd,false,action.action);
+    return action;
+}
+
+// The per-command run. Pre does nothing: input modification belongs to UsercmdPre, which sees the
+// whole batch before any of it runs. Post fires once per command the server actually ran, after
+// movement for it has been applied and written back to the pawn.
+KHook::Return<void> UsercmdRunPre(void*,void*) { return S2_Ignore(); }
+
+KHook::Return<void> UsercmdRunPost(void* service,void* command) {
+    auto observed=g_usercmd_post.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
+    if (service && command && g_ops.usercmd_post_dispatch) {
+        auto* message=static_cast<unsigned char*>(command)+kUsercmdMessageOffset;
+        UsercmdScope scope(message,service,true);
+        g_ops.usercmd_post_dispatch(service,message);
+    }
+    const auto action=S2_Ignore();
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::UsercmdPost,true,action.action);
     return action;
 }
 
@@ -164,6 +201,16 @@ S2HookReceipt S2NamedInstallUsercmd() {
     return g_usercmd.Configure(g_usercmd_target);
 }
 
+void S2NamedSetUsercmdPostTarget(const void* target) { g_usercmd_post_target=target; }
+
+S2HookReceipt S2NamedInstallUsercmdPost() {
+    if (!g_usercmd_post_target)
+        return {KHook::INVALID_HOOK,S2HookState::Failed,"usercmd post target unavailable"};
+    const auto current=g_usercmd_post.Snapshot();
+    if (current.Accepted()) return current;
+    return g_usercmd_post.Configure(g_usercmd_post_target);
+}
+
 S2HookReceipt S2NamedConfigurePrecache(const s2resolve::VirtualSlotResolution& resolved) {
     if (!resolved.vtable || resolved.vtable_index<0 || resolved.vtable_index>=512 ||
         !resolved.target.address)
@@ -196,12 +243,23 @@ S2HookReceipt S2NamedHookSnapshot(S2NamedHookSite site) {
         case S2NamedHookSite::Precache: return g_precache.Snapshot();
         case S2NamedHookSite::Input: return g_input.Snapshot();
         case S2NamedHookSite::CvarResponse: return g_cvar_response.Snapshot();
+        case S2NamedHookSite::UsercmdPost: return g_usercmd_post.Snapshot();
     }
     return {KHook::INVALID_HOOK,S2HookState::Failed,"unknown named hook site"};
 }
 
 void* S2NamedCurrentUsercmd() {
-    return S2Hook_MayDispatch() && g_usercmd_frame ? g_usercmd_frame->value : nullptr;
+    return S2Hook_MayDispatch() && g_usercmd_frame ? g_usercmd_frame->message : nullptr;
+}
+void* S2NamedCurrentUsercmdMutable() {
+    return S2Hook_MayDispatch() && g_usercmd_frame && !g_usercmd_frame->post ?
+        g_usercmd_frame->message : nullptr;
+}
+void* S2NamedCurrentUsercmdReceiver(bool* post) {
+    if (post) *post=false;
+    if (!S2Hook_MayDispatch() || !g_usercmd_frame) return nullptr;
+    if (post) *post=g_usercmd_frame->post;
+    return g_usercmd_frame->receiver;
 }
 void* S2NamedCurrentPrecacheManifest() {
     return S2Hook_MayDispatch() && g_manifest_frame ? g_manifest_frame->value : nullptr;

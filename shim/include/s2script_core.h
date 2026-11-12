@@ -227,6 +227,25 @@ int s2script_core_dispatch_game_event_pre(const char* name);
  * and always still calls the original trampoline (server-authoritative — a suppressed cmd is a ZEROED
  * cmd, not a skipped call). catch_unwind -> 0 (fail-open: a core bug must never corrupt player input). */
 int s2script_core_dispatch_usercmd(int slot);
+/* One executed command, copied once per command by the shim so JS reads plain memory instead of
+ * calling back per field. Mirrored by core's `UsercmdSnapshot` (#[repr(C)]); 72 bytes, append-only. */
+typedef struct S2UsercmdSnapshot {
+    float    move[3];          /* forward, side (+right), up */
+    float    angles[3];        /* pitch, yaw, roll */
+    int32_t  impulse;
+    int32_t  command_number;
+    uint64_t buttons;          /* the command's held-button mask */
+    uint64_t move_buttons[3];  /* movement services after the command: pressed, changed, scroll */
+    int32_t  slot;
+    int32_t  tick;
+} S2UsercmdSnapshot;
+/* Shim -> core: the post phase of the usercmd hook. Called once per command the server actually ran,
+ * after movement for it was applied and written back to the pawn (the per-command run's post hook).
+ * `snapshot` (borrowed for the call) carries the slot, the server tick it ran in and the command's
+ * fields. The command in scope is READ-ONLY: the shim's write ops find no mutable command, and core
+ * no-ops its write natives. Return value ignored (the command already ran). Weak, like
+ * dispatch_hook: a shim paired with an older core skips the post phase instead of failing dlopen. */
+void s2script_core_dispatch_usercmd_post(const S2UsercmdSnapshot* snapshot) __attribute__((weak));
 /* Shim -> core: called by the PostEventAbstract PRE hook on a bitmap-hit outbound user message
  * (usermsg-hook slice). name = the message's canonical GetUnscopedName() (the dispatch key), id =
  * its m_MessageId. The shim sets the block-scoped current-message statics BEFORE this call and nulls

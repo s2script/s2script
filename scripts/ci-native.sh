@@ -246,6 +246,9 @@ shard_fixtures() {
   echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
   bash scripts/test-detour-reloc.sh
 
+  echo "== test-usercmd-layout.sh (usercmd post snapshot: direct reads, trust check) =="
+  bash scripts/test-usercmd-layout.sh
+
   echo "== check-hook-shapes.sh (inbound hook shape name/id table: core == shim) =="
   bash scripts/check-hook-shapes.sh
 

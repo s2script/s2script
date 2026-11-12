@@ -24,7 +24,7 @@ import type { Config } from "./config";
 import type { PublishHandle } from "./interfaces";
 import type { TopMenuItem, TopMenuTab } from "./topmenu";
 import type { PrecacheContext } from "./sound";
-import type { UserCmdView } from "./usercmd";
+import type { UserCmdPostInfo, UserCmdView } from "./usercmd";
 
 /** Game-event subscriptions on this plugin's load-scope ({@link PluginContext.events}). */
 export interface CtxEvents {
@@ -69,12 +69,30 @@ export interface CtxClients {
       teamonly: boolean
     ) => HookResultValue | void
   ): void;
-  /** Per-tick usercmd hook (SM `OnPlayerRunCmd`): read/modify {@link UserCmdView}; return `Handled` to block the tick. */
+  /**
+   * Per-command usercmd hook (SM `OnPlayerRunCmd`), once per usercmd the server runs for a player.
+   * A tick can run 0, 1 or several commands per player (packet loss, client catch-up); each fires.
+   *
+   * `"pre"` (default): before the command runs. Read/modify {@link UserCmdView}; return `Handled` to
+   * block the command.
+   */
   onRunCmd(
     handler: (
       cmd: UserCmdView,
       info: { slot: number }
-    ) => HookResultValue | void
+    ) => HookResultValue | void,
+    opts?: { phase?: "pre" }
+  ): void;
+  /**
+   * `"post"`: after THIS command ran — movement applied
+   * and written back to the pawn, so pawn reads (origin, eye angles, velocity, flags, duck amount,
+   * active weapon) return the post-command state. `cmd` is read-only (writes are ignored) and the
+   * return value is ignored. `info.tick` is the server tick it ran in, `info.commandNumber` the
+   * command's number. Installs nothing until the first `"post"` subscriber.
+   */
+  onRunCmd(
+    handler: (cmd: UserCmdView, info: UserCmdPostInfo) => void,
+    opts: { phase: "post" }
   ): void;
 }
 /** Entity lifecycle / I/O subscriptions on this plugin's load-scope ({@link PluginContext.entities}). */
@@ -299,7 +317,13 @@ export interface PluginHooks {
  * Plugin: `OnPluginStart` / `OnPluginEnd` / `OnPluginState` / `OnAllPluginsLoaded` / `OnConfigsExecuted`
  * Map/frame: `OnMapStart(map)` / `OnMapEnd()` / `OnGameFrame()` / `OnPrecache(pc)`
  * Client: `OnClientConnected` / `PutInServer` / `Active` / `PostAdminCheck` / `Disconnect` /
- *   `SayCommand` / `SettingsChanged` / `Voice` / `CookiesCached` / `OnPlayerRunCmd`
+ *   `SayCommand` / `SettingsChanged` / `Voice` / `CookiesCached` / `OnPlayerRunCmd` /
+ *   `OnPlayerRunCmdPost`
+ *
+ * `OnPlayerRunCmd(cmd, info)` is `clients.onRunCmd` in `"pre"`: before the command runs, writable,
+ * return a {@link HookResultValue}. `OnPlayerRunCmdPost(cmd, info)` is `"post"`: after the command's
+ * movement ran, read-only, return ignored, `info` = `{ slot, tick, commandNumber }`. Both fire once
+ * per command, and a tick can carry 0..n commands per player (see `@s2script/sdk/usercmd`).
  * Entity: `OnEntityCreated` / `OnEntitySpawned` / `OnEntityDestroyed`
  *
  * `OnGameFrame` is SourceMod's public (before simulation). Post-simulation paint is

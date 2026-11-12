@@ -237,6 +237,10 @@ int UsercmdDispatch(int slot) {
     CHECK(slot==7,"usercmd dispatch receives derived slot");
     auto* cmd=static_cast<unsigned char*>(S2NamedCurrentUsercmd());
     CHECK(cmd,"usercmd dispatch has a scoped command");
+    CHECK(S2NamedCurrentUsercmdMutable()==cmd,"pre phase command is mutable");
+    bool post=true;
+    CHECK(S2NamedCurrentUsercmdReceiver(&post)==outer_victim && !post,
+          "pre frame reports the batch receiver, phase pre");
     const int verdict=*cmd;
     *cmd=static_cast<unsigned char>(*cmd+10);
     if (!in_usercmd && verdict==1) {
@@ -253,6 +257,29 @@ void UsercmdNeutralize() {
     auto* cmd=static_cast<unsigned char*>(S2NamedCurrentUsercmd());
     CHECK(cmd,"neutralization runs inside current command frame");
     *cmd=0;
+}
+
+// Post phase over the per-command run: the original (the "movement") runs first and moves the
+// fixture pawn; the dispatch then sees the moved state, a read-only command and its receiver.
+struct FakeServices { int origin=0; };
+FakeServices post_services;
+std::array<unsigned char,0x90> post_cmd{};
+int run_originals=0,post_dispatches=0,post_origin_seen=-1,post_ignore=0;
+bool post_saw_mutable=true,post_saw_receiver=false;
+void RunCommandTarget(void* services,void* command) {
+    ++run_originals;
+    CHECK(S2NamedCurrentUsercmd()==nullptr,"post frame does not span the run itself");
+    auto* fs=static_cast<FakeServices*>(services);
+    fs->origin+=static_cast<unsigned char*>(command)[0x10];   // "movement" from the command
+}
+void UsercmdPostDispatch(void* services,void* message) {
+    ++post_dispatches;
+    post_origin_seen=static_cast<FakeServices*>(services)->origin;
+    CHECK(message==post_cmd.data()+0x10,"post dispatch receives the command's message at +0x10");
+    CHECK(S2NamedCurrentUsercmd()==message,"post frame exposes the command for reads");
+    post_saw_mutable=S2NamedCurrentUsercmdMutable()!=nullptr;
+    bool post=false;
+    post_saw_receiver=S2NamedCurrentUsercmdReceiver(&post)==services && post;
 }
 
 Receiver* expected_receiver=nullptr;
@@ -294,6 +321,7 @@ void ObserveAction(S2NamedHookSite site,bool /*post*/,KHook::Action action) {
     if (site==S2NamedHookSite::Usercmd && action==KHook::Action::Ignore) ++usercmd_ignore;
     if (site==S2NamedHookSite::Precache && action==KHook::Action::Ignore) ++precache_ignore;
     if (site==S2NamedHookSite::CvarResponse && action==KHook::Action::Ignore) ++cvar_ignore;
+    if (site==S2NamedHookSite::UsercmdPost && action==KHook::Action::Ignore) ++post_ignore;
 }
 
 S2CheckedFunction<void,void*>* terminal_binding=nullptr;
@@ -314,6 +342,7 @@ void ConfigureAndInvoke() {
     ops.usercmd_slot=&UsercmdSlot; ops.usercmd_dispatch=&UsercmdDispatch;
     ops.usercmd_neutralize=&UsercmdNeutralize; ops.precache=&PrecacheOp;
     ops.cvar_response=&CvarOp;
+    ops.usercmd_post_dispatch=&UsercmdPostDispatch;
     ops.observe_action=&ObserveAction;
     S2NamedHooksSetOps(ops);
 
@@ -373,6 +402,28 @@ void ConfigureAndInvoke() {
           "usercmd mutation is in-place and neutralization affects the current command");
     CHECK(usercmd_originals==3 && !S2NamedCurrentUsercmd(),
           "usercmd original runs once per outer/nested invocation and pointer expires");
+
+    {
+        bool pre_post=true;
+        S2NamedSetUsercmdPostTarget(nullptr);
+        CHECK(!S2NamedInstallUsercmdPost().Accepted(),"post phase without a resolved target refuses");
+        S2NamedSetUsercmdPostTarget(reinterpret_cast<void*>(&RunCommandTarget));
+        const auto post=S2NamedInstallUsercmdPost();
+        CHECK(post.Accepted(),"lazy post binding is accepted");
+        const auto next_after_post=provider.next;
+        CHECK(S2NamedInstallUsercmdPost().id==post.id && provider.next==next_after_post,
+              "lazy post installation is idempotent");
+        post_cmd[0x10]=5;
+        provider.Invoke(&RunCommandTarget,static_cast<void*>(&post_services),static_cast<void*>(post_cmd.data()));
+        provider.Invoke(&RunCommandTarget,static_cast<void*>(&post_services),static_cast<void*>(post_cmd.data()));
+        CHECK(run_originals==2 && post_dispatches==2,"post fires once per command run, after the original");
+        CHECK(post_origin_seen==10,"post dispatch sees the state the run left (two moves of 5)");
+        CHECK(!post_saw_mutable,"post phase has no mutable command: writes no-op");
+        CHECK(post_saw_receiver,"post frame reports the movement services as its receiver, phase post");
+        CHECK(post_ignore==2,"post publishes Ignore: the run is never superseded");
+        CHECK(!S2NamedCurrentUsercmd() && !S2NamedCurrentUsercmdReceiver(&pre_post) && !pre_post,
+              "post frame expires after the callback");
+    }
 
     auto* entry=provider.FindVirtual(vtable,0);
     provider.InvokeEntry<void,Receiver*,void*>(entry,&receiver,outer_manifest);

@@ -34,7 +34,13 @@ impl<K: Eq + Hash, M> LiveTable<K, M> {
     pub fn remove(&mut self, key: &K) -> Option<(u64, M)> {
         self.entries.remove(key)
     }
-    pub fn is_live(&self, key: &K, id: u64) -> bool {
+    /// Takes any borrowed form of the key (`&str` for a `String` table), so a per-dispatch check
+    /// never builds an owned key.
+    pub fn is_live<Q>(&self, key: &Q, id: u64) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
         self.entries.get(key).map_or(false, |(cur, _)| *cur == id)
     }
     pub fn get(&self, key: &K) -> Option<(u64, &M)> {

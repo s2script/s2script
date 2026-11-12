@@ -308,6 +308,8 @@ pub type AddonsResetFn = extern "C" fn();
 pub type AddonsCurrentMapFn = extern "C" fn(out: *mut c_char, cap: c_int) -> c_int;
 pub type AddonsMountedFn = extern "C" fn(out: *mut c_char, cap: c_int) -> c_int;
 pub type AddonsClientListFn = extern "C" fn(xuid: *const c_char, out: *mut c_char, cap: c_int) -> c_int;
+pub type UsercmdPostHookInstallFn = extern "C" fn() -> c_int;
+pub type UsercmdReadMoveButtonsFn = extern "C" fn(c_int) -> u64;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -567,6 +569,9 @@ pub struct S2EngineOps {
     pub addons_current_map: Option<AddonsCurrentMapFn>,
     pub addons_mounted: Option<AddonsMountedFn>,
     pub addons_client_list: Option<AddonsClientListFn>,
+    // --- Usercmd post phase (after a command's movement ran) ---
+    pub usercmd_post_hook_install: Option<UsercmdPostHookInstallFn>,
+    pub usercmd_read_move_buttons: Option<UsercmdReadMoveButtonsFn>,
 }
 
 impl S2EngineOps {

@@ -238,7 +238,7 @@ impl Registry {
 
     /// Returns `true` iff the plugin is present AND its generation matches.
     pub fn is_live(&self, id: &str, generation: u64) -> bool {
-        self.table.is_live(&id.to_string(), generation)
+        self.table.is_live(id, generation)
     }
 
     /// Mutable access to a plugin's ledger (for recording resources).
