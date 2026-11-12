@@ -31,15 +31,33 @@ while IFS= read -r __line; do [ -n "$__line" ] && targets+=("$__line"); done < <
   }).catch((e) => { console.error(String(e && e.message || e)); process.exit(1); });
 " "${candidates[@]}")
 
+# Each target is an independent tsc program, so they run in parallel (one per CPU; S2_JOBS
+# overrides). Each target's output is buffered to its own file and printed in target order, so
+# the log reads exactly as the old serial loop's did.
+jobs="${S2_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+out="$(mktemp -d)"
+trap 'rm -rf "$out"' EXIT
+i=0
+for d in "${targets[@]}"; do
+    printf '%s\0%s\0' "$i" "$d"
+    i=$((i + 1))
+done | xargs -0 -n 2 -P "$jobs" sh -c '
+    if node --experimental-strip-types --no-warnings -e "
+      import(\"./packages/sdk/src/typecheck/typecheck.ts\").then(({typecheckPlugin, formatDiagnostics}) => {
+        const r = typecheckPlugin(process.argv[1], { packagesDir: \"packages\" });
+        if (!r.ok) { console.error(formatDiagnostics(r.diagnostics)); process.exit(1); }
+        console.log(\"  OK\");
+      });
+    " "$2" > "$0/$1.log" 2>&1; then :; else touch "$0/$1.fail"; fi
+  ' "$out" || true
+
 fail=0
+i=0
 for d in "${targets[@]}"; do
     echo "=== typecheck $d ==="
-    if ! node --experimental-strip-types --no-warnings -e "
-      import('./packages/sdk/src/typecheck/typecheck.ts').then(({typecheckPlugin, formatDiagnostics}) => {
-        const r = typecheckPlugin('$d', { packagesDir: 'packages' });
-        if (!r.ok) { console.error(formatDiagnostics(r.diagnostics)); process.exit(1); }
-        console.log('  OK');
-      });
-    "; then fail=1; fi
+    cat "$out/$i.log"
+    [ -e "$out/$i.fail" ] && fail=1
+    i=$((i + 1))
 done
+[ "$i" -gt 0 ] || { echo "FAIL: no typecheck targets found"; exit 1; }
 [ "$fail" = 0 ] && echo "PASS: all plugins and examples typecheck" || { echo "FAIL: a plugin or example has type errors"; exit 1; }
