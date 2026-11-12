@@ -23,6 +23,18 @@ jobs:
         with:
           submodules: recursive
 
+      # Restore the Bullseye-built target/ that ci-native's runtime shard saves on main (tags can
+      # read the default branch's caches), so the sniper build below compiles only s2script-core
+      # instead of every dependency. Restore-only: a tag never writes a cache. The toolchain step
+      # is here because the cache key hashes the host rustc version, which must match ci-native's.
+      # build-sniper.sh still force-cleans and relinks s2script-core itself in the container, and
+      # a cache miss only costs time: the build falls back to compiling everything.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sniper
+          save-if: false
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

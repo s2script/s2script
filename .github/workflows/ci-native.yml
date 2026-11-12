@@ -109,8 +109,9 @@ jobs:
         with:
           # rust and engine-function build the same debug/test profile, so they share the original
           # entry, and only the rust shard (the superset) saves it. The runtime shard's Docker
-          # build fills target/release with Bullseye-compiled deps instead, so it keeps its own.
-          key: ${{ matrix.shard == 'runtime' && 'runtime' || '' }}
+          # build fills target/release with Bullseye-compiled deps instead, so it keeps its own
+          # entry under the shared key `sniper`, which release.yml restores for the tag build.
+          shared-key: ${{ matrix.shard == 'runtime' && 'sniper' || '' }}
           # Restore-only on PRs. Returns the ~11s save step, and stops every branch minting
           # its own ~383MB entry — the predecessor repo reached 77 entries / 4.34GB against a
           # 10GB quota, and LRU eviction of a rust-cache entry is exactly what turns a 13s
