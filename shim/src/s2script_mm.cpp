@@ -3078,8 +3078,26 @@ static void ReadUsercmdReflected(S2UsercmdFields& f) {
     f.buttons = s2_usercmd_read_buttons();
 }
 
+// The base / button-state / view-angles sub-message addresses, through reflection.
+static bool ReflectedUsercmdPointers(S2UsercmdPointers& p) {
+    auto* current = static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (!current) return false;
+    const auto& c = GetUsercmdFieldCache();
+    if (!c.baseF || !c.buttonsPbF || !c.viewAnglesF) return false;
+    const auto* r = current->GetReflection();
+    if (!r) return false;
+    const auto& base = r->GetMessage(*current, c.baseF);
+    const auto* br = base.GetReflection();
+    if (!br) return false;
+    p.base = &base;
+    p.buttons = &br->GetMessage(base, c.buttonsPbF);
+    p.angles = &br->GetMessage(base, c.viewAnglesF);
+    return true;
+}
+
 // The command's fields for the snapshot. Trusted layout: direct reads only. Still checking: both
-// ways, compared, and the reflected values used. Failed or no layout: reflection.
+// ways (pointers checked against reflection before they are followed), compared, and the reflected
+// values used. Failed or no layout: reflection.
 static void ReadUsercmdForSnapshot(const void* message, S2UsercmdFields& f) {
     using State = S2UsercmdLayoutCheck::State;
     const State state = s_usercmdLayoutCheck.state();
@@ -3087,8 +3105,10 @@ static void ReadUsercmdForSnapshot(const void* message, S2UsercmdFields& f) {
     ReadUsercmdReflected(f);
     if (state != State::Checking) return;
     S2UsercmdFields direct;
-    if (!S2ReadUsercmdAt(s_usercmdLayout, message, direct)) {
-        s_usercmdLayoutCheck.Fail("layout offsets incomplete in gamedata");
+    S2UsercmdPointers expected;
+    if (!ReflectedUsercmdPointers(expected)) return;   // no live command in scope: try the next one
+    if (const char* bad = S2ReadUsercmdChecked(s_usercmdLayout, message, expected, direct)) {
+        s_usercmdLayoutCheck.Fail(bad);
     } else {
         s_usercmdLayoutCheck.Observe(direct, f);
     }

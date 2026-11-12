@@ -71,6 +71,40 @@ inline bool S2ReadUsercmdAt(const S2UsercmdLayout& layout, const void* message, 
     return true;
 }
 
+// The sub-message addresses reflection reports for the same command (an unset sub-message reports
+// its default instance). Used while the layout is still being checked.
+struct S2UsercmdPointers {
+    const void* base = nullptr;
+    const void* buttons = nullptr;
+    const void* angles = nullptr;
+};
+
+// The checking-phase read: like S2ReadUsercmdAt, but a pointer read at an untrusted offset is only
+// followed if it is null or exactly the address reflection reported, so a stale offset can never
+// become a wild dereference. Returns the name of the first pointer that disagrees (nothing past it is
+// read), or nullptr with `out` filled. Scalar reads stay inside objects reflection vouched for.
+inline const char* S2ReadUsercmdChecked(const S2UsercmdLayout& layout, const void* message,
+                                        const S2UsercmdPointers& expected, S2UsercmdFields& out) {
+    using namespace s2_usercmd_layout_detail;
+    if (!message || !layout.Complete()) return "layout offsets incomplete in gamedata";
+    out = S2UsercmdFields{};
+    const void* base = PtrAt(message, layout.base);
+    if (base && base != expected.base) return "base pointer";
+    if (!base) return nullptr;
+    const void* btn = PtrAt(base, layout.buttonsPb);
+    if (btn && btn != expected.buttons) return "buttons pointer";
+    const void* va = PtrAt(base, layout.viewAngles);
+    if (va && va != expected.angles) return "viewAngles pointer";
+    out.commandNumber = At<int32_t>(base, layout.commandNumber);
+    out.forwardMove = At<float>(base, layout.forwardMove);
+    out.leftMove = At<float>(base, layout.leftMove);
+    out.upMove = At<float>(base, layout.upMove);
+    out.impulse = At<int32_t>(base, layout.impulse);
+    if (btn) out.buttons = At<uint64_t>(btn, layout.buttonState1);
+    if (va) for (int i = 0; i < 3; ++i) out.angles[i] = At<float>(va, layout.angleX + 4 * i);
+    return nullptr;
+}
+
 // Bit-for-bit equality; names the first field that differs (nullptr when they agree).
 inline const char* S2UsercmdFieldsDiffer(const S2UsercmdFields& a, const S2UsercmdFields& b) {
     auto same = [](const void* x, const void* y, size_t n) { return std::memcmp(x, y, n) == 0; };

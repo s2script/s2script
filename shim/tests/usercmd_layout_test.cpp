@@ -65,6 +65,28 @@ static void incomplete_layout_or_null_message_refuses() {
     CHECK(!S2ReadUsercmdAt(Layout(), nullptr, f));
 }
 
+static void checked_read_follows_only_vouched_pointers() {
+    FakeButtons b{}; b.state1 = 6;
+    FakeAngles a{}; a.y = 45.f;
+    FakeBase base{}; base.buttons = &b; base.angles = &a; base.number = 3;
+    FakeCmd cmd{}; cmd.base = &base;
+    S2UsercmdPointers ok{&base, &b, &a};
+    S2UsercmdFields f;
+    CHECK(S2ReadUsercmdChecked(Layout(), &cmd, ok, f) == nullptr);
+    CHECK(f.commandNumber == 3 && f.buttons == 6 && f.angles[1] == 45.f);
+    // A stale offset reading a non-pointer: refused by name, never dereferenced (ASan would abort).
+    FakeBase wild{}; wild.buttons = reinterpret_cast<FakeButtons*>(0x10);
+    FakeCmd wcmd{}; wcmd.base = &wild;
+    CHECK(std::string_view(S2ReadUsercmdChecked(Layout(), &wcmd, S2UsercmdPointers{&wild, &b, &a}, f)) == "buttons pointer");
+    FakeCmd junk{}; junk.base = reinterpret_cast<FakeBase*>(0x20);
+    CHECK(std::string_view(S2ReadUsercmdChecked(Layout(), &junk, ok, f)) == "base pointer");
+    // Unset sub-messages (null in the layout, default instances through reflection) read as zero.
+    FakeBase bare{}; bare.number = 4;
+    FakeCmd bcmd{}; bcmd.base = &bare;
+    CHECK(S2ReadUsercmdChecked(Layout(), &bcmd, S2UsercmdPointers{&bare, &b, &a}, f) == nullptr);
+    CHECK(f.commandNumber == 4 && f.buttons == 0);
+}
+
 static S2UsercmdFields Cmd(int32_t n, float fwd = 0.f) { S2UsercmdFields f; f.commandNumber = n; f.forwardMove = fwd; return f; }
 
 static void trusted_only_after_an_unbroken_run_with_moving_numbers() {
@@ -110,6 +132,7 @@ int main() {
     idle_zero_reads_never_earn_trust();
     one_disagreement_fails_for_good_and_names_the_field();
     comparison_is_bit_exact();
+    checked_read_follows_only_vouched_pointers();
     if (g_fail) { std::printf("usercmd_layout: %d FAILED\n", g_fail); return 1; }
     std::printf("usercmd_layout: all passed\n");
     return 0;
