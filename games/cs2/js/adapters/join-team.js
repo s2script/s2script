@@ -1,6 +1,6 @@
 // cs2.join-team.v1 — whether a player's team request goes through, on the S2 engine-function
 // service, over the trusted `joinTeam` binding (CCSPlayerController::HandleCommandJoinTeam:
-// bool(CCSPlayerController*, int team, bool queue)). The jointeam command and the team menu both
+// bool(CCSPlayerController*, int team, int flags)). The jointeam command and the team menu both
 // reach it; a plugin's own changeTeam/switchTeam calls do not.
 //
 // Game semantics live HERE, never in core or the shim. The frozen contract
@@ -42,7 +42,8 @@
         hr = hookResult(handler({
           get player() { return env.player(frame.player); },
           get team() { return frame.team; },
-          get queue() { return frame.queue; }
+          get queue() { return (frame.flags & 1) !== 0; },
+          get flags() { return frame.flags; }
         }));
       } catch (e) {
         env.warn(API + " handler threw: " + (e && e.stack ? e.stack : e));

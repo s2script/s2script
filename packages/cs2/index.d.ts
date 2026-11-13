@@ -625,8 +625,11 @@ export interface JoinTeamView {
   readonly player: Player | null;
   /** The team asked for: 0 = auto-select, 1 = spectator, 2 = T, 3 = CT. */
   readonly team: number;
-  /** The request asked to queue for the team instead of joining now. */
+  /** The request asked to queue for the team instead of joining now (bit 0 of {@link flags}). */
   readonly queue: boolean;
+  /** The engine's raw request flags. Bit 0 is {@link queue}; the game's own callers also pass
+   *  bit 1, whose meaning is not mapped yet. */
+  readonly flags: number;
 }
 
 /** The server's map groups, the named map lists from gamemodes that the `mapgroup` command

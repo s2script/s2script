@@ -272,9 +272,11 @@
       "policy": { "surfaces": ["pre", "post"], "suppression": "none" },
       "adapter": { "id": "cs2.round-restart.v1", "postOverride": false }
     },
-    // CCSPlayerController::HandleCommandJoinTeam(CCSPlayerController*, int team, bool queue) -> bool
+    // CCSPlayerController::HandleCommandJoinTeam(CCSPlayerController*, int team, int flags) -> bool
     // (gamedata CCSPlayerController_HandleCommandJoinTeam). The controller is an entity argument,
-    // not a member receiver, as customHudClicked's player is. A block answers false.
+    // not a member receiver, as customHudClicked's player is. A block answers false. The third
+    // argument is a bit field, not a bool: the game's own callers pass 0, 2 and 3, and the body
+    // tests bit 0 and bit 1 separately (build 26598758). A u8 bool here refused every 2 and 3.
     {
       "localName": "joinTeam",
       "requirement": "optional",
@@ -288,7 +290,7 @@
             "mutable": [], "nullable": false },
           { "name": "team", "native": "i32", "projection": { "id": "i32", "version": 1 },
             "mutable": [], "nullable": false },
-          { "name": "queue", "native": "u8", "projection": { "id": "bool", "version": 1 },
+          { "name": "flags", "native": "i32", "projection": { "id": "i32", "version": 1 },
             "mutable": [], "nullable": false }
         ],
         "returns": { "name": "", "native": "u8", "projection": { "id": "bool", "version": 1 },
