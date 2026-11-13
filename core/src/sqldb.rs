@@ -7,6 +7,8 @@ use futures_util::StreamExt;
 use sqlx::mysql::{MySqlArguments, MySqlPool, MySqlPoolOptions};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
 use sqlx::query::Query;
+use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use sqlx::types::{Decimal, JsonValue, Uuid};
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -323,6 +325,14 @@ macro_rules! decode_row {
                 Ok(text)=>{$size.add(text.len(),$lease)?;Ok(text.to_owned())},Err(error)=>Err(error),
             }
         }} }
+        // A typed decode rendered to text (NUMERIC, temporal, UUID, JSON on backends that refuse the
+        // string protocol for them), counted against the same result-size cap as raw text. A decode
+        // miss is None. Expanded as a block (never inside a closure) so the cap's `?` returns early.
+        macro_rules! typed_text { ($ty:ty, $index:expr, $fmt:expr) => {{
+            match row.try_get::<$ty,_>($index) {
+                Ok(value)=>{let text: String = $fmt(value);$size.add(text.len(),$lease)?;Some(text)},Err(_)=>None,
+            }
+        }} }
         let mut vals: Vec<DbValue> = Vec::with_capacity(cols.len());
         for (i, col) in cols.iter().enumerate() {
             // NULL first (via the raw ValueRef) — a NULL cell is Null regardless of its declared type.
@@ -344,10 +354,12 @@ macro_rules! decode_row {
                     // framework's "64-bit as decimal string" convention). String first (works where
                     // the backend allows it), else i64→to_string.
                     "BIGINT" | "INT8" | "BIGSERIAL" | "DECIMAL" | "NUMERIC" | "BIT" =>
-                        bounded_text!(i)
-                            .or_else(|_| row.try_get::<i64, _>(i).map(|n| n.to_string()))
-                            .map(DbValue::Text)
-                            .unwrap_or(DbValue::Null),
+                        match bounded_text!(i).or_else(|_| row.try_get::<i64, _>(i).map(|n| n.to_string())) {
+                            Ok(text) => DbValue::Text(text),
+                            Err(_) => typed_text!(Decimal, i, |d: Decimal| d.to_string())
+                                .map(DbValue::Text)
+                                .unwrap_or(DbValue::Null),
+                        },
                     // floating point → Real
                     "FLOAT" | "DOUBLE" | "FLOAT4" | "FLOAT8" | "REAL" =>
                         row.try_get::<f64, _>(i)
@@ -362,12 +374,69 @@ macro_rules! decode_row {
                             .unwrap_or(DbValue::Null),
                     // strings
                     "CHAR" | "VARCHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT"
-                    | "BPCHAR" | "NAME" | "CITEXT" | "JSON" | "JSONB" | "UUID" | "ENUM" =>
+                    | "BPCHAR" | "NAME" | "CITEXT" | "ENUM" =>
                         bounded_text!(i).map(DbValue::Text).unwrap_or(DbValue::Null),
-                    // temporal → text (chrono/time features not enabled; try the string protocol,
-                    // else Null — a documented per-decode degrade this slice)
-                    "DATE" | "TIME" | "DATETIME" | "TIMESTAMP" | "TIMESTAMPTZ" | "TIMETZ" | "YEAR" =>
-                        bounded_text!(i).map(DbValue::Text).unwrap_or(DbValue::Null),
+                    // JSON/UUID: the string protocol where the backend allows it, else a typed
+                    // decode re-rendered as text (Postgres sends both in binary).
+                    "JSON" | "JSONB" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => typed_text!(JsonValue, i, |j: JsonValue| j.to_string())
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
+                    },
+                    "UUID" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => typed_text!(Uuid, i, |u: Uuid| u.hyphenated().to_string())
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
+                    },
+                    // temporal → text. Naive values render as "YYYY-MM-DD HH:MM:SS[.fff]"; zoned
+                    // values as ISO 8601 in UTC ("YYYY-MM-DDTHH:MM:SS[.fff]Z"). Both parse with JS `Date`.
+                    "DATE" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => typed_text!(NaiveDate, i, |d: NaiveDate| d.to_string())
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
+                    },
+                    "TIME" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => typed_text!(NaiveTime, i, |t: NaiveTime| t.to_string())
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
+                    },
+                    // Only Postgres TIMESTAMPTZ carries a zone. MySQL DATETIME/TIMESTAMP and
+                    // Postgres TIMESTAMP are wall-clock values, so they render naive (no `Z`):
+                    // stamping a server-local time as UTC would shift it in JS `Date`.
+                    "TIMESTAMPTZ" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => typed_text!(DateTime<Utc>, i, |t: DateTime<Utc>| t
+                            .format("%Y-%m-%dT%H:%M:%S%.fZ")
+                            .to_string())
+                        .map(DbValue::Text)
+                        .unwrap_or(DbValue::Null),
+                    },
+                    "DATETIME" | "TIMESTAMP" => match bounded_text!(i) {
+                        Ok(text) => DbValue::Text(text),
+                        Err(_) => match typed_text!(NaiveDateTime, i, |t: NaiveDateTime| t
+                            .to_string())
+                        {
+                            Some(text) => DbValue::Text(text),
+                            // sqlx-mysql decodes TIMESTAMP only as DateTime<Utc>, and it builds that
+                            // from the wire wall-clock unchanged, so render it naive again.
+                            None => typed_text!(DateTime<Utc>, i, |t: DateTime<Utc>| t
+                                .naive_utc()
+                                .to_string())
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
+                        },
+                    },
+                    // TIMETZ / MySQL YEAR: text, else the year as a number rendered to text.
+                    "TIMETZ" | "YEAR" =>
+                        bounded_text!(i)
+                            .or_else(|_| row.try_get::<i64, _>(i).map(|n| n.to_string()))
+                            .or_else(|_| row.try_get::<i16, _>(i).map(|n| n.to_string()))
+                            .map(DbValue::Text)
+                            .unwrap_or(DbValue::Null),
                     // anything else: best-effort text → int → real, else Null.
                     _ =>
                         bounded_text!(i).map(DbValue::Text)
@@ -457,6 +526,69 @@ mod tests {
             pg_translate_placeholders("SELECT '?' , a=?"),
             "SELECT '?' , a=$1"
         );
+    }
+
+    /// SourceMod configs say `"driver": "pgsql"`; the JS loader maps it to "postgres" before this
+    /// parser sees it, and the default port follows the normalized name.
+    #[test]
+    fn postgres_default_port() {
+        let c = parse_config(r#"{"driver":"postgres","host":"h"}"#).unwrap();
+        assert_eq!(c.port, 5432);
+        let c = parse_config(r#"{"driver":"mysql","host":"h"}"#).unwrap();
+        assert_eq!(c.port, 3306);
+    }
+
+    /// Live Postgres decode round-trip. Runs only with S2_TEST_PG set to a databases.json-style entry,
+    /// e.g. S2_TEST_PG='{"driver":"postgres","host":"127.0.0.1","user":"postgres","password":"","database":"postgres"}'.
+    #[test]
+    fn postgres_typed_columns_decode_to_text() {
+        let Ok(cfg) = std::env::var("S2_TEST_PG") else {
+            return;
+        };
+        let cfg = parse_config(&cfg).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let opts = sqlx::postgres::PgConnectOptions::new()
+                .host(&cfg.host)
+                .port(cfg.port)
+                .username(&cfg.user)
+                .password(&cfg.password)
+                .database(&cfg.database);
+            let pool = PgPoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            let lifetime = Arc::new(crate::async_limits::domain().pools.acquire(None, 1, 0).unwrap());
+            let mut lease = crate::async_limits::domain().job(None, 0).unwrap();
+            let sql = "SELECT 12345678901234567890.125::numeric AS n, DATE '2026-11-11' AS d, \
+                       TIME '13:45:06.5' AS t, TIMESTAMP '2026-11-11 13:45:06' AS ts, \
+                       TIMESTAMPTZ '2026-11-11 13:45:06+02' AS tz, \
+                       'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid AS u, '{\"k\":[1,2]}'::jsonb AS j, \
+                       '{\"k\":1}'::json AS js, ?::bigint AS big, ?::text AS s";
+            let r = run_query(
+                PoolKind::Postgres(pool, lifetime),
+                pg_translate_placeholders(sql),
+                vec![DbValue::Int(76561199000000001), DbValue::Text("x".into())],
+                &mut lease,
+            )
+            .await
+            .unwrap();
+            let text = |v: &DbValue| match v {
+                DbValue::Text(s) => s.clone(),
+                _ => panic!("expected a text value"),
+            };
+            let row = &r.rows[0];
+            assert_eq!(text(&row[0]), "12345678901234567890.125");
+            assert_eq!(text(&row[1]), "2026-11-11");
+            assert_eq!(text(&row[2]), "13:45:06.500");
+            assert_eq!(text(&row[3]), "2026-11-11 13:45:06");
+            assert_eq!(text(&row[4]), "2026-11-11T11:45:06Z");
+            assert_eq!(text(&row[5]), "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11");
+            assert_eq!(text(&row[6]), r#"{"k":[1,2]}"#);
+            assert_eq!(text(&row[7]), r#"{"k":1}"#);
+            assert_eq!(text(&row[8]), "76561199000000001");
+            assert_eq!(text(&row[9]), "x");
+        });
     }
 }
 

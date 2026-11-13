@@ -8723,6 +8723,25 @@
         shutdown();
     }
 
+    /// SourceMod's databases.cfg spells the Postgres driver "pgsql" and the password key "pass";
+    /// both resolve to the built-in postgres driver with the password carried through.
+    #[test]
+    fn db_pgsql_alias_routes_to_postgres() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "\
+            __s2_db_testSetConfig({ prefs: { driver:'pgsql', host:'h', pass:'pw' }, other: { driver:'postgresql', host:'h' } });\
+            var seen=null;\
+            __s2pkg_db.Database.registerDriver({ name:'postgres', connect:function(c){ seen=c; return Promise.resolve({query:function(){},execute:function(){},close:function(){}});} });\
+            __s2pkg_db.Database.open('prefs');\
+            globalThis.__test_seen = seen ? seen.driver + ':' + seen.password : 'none';\
+        ").unwrap();
+        assert_eq!(eval_in_context_string("p", "globalThis.__test_seen"), "postgres:pw");
+        assert_eq!(eval_in_context_string("p", "__s2_db_resolveConfigDriver('other')"), "postgres");
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Slice HTTP Task 2: __s2_fetch native + the async-result drain step (frame_async_drain's
     // new fetch-completion loop + resolve_fetch) — the async spine over core/src/http.rs (Task 1).
