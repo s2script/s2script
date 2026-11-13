@@ -19,9 +19,9 @@ function setup(contexts = ["a"], opts = {}) {
   };
 }
 
-function fire(host, { team = 3, queue = false, ref = CONTROLLER, engine = true } = {}) {
+function fire(host, { team = 3, flags = 0, ref = CONTROLLER, engine = true } = {}) {
   return host.dispatch({
-    fields: { player: () => ref, team: () => team, queue: () => queue },
+    fields: { player: () => ref, team: () => team, flags: () => flags },
     original: () => engine,
   });
 }
@@ -31,9 +31,17 @@ test("the view carries the player, team and queue; Continue and Changed let it t
   const seen = [];
   t.on("a", v => { seen.push(v.player, v.team, v.queue); return Continue; });
   t.on("a", () => Changed);
-  assert.deepEqual(fire(t.host, { team: 2, queue: true }), { returnValue: true, skipped: false });
+  assert.deepEqual(fire(t.host, { team: 2, flags: 1 }), { returnValue: true, skipped: false });
   assert.deepEqual(seen, [{ wrapped: CONTROLLER }, 2, true]);
   assert.ok(t.host.trace.includes("original"));
+});
+
+test("queue is bit 0 of the flags the game passes (0, 2 and 3 on build 26598758)", () => {
+  const t = setup();
+  const seen = [];
+  t.on("a", v => { seen.push([v.queue, v.flags]); return Continue; });
+  for (const flags of [0, 2, 3]) fire(t.host, { flags });
+  assert.deepEqual(seen, [[false, 0], [false, 2], [true, 3]]);
 });
 
 test("Handled refuses with false across plugins; Stop ends delivery", () => {

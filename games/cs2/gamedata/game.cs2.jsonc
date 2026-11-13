@@ -437,9 +437,10 @@
         }
       }
     },
-    // CCSPlayerController::HandleCommandJoinTeam(CCSPlayerController* this, int team, bool queue)
-    // -> bool @0x158f5d0 on the Oct 22 build (mov r12d,esi = team; edx = queue, stored and read as a
-    // byte; ecx is written before any read, so there is no 4th argument). Not virtual. Anchor: the
+    // CCSPlayerController::HandleCommandJoinTeam(CCSPlayerController* this, int team, int flags)
+    // -> bool @0x158f5d0 on the Oct 22 build (mov r12d,esi = team; edx = flags, a bit field: bit 0
+    // and bit 1 are tested separately and the game's callers pass 0, 2 and 3; ecx is written before
+    // any read, so there is no 4th argument). Not virtual. Anchor: the
     // only xref to "HandleCommand_JoinTeam( %d ) - invalid team index.\n", at +0x9e0, so ModSharp's
     // prologue pattern is padded to reach it.
     "CCSPlayerController_HandleCommandJoinTeam": {
