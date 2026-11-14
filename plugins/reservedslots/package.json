@@ -1,6 +1,9 @@
 {
   "name": "@s2script/reservedslots",
   "version": "0.0.0",
+  "description": "Provides basic reserved slots",
+  "author": "s2script",
+  "homepage": "https://www.s2script.com/",
   "private": true,
   "main": "src/plugin.ts",
   "s2script": {

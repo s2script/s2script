@@ -1,6 +1,9 @@
 {
   "name": "@s2script/addonmanager",
   "version": "0.0.0",
+  "description": "Mounts Steam Workshop addons on the server",
+  "author": "s2script",
+  "homepage": "https://www.s2script.com/",
   "private": true,
   "main": "src/plugin.ts",
   "s2script": {

@@ -1,6 +1,9 @@
 {
   "name": "@demo/hello",
   "version": "0.1.0",
+  "description": "Hello fixture plugin",
+  "author": "Demo Author <demo@example.com>",
+  "homepage": "https://example.com/hello",
   "main": "src/plugin.ts",
   "s2script": {
     "apiVersion": "1.x"

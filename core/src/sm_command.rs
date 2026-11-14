@@ -3,8 +3,8 @@
 //! The runtime registers it at startup, so it exists with no plugin loaded and no plugin can
 //! shadow it (`__s2_concommand` refuses the name). It is a server command:
 //!
-//! - the server console and RCON get everything: `sm version`, `sm plugins list|load|unload|
-//!   reload`, and the registry operations `sm plugins install|update|remove|outdated|enable|
+//! - the server console and RCON get everything: `sm version`, `sm plugins list|info|load|
+//!   unload|reload`, and the registry operations `sm plugins install|update|remove|outdated|enable|
 //!   disable`;
 //! - a player who types `sm` in their own console gets what SourceMod gives one (its
 //!   `PlayerManager::OnClientCommand`): `sm plugins` lists the running plugins, `sm credits` the
@@ -19,7 +19,7 @@ use std::ffi::CString;
 
 pub(crate) const NAME: &str = "sm";
 
-const USAGE: &str = "Usage: sm plugins <list|load|unload|reload> [id] | load <folder>/<id> \
+const USAGE: &str = "Usage: sm plugins <list|info|load|unload|reload> [id] | info <#> | load <folder>/<id> \
 | install <name>[@range]... [--with <member>] [--disabled] | update [name...] | remove <name>... \
 | enable <name>... | disable <name>... | outdated";
 
@@ -96,7 +96,7 @@ fn client_lines(args: &str) -> Vec<String> {
                 .map(|(id, _)| id)
                 .collect();
             let mut lines = vec![format!("Listing {} plugin(s):", running.len())];
-            lines.extend(running.iter().enumerate().map(|(i, id)| format!("  {} \"{id}\"", i + 1)));
+            lines.extend(running.iter().map(|id| format!("  {}", identity(id, crate::loader::plugin_meta(id).as_ref()))));
             lines
         }
         "credits" => credits(),
@@ -127,6 +127,10 @@ fn plugins(argv: &[&str]) -> Vec<String> {
     let action = argv.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
     match action.as_str() {
         "" | "list" => list(),
+        "info" => match argv.get(1) {
+            Some(target) => info(target),
+            None => vec!["Usage: sm plugins info <#|id>".to_string()],
+        },
         "install" | "update" | "remove" | "outdated" | "enable" | "disable" => registry(&action, &argv[1..]),
         "load" | "unload" | "reload" => {
             let Some(id) = argv.get(1) else { return vec![USAGE.to_string()] };
@@ -202,19 +206,144 @@ fn prof_options(argv: &[&str]) -> Result<crate::profiler::Options, String> {
     Ok(options)
 }
 
+/// `"<id>" (<version>) by <author>`: how SourceMod names a plugin in its lists. The version and
+/// author are left out when the manifest has none (an `.s2sp` built before they were carried).
+fn identity(id: &str, meta: Option<&crate::loader::PluginMeta>) -> String {
+    let mut s = format!("\"{id}\"");
+    if let Some(meta) = meta {
+        if !meta.version.is_empty() {
+            s.push_str(&format!(" ({})", meta.version));
+        }
+        if let Some(author) = &meta.author {
+            s.push_str(&format!(" by {author}"));
+        }
+    }
+    s
+}
+
+/// The lifecycle state as `sm plugins list` / `info` print it.
+fn status_text(state: &str) -> &'static str {
+    match state {
+        "running" => "Running",
+        "loading" => "Loading",
+        "waiting" => "Waiting",
+        "failed" => "Failed",
+        "unloaded" => "Unloaded",
+        _ => "Unknown",
+    }
+}
+
 fn list() -> Vec<String> {
     let plugins = crate::loader::plugin_list();
-    let mut lines = vec![format!("[S2S] Plugins ({}):", plugins.len())];
-    if plugins.is_empty() {
+    let rows: Vec<(String, String, Option<crate::loader::PluginMeta>, Option<String>)> = plugins
+        .into_iter()
+        .map(|(id, state)| {
+            let meta = crate::loader::plugin_meta(&id);
+            let folder = crate::loader::session_folder(&id);
+            (id, state, meta, folder)
+        })
+        .collect();
+    list_lines(&rows, |id| crate::v8host::failed_reason(id))
+}
+
+/// `sm plugins list`, as SourceMod prints it: one numbered line per plugin with its version and
+/// author, a `<State>` tag on any plugin that is not running, then the reason for each failure.
+fn list_lines(
+    rows: &[(String, String, Option<crate::loader::PluginMeta>, Option<String>)],
+    failed_reason: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let mut lines = vec![format!("[S2S] Listing {} plugin{}:", rows.len(), if rows.len() == 1 { "" } else { "s" })];
+    if rows.is_empty() {
         lines.push(format!("[S2S] {}", crate::loader::empty_reason(&crate::loader::progress())));
     }
-    for (i, (id, state)) in plugins.iter().enumerate() {
-        let n = i + 1;
-        lines.push(match crate::loader::session_folder(id) {
-            Some(folder) => format!("  {n} \"{id}\" (running from plugins/{folder}/, this run only)"),
-            None if state == "running" => format!("  {n} \"{id}\" (running)"),
-            None => format!("  {n} \"{id}\" ({state})"),
-        });
+    let mut errors = Vec::new();
+    for (i, (id, state, meta, folder)) in rows.iter().enumerate() {
+        let tag = if state == "running" { String::new() } else { format!("<{}> ", status_text(state)) };
+        let mut line = format!("  {:02} {tag}{}", i + 1, identity(id, meta.as_ref()));
+        if let Some(folder) = folder {
+            line.push_str(&format!(" [from plugins/{folder}/, this run only]"));
+        }
+        lines.push(line);
+        if state == "failed" {
+            errors.push(format!("  {id}: {}", failed_reason(id).unwrap_or_else(|| "unknown error".to_string())));
+        }
+    }
+    if !errors.is_empty() {
+        lines.push("Errors:".to_string());
+        lines.extend(errors);
+    }
+    lines
+}
+
+/// `sm plugins info <#|id>`: a plugin's file, title, author, version, URL and status, as
+/// SourceMod prints them. `#` is the plugin's number in `sm plugins list`.
+fn info(target: &str) -> Vec<String> {
+    let plugins = crate::loader::plugin_list();
+    let Some((id, state)) = find_plugin(&plugins, target, crate::loader::plugin_file) else {
+        return vec![format!("[S2S] Plugin {target} is not loaded.")];
+    };
+    info_lines(
+        &id,
+        &state,
+        crate::loader::plugin_meta(&id).as_ref(),
+        crate::loader::plugin_file(&id).as_deref(),
+        crate::loader::session_folder(&id).as_deref(),
+        crate::v8host::failed_reason(&id).as_deref(),
+    )
+}
+
+/// The list entry `target` names: its number in `sm plugins list`, its id, `<folder>/<id>`, or
+/// its file name under plugins/.
+fn find_plugin(
+    plugins: &[(String, String)],
+    target: &str,
+    file_of: impl Fn(&str) -> Option<String>,
+) -> Option<(String, String)> {
+    if let Ok(n) = target.parse::<usize>() {
+        return n.checked_sub(1).and_then(|i| plugins.get(i)).cloned();
+    }
+    let by_id = |id: &str| plugins.iter().find(|(p, _)| p == id).cloned();
+    by_id(target)
+        .or_else(|| crate::loader::split_folder_spec(target).and_then(|(_, id)| by_id(&id)))
+        .or_else(|| {
+            plugins.iter().find(|(p, _)| {
+                file_of(p).is_some_and(|f| f == target || f.rsplit('/').next() == Some(target))
+            }).cloned()
+        })
+}
+
+fn info_lines(
+    id: &str,
+    state: &str,
+    meta: Option<&crate::loader::PluginMeta>,
+    file: Option<&str>,
+    folder: Option<&str>,
+    failed_reason: Option<&str>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(file) = file {
+        lines.push(format!("  Filename: {file}"));
+    }
+    let description = meta.and_then(|m| m.description.as_deref());
+    lines.push(match description {
+        Some(d) => format!("  Title: {id} ({d})"),
+        None => format!("  Title: {id}"),
+    });
+    if let Some(author) = meta.and_then(|m| m.author.as_deref()) {
+        lines.push(format!("  Author: {author}"));
+    }
+    if let Some(version) = meta.map(|m| m.version.as_str()).filter(|v| !v.is_empty()) {
+        lines.push(format!("  Version: {version}"));
+    }
+    if let Some(url) = meta.and_then(|m| m.url.as_deref()) {
+        lines.push(format!("  URL: {url}"));
+    }
+    lines.push(format!("  Status: {}", status_text(state)));
+    if state == "failed" {
+        lines.push(format!("  Error: {}", failed_reason.unwrap_or("unknown error")));
+    }
+    if let Some(folder) = folder {
+        lines.push(format!("  Loaded from plugins/{folder}/ for this run only"));
     }
     lines
 }
@@ -288,8 +417,103 @@ mod tests {
     fn an_empty_list_says_why() {
         crate::loader::shutdown_worker();
         let lines = list();
-        assert_eq!(lines[0], "[S2S] Plugins (0):");
+        assert_eq!(lines[0], "[S2S] Listing 0 plugins:");
         assert!(lines[1].contains("plugin loader is not running"), "{lines:?}");
+    }
+
+    fn meta(version: &str, author: Option<&str>, description: Option<&str>) -> crate::loader::PluginMeta {
+        crate::loader::PluginMeta {
+            version: version.into(),
+            author: author.map(Into::into),
+            description: description.map(Into::into),
+            url: Some("https://www.s2script.com/".into()),
+        }
+    }
+
+    /// SourceMod's list: `NN "name" (version) by author`, a `<State>` tag on anything not
+    /// running, and each failure's reason after the list.
+    #[test]
+    fn the_list_shows_versions_like_sourcemod() {
+        let rows = vec![
+            ("@s2script/basecommands".to_string(), "running".to_string(), Some(meta("0.15.0", Some("s2script"), None)), None),
+            ("@edge/jb".to_string(), "failed".to_string(), Some(meta("2.1.0", None, None)), None),
+            ("@edge/old".to_string(), "unloaded".to_string(), None, None),
+            ("@edge/rtv".to_string(), "running".to_string(), Some(meta("1.0.0", Some("edge"), None)), Some("disabled".to_string())),
+        ];
+        let lines = list_lines(&rows, |id| (id == "@edge/jb").then(|| "OnPluginStart threw: boom".to_string()));
+        assert_eq!(
+            lines,
+            vec![
+                "[S2S] Listing 4 plugins:",
+                "  01 \"@s2script/basecommands\" (0.15.0) by s2script",
+                "  02 <Failed> \"@edge/jb\" (2.1.0)",
+                "  03 <Unloaded> \"@edge/old\"",
+                "  04 \"@edge/rtv\" (1.0.0) by edge [from plugins/disabled/, this run only]",
+                "Errors:",
+                "  @edge/jb: OnPluginStart threw: boom",
+            ]
+        );
+        let one = list_lines(&rows[..1], |_| None);
+        assert_eq!(one[0], "[S2S] Listing 1 plugin:");
+    }
+
+    #[test]
+    fn info_prints_what_sourcemod_prints() {
+        let m = meta("0.15.0", Some("s2script"), Some("Basic admin commands"));
+        assert_eq!(
+            info_lines("@s2script/basecommands", "running", Some(&m), Some("_s2script_basecommands.s2sp"), None, None),
+            vec![
+                "  Filename: _s2script_basecommands.s2sp",
+                "  Title: @s2script/basecommands (Basic admin commands)",
+                "  Author: s2script",
+                "  Version: 0.15.0",
+                "  URL: https://www.s2script.com/",
+                "  Status: Running",
+            ]
+        );
+        let bare = crate::loader::PluginMeta { version: "1.0.0".into(), ..Default::default() };
+        assert_eq!(
+            info_lines("@edge/jb", "failed", Some(&bare), None, Some("disabled"), Some("boom")),
+            vec![
+                "  Title: @edge/jb",
+                "  Version: 1.0.0",
+                "  Status: Failed",
+                "  Error: boom",
+                "  Loaded from plugins/disabled/ for this run only",
+            ]
+        );
+    }
+
+    #[test]
+    fn info_finds_a_plugin_by_number_id_folder_or_file() {
+        let plugins = vec![
+            ("@a/one".to_string(), "running".to_string()),
+            ("@b/two".to_string(), "failed".to_string()),
+        ];
+        let file_of = |id: &str| Some(format!("disabled/{}.s2sp", id.replace(['@', '/'], "_")));
+        let find = |t: &str| find_plugin(&plugins, t, file_of).map(|(id, _)| id);
+        assert_eq!(find("1").as_deref(), Some("@a/one"));
+        assert_eq!(find("2").as_deref(), Some("@b/two"));
+        assert_eq!(find("0"), None);
+        assert_eq!(find("3"), None);
+        assert_eq!(find("@b/two").as_deref(), Some("@b/two"));
+        assert_eq!(find("disabled/@b/two").as_deref(), Some("@b/two"));
+        assert_eq!(find("_a_one.s2sp").as_deref(), Some("@a/one"));
+        assert_eq!(find("disabled/_a_one.s2sp").as_deref(), Some("@a/one"));
+        assert_eq!(find("@c/three"), None);
+        assert_eq!(plugins_info_usage(), vec!["Usage: sm plugins info <#|id>".to_string()]);
+        assert_eq!(info("@nope/x"), vec!["[S2S] Plugin @nope/x is not loaded.".to_string()]);
+    }
+
+    fn plugins_info_usage() -> Vec<String> {
+        plugins(&["info"])
+    }
+
+    /// A player's `sm plugins` names each running plugin's version and author too.
+    #[test]
+    fn identity_names_version_and_author() {
+        assert_eq!(identity("@a/one", None), "\"@a/one\"");
+        assert_eq!(identity("@a/one", Some(&meta("1.2.3", Some("A"), None))), "\"@a/one\" (1.2.3) by A");
     }
 
     #[test]

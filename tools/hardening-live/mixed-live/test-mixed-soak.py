@@ -317,7 +317,10 @@ class FakeRun:
                 self.expire_after_cycle = None
             return 0, line
         if "sm plugins list" in commands:
-            return 0, '"@fixture/mixed-live" (running)\n' + self.status_line()
+            return 0, (
+                '[S2S] Listing 2 plugins:\n  01 "@fixture/mixed-live" (1.0.0)\n'
+                '  02 <Failed> "@fixture/other" (1.0.0)\nErrors:\n  @fixture/other: x\n'
+            ) + self.status_line()
         return 0, "ok\n"
 
     def status_line(self):

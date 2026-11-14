@@ -189,8 +189,8 @@ folders like `events/halloween/@edge/rtv`. Only a folder prefix reaches into a f
 `sm plugins load <id>` never starts one by accident. You type the plugin's id and s2script works out
 its file name. Nothing outside `plugins/` can be reached. `sm plugins unload` takes the same form, or
 just the id. The file stays where it is, so the next restart, or
-`sm plugins unload`, turns it off again. `sm plugins list` marks it "running from
-plugins/<folder>/, this run only". Use this for servers that keep plugins around in folders and
+`sm plugins unload`, turns it off again. `sm plugins list` marks it "[from
+plugins/<folder>/, this run only]". Use this for servers that keep plugins around in folders and
 only switch them on for an event.
 
 Restricted (org-only) plugins need a read-only token from s2script.com → Deploy tokens, given as
@@ -216,6 +216,8 @@ sm plugins load fun/@edge/rtv           //   (disabled/, fun/, events/halloween/
 sm plugins unload @edge/rtv             // and stop it again
 sm plugins remove @edge/rtv             // drop it from plugins.json; its file is removed and unloaded
 sm plugins outdated                     // current / wanted / latest for each plugin
+sm plugins list                         // 01 "@s2script/basecommands" (0.15.0) by s2script …
+sm plugins info 1                       // file, title, author, version, URL, status (by # or id)
 ```
 
 The registry operations (install, update, remove, enable, disable, outdated) run in the background

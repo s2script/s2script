@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert";
-import { buildPlugin } from "../src/build.ts";
+import { buildPlugin, pluginInfo } from "../src/build.ts";
 import { STAMPED_API_VERSION } from "../src/api-version.ts";
 import { openZip } from "./zip.mjs";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,10 @@ test("build produces a .s2sp with derived manifest + cjs plugin.js", async () =>
   assert.equal(manifest.apiVersion, STAMPED_API_VERSION,
     "manifest.apiVersion is stamped from the SDK host major, not copied from package.json");
   assert.equal(manifest.version, "0.1.0", "manifest.version should match package version");
+  // `sm plugins info` fields come from npm's own description/author/homepage.
+  assert.equal(manifest.description, "Hello fixture plugin");
+  assert.equal(manifest.author, "Demo Author");
+  assert.equal(manifest.url, "https://example.com/hello");
 
   // plugin.js must exist and be a CJS bundle with @s2script/* left as external require()
   const js = zip.readAsText("plugin.js");
@@ -296,4 +300,15 @@ test("buildPlugin refuses an @s2script/*-scoped s2script.libraries entry", async
     'export function OnPluginStart(): void {}\n',
   );
   await assert.rejects(() => buildPlugin(dir, packagesDir), /reserved/);
+});
+
+test("pluginInfo reads npm's description, author (string or object) and homepage", () => {
+  assert.deepEqual(pluginInfo({}), {});
+  assert.deepEqual(pluginInfo({ description: "  ", author: "", homepage: " " }), {});
+  assert.deepEqual(
+    pluginInfo({ description: "Basic admin commands", author: "Jane Doe <jane@example.com> (https://jane.dev)", homepage: "https://s2script.com" }),
+    { description: "Basic admin commands", author: "Jane Doe", url: "https://s2script.com" },
+  );
+  assert.deepEqual(pluginInfo({ author: { name: "s2script", email: "x@example.com" } }), { author: "s2script" });
+  assert.deepEqual(pluginInfo({ author: { email: "x@example.com" } }), {});
 });

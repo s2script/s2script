@@ -18,6 +18,15 @@ from pathlib import Path
 from typing import Any
 
 
+
+# `sm plugins list` prints `  NN "<id>" (<version>) by <author>` for a running plugin and puts a
+# `<State>` tag before the id of any plugin that is not running.
+RUNNING_PLUGIN_LINE = re.compile(r'^\s+\d+ "')
+
+
+def count_running(output):
+    return sum(1 for line in output.splitlines() if RUNNING_PLUGIN_LINE.match(line))
+
 def _load_jsonc_stripper():
     """Load the repository's shared JSONC semantics from any supported fixture depth."""
     for parent in Path(__file__).resolve().parents:
@@ -1036,7 +1045,7 @@ def main(argv: list[str] | None = None, *, run_fn=None, clock=None, utc_fn=None)
         if code:
             raise RuntimeError(f"preflight RCON failed ({code})")
         (run_dir / "status-start.txt").write_text(output, encoding="utf-8")
-        final_running = sum(1 for line in output.splitlines() if "(running)" in line.lower())
+        final_running = count_running(output)
         if final_running != args.expected_plugins:
             raise RuntimeError(f"preflight expected {args.expected_plugins} running plugins, got {final_running}")
         code, output = rcon("sm_mixed_slotreset")
@@ -1213,7 +1222,7 @@ def main(argv: list[str] | None = None, *, run_fn=None, clock=None, utc_fn=None)
         if code:
             complete = False
             errors.append(f"final plugin/status RCON failed ({code})")
-        final_running = sum(1 for line in output.splitlines() if "(running)" in line.lower())
+        final_running = count_running(output)
         (run_dir / "plugins-final.txt").write_text(output, encoding="utf-8")
         rss("final")
     except Exception as exc:

@@ -36,6 +36,14 @@ pub struct Manifest {
     pub interface_contracts: HashMap<String, crate::interop::Contract>,
     pub id: String,
     pub version: String,
+    /// npm's `description`, `author` (name) and `homepage`, copied by the build for
+    /// `sm plugins list` / `sm plugins info`. Absent in an older `.s2sp`.
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     #[serde(rename = "pluginDependencies", default)]
