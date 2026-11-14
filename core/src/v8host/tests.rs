@@ -3571,7 +3571,7 @@
         shutdown();
     }
     #[test]
-    fn protocol2_subscriptions_require_declared_dependency_and_matching_hash() {
+    fn protocol2_subscriptions_require_a_declared_dependency_not_a_matching_hash() {
         protocol2_setup();
         create_plugin_context("rogue");
         assert!(eval_in_context(
@@ -3588,11 +3588,13 @@
                 compiled_types_sha256: Some("b".repeat(64)),
             }],
         );
+        // A different declaration-file hash alone no longer refuses the subscription: the
+        // forward itself has the same shape on both sides.
         assert!(eval_in_context(
             "cons",
             r#"__s2_iface_on("@x/counter","OnCountChanged",function(){})"#
         )
-        .is_err());
+        .is_ok());
         shutdown();
     }
     #[test]
@@ -4360,10 +4362,10 @@
         shutdown();
     }
 
-    /// B1: consumer compiled against hash "bbb…" but the producer publishes "aaa…" — every call
-    /// throws InterfaceTypesMismatch (the late-producer backstop; load-time refusal is loader-side).
+    /// Consumer compiled against hash "bbb…" but the producer publishes "aaa…": the call still
+    /// works, because the method it uses is still there. Only a missing method throws.
     #[test]
-    fn iface_call_throws_types_mismatch_when_compiled_hash_differs() {
+    fn iface_call_survives_a_drifted_compiled_hash() {
         let _ = init(dummy_logger());
         set_plugin_publishes("tm_prod", [(
             "@x/tm".to_string(),
@@ -4380,7 +4382,10 @@
             r#"const h=require("@x/tm");
                globalThis.__tmcall=function(){ try { return String(h.ping()); } catch(e){ return String(e); } };"#, "{}");
         let out = eval_in_context_string("tm_cons", "globalThis.__tmcall()");
-        assert!(out.contains("InterfaceTypesMismatch"), "got: {}", out);
+        assert_eq!(out, "1");
+        let out = eval_in_context_string("tm_cons",
+            r#"(()=>{try{return String(__s2_iface_call("@x/tm","gone",[]))}catch(e){return String(e)}})()"#);
+        assert!(out.contains("InterfaceUnknownMethod") && out.contains("@x/tm.gone"), "got: {}", out);
         unload_plugin("tm_cons");
         unload_plugin("tm_prod");
         shutdown();

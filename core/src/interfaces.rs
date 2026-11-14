@@ -11,7 +11,7 @@ pub enum Kind { Hard, Optional }
 
 /// What `v8host::iface_call` should do for a (consumer, interface, method) triple.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallTarget { Ok, Unavailable, VersionMismatch, TypesMismatch }
+pub enum CallTarget { Ok, Unavailable, VersionMismatch, UnknownMethod }
 
 #[derive(Debug, Clone)]
 pub struct Subscriber {
@@ -40,8 +40,8 @@ pub struct ImportSpec {
     pub range: String,
     pub kind: Kind,
     /// sha256 (hex) of the producer-contract bytes this consumer COMPILED against
-    /// (manifest `compiledAgainst`). None when the consumer shipped no verified copy
-    /// — unverified imports keep the pre-B1 contract (no hash check).
+    /// (manifest `compiledAgainst`). Informational: the loader warns when it differs from the
+    /// producer's `typesSha256`, but nothing is refused on it — members are checked per use.
     pub compiled_types_sha256: Option<String>,
 }
 
@@ -52,7 +52,7 @@ impl ImportSpec {
     }
 }
 
-struct ImportDecl { range: String, kind: Kind, compiled_types_sha256: Option<String> }
+struct ImportDecl { range: String, kind: Kind }
 
 /// Availability interest survives the absence of its provider. An attempt (including an
 /// incompatible or failed one) is consumed once per provider identity and generation.
@@ -156,7 +156,7 @@ impl InterfaceRegistry {
         let order = decls.iter().map(|decl| decl.name.clone()).collect();
         let map = decls.into_iter()
             .map(|s| (s.name, ImportDecl {
-                range: s.range, kind: s.kind, compiled_types_sha256: s.compiled_types_sha256,
+                range: s.range, kind: s.kind,
             }))
             .collect();
         self.imports.insert(plugin_id.to_string(), map);
@@ -196,31 +196,13 @@ impl InterfaceRegistry {
         };
         let Some(entry) = self.ifaces.get(name) else { return CallTarget::Unavailable };
         if !version_satisfies(&decl.range, &entry.version) { return CallTarget::VersionMismatch; }
-        // B1 typesSha256 verify (north-star §5.2): the consumer compiled against a specific
-        // contract; if the producer's published hash differs, every call is unsound — refuse
-        // loudly rather than marshal across a drifted contract. Verified only when BOTH sides
-        // carry a hash (fail-open for pre-B1 artifacts; the doctrine gate is at load, this is
-        // the always-on backstop for late-arriving producers).
-        if let (Some(expected), false) = (&decl.compiled_types_sha256, entry.types_sha256.is_empty()) {
-            if !expected.is_empty() && *expected != entry.types_sha256 {
-                return CallTarget::TypesMismatch;
-            }
-        }
+        // No whole-contract hash gate: a producer whose declaration file changed still serves
+        // every member that kept its shape. Protocol 2 members are compared one by one where
+        // they're used (`interop::Contract::method_drift`); here only existence is known.
         if let Some(m) = method {
-            if !entry.method_names.iter().any(|n| n == m) { return CallTarget::Unavailable; }
+            if !entry.method_names.iter().any(|n| n == m) { return CallTarget::UnknownMethod; }
         }
         CallTarget::Ok
-    }
-
-    pub fn verified_import(&self, consumer: &str, name: &str) -> bool {
-        let Some(entry) = self.ifaces.get(name) else {
-            return false;
-        };
-        self.imports
-            .get(consumer)
-            .and_then(|m| m.get(name))
-            .and_then(|d| d.compiled_types_sha256.as_ref())
-            .map_or(false, |h| !h.is_empty() && *h == entry.types_sha256)
     }
 
     pub fn add_watch(&mut self, watch: AvailabilityWatch) -> bool {
@@ -444,7 +426,7 @@ mod tests {
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::Unavailable);
         r.publish("@x", "1.2.0", "", "prod", 0, vec!["greet".into()]).expect("test-setup publish must succeed");
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::Ok);
-        assert_eq!(r.call_target("cons", "@x", "missingMethod"), CallTarget::Unavailable);
+        assert_eq!(r.call_target("cons", "@x", "missingMethod"), CallTarget::UnknownMethod);
         r.publish("@x", "3.0.0", "", "prod", 1, vec!["greet".into()]).expect("test-setup publish must succeed");   // republished incompatible
         assert_eq!(r.call_target("cons", "@x", "greet"), CallTarget::VersionMismatch);
     }
@@ -608,14 +590,17 @@ mod tests {
     }
 
     #[test]
-    fn call_target_types_mismatch_when_compiled_hash_differs() {
+    fn call_target_ignores_a_drifted_compiled_hash() {
         let mut r = InterfaceRegistry::new();
         r.publish("@x/if", "1.0.0", "aaa111", "prod", 1, vec!["m".into()]).expect("publish");
         r.set_imports("cons", vec![ImportSpec {
             name: "@x/if".into(), range: "^1.0.0".into(), kind: Kind::Hard,
             compiled_types_sha256: Some("bbb222".into()),
         }]);
-        assert_eq!(r.call_target("cons", "@x/if", "m"), CallTarget::TypesMismatch);
+        // A different declaration-file hash no longer poisons the interface: `m` still exists.
+        assert_eq!(r.call_target("cons", "@x/if", "m"), CallTarget::Ok);
+        // Only a member the producer doesn't have fails, and only when it's called.
+        assert_eq!(r.call_target("cons", "@x/if", "gone"), CallTarget::UnknownMethod);
     }
 
     #[test]

@@ -1366,9 +1366,18 @@ pub(crate) fn iface_published(name: &str) -> bool {
 }
 
 /// The published contract hash for `name` (empty string = producer ships none), None when
-/// unpublished. The loader's `verify_compiled_against` (B1) fail-fast gate reads this.
+/// unpublished.
+#[cfg(test)]
 pub(crate) fn iface_published_types_sha256(name: &str) -> Option<String> {
     IFACES.with(|r| r.borrow().lookup(name).map(|e| e.types_sha256.clone()))
+}
+
+/// What the loader's contract-drift note compares a consumer against: the producer's published
+/// `typesSha256` and protocol 2 contract. None when unpublished.
+pub(crate) fn iface_published_shape(name: &str) -> Option<crate::loader::PublishedShape> {
+    let types_sha256 = IFACES.with(|r| r.borrow().lookup(name).map(|e| e.types_sha256.clone()))?;
+    let contract = super::interop_wire::published_contract(name).map(|c| (*c).clone());
+    Some(crate::loader::PublishedShape { types_sha256, contract })
 }
 
 /// Slice 5E.3: drop any pending reload-handoff blob for `id` WITHOUT consuming it — called by the

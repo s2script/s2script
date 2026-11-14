@@ -518,14 +518,15 @@ config and zero generated files. This is a stronger, cheaper claim than §2.9's 
 (`s2s add`), which pulls a producer's `.d.ts` down into a consumer's own
 `.s2script/types/<dep>/index.d.ts` **because there is nothing else on disk to resolve to** — a
 registry producer isn't co-located with its consumer, so a byte-copy (hashed into
-`manifest.compiledAgainst`, re-verified against the producer's published hash at load, per §2.9) is
+`manifest.compiledAgainst`, compared with the producer's published hash at load, per §2.9) is
 the only way the consumer's build can see its shape at all, and that copy is exactly the thing that
 can silently drift once the producer's interface moves on. A workspace sibling needs none of that
 ceremony: the file the consumer's build resolves to *is* the producer's real, current contract, on
 the same disk, in the same commit — copying it would be pure ceremony, and a worse one than doing
 nothing, since a copy can go stale and a resolved-in-place symlink cannot. `compiledAgainst` is
-computed identically either way (a sha256 of a `types` file), so the loader's drift check is one
-mechanism regardless of path; in a workspace it passes for structural reasons — both sides hash the
+computed identically either way (a sha256 of a `types` file), so the loader's drift warning is one
+mechanism regardless of path (a drifted hash warns and names any changed members; only a member that
+actually changed fails, when it is used — see `docs/PLUGIN_INTEROP.md`); in a workspace it passes for structural reasons — both sides hash the
 identical file — rather than by luck. A pre-migration `.s2script/types/<dep>/` copy left over after
 a plugin joins a workspace loses to the live sibling, with a build-time warning naming it as safe to
 delete now.

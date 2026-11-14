@@ -39,11 +39,13 @@ pub use lifecycle::unload_all;
 pub(crate) use lifecycle::{
     clear_failed, clear_pending_handoff, config_file_content, create_plugin_context, current_frame,
     dispose_plugin_context, eval_in_context, failed_plugin_ids, finalize_loading_plugins,
-    iface_published, iface_published_types_sha256, is_failed, is_loading, any_loading, load_plugin_js, load_plugin_js_prepared,
+    iface_published, iface_published_shape, is_failed, is_loading, any_loading, load_plugin_js, load_plugin_js_prepared,
     materialize_for_load, materialize_for_load_snapshot, plugin_phase, queue_pending_reload,
     read_engine_config, re_materialize_config, re_materialize_config_snapshot, reconcile_initial_config_snapshot, set_failed,
     set_plugin_version, store_config_decls, unload_plugin, failed_reason,
 };
+#[cfg(test)]
+pub(crate) use lifecycle::iface_published_types_sha256;
 use lifecycle::{s2_config_on_change, s2_handoff_take, s2_load_failed, s2_load_settled};
 use natives::install_natives;
 use timers::{
@@ -2273,8 +2275,8 @@ fn s2_iface_call(
                 throw_named(scope, "InterfaceVersionMismatch", &name);
                 return;
             }
-            crate::interfaces::CallTarget::TypesMismatch => {
-                throw_named(scope, "InterfaceTypesMismatch", &name);
+            crate::interfaces::CallTarget::UnknownMethod => {
+                throw_named(scope, "InterfaceUnknownMethod", &format!("{}.{}", name, method));
                 return;
             }
             crate::interfaces::CallTarget::Ok => {}
@@ -2299,11 +2301,18 @@ fn s2_iface_call(
             throw_named(scope, "InterfaceUnavailable", &consumer);
             return;
         }
+        if let Some(e) = contract
+            .as_ref()
+            .and_then(|c| interop_wire::method_drift_error(&consumer, &name, c, &method))
+        {
+            throw_named(scope, e, &format!("{}.{}", name, method));
+            return;
+        }
         let method_schema = contract
             .as_ref()
             .and_then(|c| c.metadata.methods.get(&method));
         if contract.is_some() && method_schema.is_none() {
-            throw_named(scope, "InterfaceUnknownMethod", &method);
+            throw_named(scope, "InterfaceUnknownMethod", &format!("{}.{}", name, method));
             return;
         }
         if let Some((producer, generation)) = IFACES.with(|r| r.borrow().producer_of(&name)) {
@@ -2522,8 +2531,12 @@ fn s2_iface_on(
                 throw_named(scope, "InterfaceUnavailable", &name);
                 return;
             }
+            if let Some(e) = interop_wire::forward_drift_error(&consumer, &name, &contract, &event) {
+                throw_named(scope, e, &format!("{}.{}", name, event));
+                return;
+            }
             if !contract.metadata.forwards.contains_key(&event) {
-                throw_named(scope, "InterfaceUnknownForward", &event);
+                throw_named(scope, "InterfaceUnknownForward", &format!("{}.{}", name, event));
                 return;
             }
         }
@@ -2712,6 +2725,13 @@ fn s2_iface_forward(
             };
             if contract.is_some() && checked_contract(&consumer, &name).is_err() {
                 continue;
+            }
+            // A consumer compiled against a different shape of THIS forward can't be handed the
+            // payload; everyone else on the drifted interface still gets it.
+            if let Some(c) = contract.as_ref() {
+                if interop_wire::forward_drift_error(&consumer, &name, c, &event).is_some() {
+                    continue;
+                }
             }
             let Some(g_ctx) =
                 PLUGINS.with(|p| p.borrow().get(&consumer).map(|pi| pi.context.clone()))

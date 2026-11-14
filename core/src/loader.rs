@@ -66,121 +66,74 @@ fn deps_satisfied(manifest: &Manifest) -> bool {
     manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n))
 }
 
-/// B1 (north-star §5.2): fail-fast contract-drift gate. A consumer that compiled against a
-/// dependency contract whose hash differs from what the producer CURRENTLY publishes is refused
-/// at load — completing "fails at typecheck AND again at load". Producer-absent deps are not
-/// checked here (lazy hard-dep contract); if such a producer appears later with a different
-/// hash, every call throws `InterfaceTypesMismatch` (interfaces.rs backstop).
-fn verify_compiled_against_batch(
-    manifest: &Manifest,
-    batch_hashes: &HashMap<String, String>,
-) -> Result<(), String> {
-    verify_compiled_against_with(manifest, batch_hashes, |iface| {
-        crate::v8host::iface_published_types_sha256(iface)
-    })
+/// What the loader can see of a published interface: the producer's declaration-file hash
+/// (`typesSha256`) and, for protocol 2, its per-member contract.
+pub(crate) struct PublishedShape {
+    pub types_sha256: String,
+    pub contract: Option<crate::interop::Contract>,
 }
 
-fn verify_compiled_against_with(
+/// Contract drift is reported, never refused. A consumer whose `compiledAgainst` hash differs from
+/// what the producer publishes still loads: the declaration file changing says nothing about
+/// whether the members THIS consumer uses changed. Each member is checked where it's used (a call
+/// to a dropped method throws `InterfaceUnknownMethod`, one whose types changed throws
+/// `InterfaceTypesMismatch`), and this note names the members that will fail, if any, up front.
+/// Producer-absent deps produce no note (the lazy hard-dep contract).
+fn contract_drift_notes(
     manifest: &Manifest,
-    batch_hashes: &HashMap<String, String>,
-    live_hash: impl Fn(&str) -> Option<String>,
-) -> Result<(), String> {
+    published: impl Fn(&str) -> Option<PublishedShape>,
+) -> Vec<String> {
     let mut names: Vec<&String> = manifest.compiled_against.keys().collect();
-    names.sort(); // deterministic first-error
+    names.sort(); // deterministic order
+    let mut notes = Vec::new();
     for iface in names {
         let built = &manifest.compiled_against[iface];
         if built.is_empty() { continue; }
-        let published = batch_hashes.get(iface).cloned()
-            .or_else(|| live_hash(iface));
-        let Some(published) = published else { continue };
-        if !published.is_empty() && published != *built {
-            return Err(format!(
-                "contract drift on '{}': compiled against typesSha256 {}… but the producer publishes {}… — refresh .s2script/types/{}/index.d.ts from the producer and rebuild",
-                iface,
-                &built[..12.min(built.len())],
-                &published[..12.min(published.len())],
-                iface
-            ));
-        }
+        let Some(shape) = published(iface) else { continue };
+        if shape.types_sha256.is_empty() || shape.types_sha256 == *built { continue; }
+        let head = format!(
+            "contract drift on '{}': compiled against typesSha256 {}… but the producer publishes {}…",
+            iface,
+            &built[..12.min(built.len())],
+            &shape.types_sha256[..12.min(shape.types_sha256.len())],
+        );
+        let refresh = format!("refresh .s2script/types/{}/index.d.ts from the producer and rebuild", iface);
+        let tail = match (manifest.interface_contracts.get(iface), shape.contract.as_ref()) {
+            (Some(expected), Some(actual)) => {
+                let drifted = expected.drifted_members(actual);
+                if drifted.is_empty() {
+                    format!("every member it compiled against is unchanged, so it loads normally ({} to silence this)", refresh)
+                } else {
+                    let list: Vec<String> = drifted
+                        .iter()
+                        .map(|(name, forward, drift)| {
+                            let what = match drift {
+                                crate::interop::MemberDrift::Missing => "removed",
+                                crate::interop::MemberDrift::Changed => "types changed",
+                            };
+                            let kind = if *forward { "event" } else { "method" };
+                            format!("{} {} ({})", kind, name, what)
+                        })
+                        .collect();
+                    format!(
+                        "loading anyway; using these throws at call time: {} — {}",
+                        list.join(", "),
+                        refresh
+                    )
+                }
+            }
+            _ => format!(
+                "loading anyway; a call to a method the producer no longer has throws InterfaceUnknownMethod — {}",
+                refresh
+            ),
+        };
+        notes.push(format!("{}; {}", head, tail));
     }
-    Ok(())
+    notes
 }
 
-fn resolve_contract_rejections(
-    candidates: &[(PathBuf, &Manifest)],
-    initially_rejected: &std::collections::HashSet<PathBuf>,
-    live_hash: impl Fn(&str) -> Option<String> + Copy,
-) -> HashMap<PathBuf, String> {
-    let mut ordered: Vec<(PathBuf, &Manifest)> = candidates.iter().cloned().collect();
-    ordered.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut eligible_providers: std::collections::HashSet<PathBuf> = ordered
-        .iter()
-        .filter(|(path, manifest)| {
-            !initially_rejected.contains(path) && !manifest.publishes.is_empty()
-        })
-        .map(|(path, _)| path.clone())
-        .collect();
-    let mut accepted_providers = eligible_providers.clone();
-    let mut cycle_rejections = HashMap::new();
-    let mut history: Vec<std::collections::HashSet<PathBuf>> = Vec::new();
-
-    // Only provider viability can change the hashes seen by another candidate. Stabilize that set
-    // first, reconsidering providers against the retained live generation when a candidate falls
-    // out. If a provider cycle oscillates instead of reaching a fixed point, conservatively retain
-    // the live generations for every toggling provider.
-    loop {
-        history.push(accepted_providers.clone());
-        let mut hashes = HashMap::new();
-        for (path, manifest) in &ordered {
-            if !accepted_providers.contains(path) { continue; }
-            for (name, publish) in &manifest.publishes {
-                hashes.insert(name.clone(), publish.types_sha256.clone());
-            }
-        }
-        let next: std::collections::HashSet<PathBuf> = ordered
-            .iter()
-            .filter(|(path, manifest)| {
-                eligible_providers.contains(path)
-                    && verify_compiled_against_with(manifest, &hashes, live_hash).is_ok()
-            })
-            .map(|(path, _)| path.clone())
-            .collect();
-        if next == accepted_providers { break; }
-        if let Some(cycle_start) = history.iter().position(|seen| *seen == next) {
-            let cycle = history[cycle_start..].iter().chain(std::iter::once(&next));
-            let mut union = std::collections::HashSet::new();
-            let mut intersection = eligible_providers.clone();
-            for state in cycle {
-                union.extend(state.iter().cloned());
-                intersection.retain(|path| state.contains(path));
-            }
-            let toggling: Vec<PathBuf> = union.difference(&intersection).cloned().collect();
-            for path in toggling {
-                eligible_providers.remove(&path);
-                cycle_rejections.insert(path, "compiledAgainst provider cycle has no stable candidate contract set; keeping live generations".to_string());
-            }
-            accepted_providers = eligible_providers.clone();
-            history.clear();
-            continue;
-        }
-        accepted_providers = next;
-    }
-
-    let mut hashes = HashMap::new();
-    for (path, manifest) in &ordered {
-        if !accepted_providers.contains(path) { continue; }
-        for (name, publish) in &manifest.publishes {
-            hashes.insert(name.clone(), publish.types_sha256.clone());
-        }
-    }
-    let mut rejected = cycle_rejections;
-    for (path, manifest) in ordered {
-        if initially_rejected.contains(&path) || rejected.contains_key(&path) { continue; }
-        if let Err(reason) = verify_compiled_against_with(manifest, &hashes, live_hash) {
-            rejected.insert(path, reason);
-        }
-    }
-    rejected
+fn live_published_shape(iface: &str) -> Option<PublishedShape> {
+    crate::v8host::iface_published_shape(iface)
 }
 
 fn stamp_time(stamp: FileStamp) -> SystemTime {
@@ -1365,17 +1318,6 @@ fn finish_batch_if_ready() {
             rejected.extend(paths.iter().cloned());
         }
     }
-    let candidates: Vec<(PathBuf, &Manifest)> = batch.prepared.values()
-        .map(|row| (row.path.clone(), &row.prepared.manifest)).collect();
-    let drift_rejected = resolve_contract_rejections(&candidates, &rejected, |name| {
-        crate::v8host::iface_published_types_sha256(name)
-    });
-    for (path, reason) in &drift_rejected {
-        if let Some(row) = batch.prepared.get(path) {
-            refuse_prepared(path, &row.prepared, reason, row.old_id.as_deref());
-        }
-    }
-    rejected.extend(drift_rejected.keys().cloned());
     let mut loads: HashMap<String, PreparedLoad> = HashMap::new();
     let mut order_input = Vec::new();
     for (_, row) in batch.prepared {
@@ -1457,10 +1399,6 @@ fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut Loader
         }
         return;
     }
-    if let Err(reason) = verify_compiled_against_batch(&row.prepared.manifest, &HashMap::new()) {
-        refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
-        return;
-    }
     let dependencies_ready = deps_satisfied(&row.prepared.manifest);
     if !dependencies_ready && !allow_unmet_dependencies {
         let watch_id = row.old_id.as_deref().unwrap_or(&id);
@@ -1484,6 +1422,9 @@ fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut Loader
             crate::v8host::log_warn(&format!("[plugins] reload '{}' queued (still loading)", old_id));
             return;
         }
+    }
+    for note in contract_drift_notes(&row.prepared.manifest, live_published_shape) {
+        crate::v8host::log_warn(&format!("WARN: poll_plugins: '{}': {}", id, note));
     }
     // Freeze and validate the entire candidate input before retiring the running generation.
     if let Err(reason) = prepare_engine_functions(&mut row.prepared) {
@@ -2460,15 +2401,50 @@ mod tests {
     }
 
     #[test]
-    fn compiled_against_prefers_the_prevalidated_in_batch_producer_hash() {
+    fn contract_drift_is_a_note_naming_only_the_members_that_changed() {
+        fn contract(methods: serde_json::Value) -> crate::interop::Contract {
+            use sha2::Digest;
+            let metadata: crate::interop::Metadata = serde_json::from_value(
+                serde_json::json!({"version":1,"methods":methods,"forwards":{}}),
+            ).unwrap();
+            let bytes = serde_json_canonicalizer::to_vec(&metadata).unwrap();
+            let sha256 = format!("{:x}", sha2::Sha256::digest(bytes));
+            crate::interop::Contract { metadata, sha256 }
+        }
+        let num = serde_json::json!({"args":[{"schema":{"kind":"number"},"optional":false}],"result":{"kind":"void"}});
+        let text = serde_json::json!({"args":[{"schema":{"kind":"string"},"optional":false}],"result":{"kind":"void"}});
         let mut consumer: Manifest = serde_json::from_str(
-            r#"{"id":"consumer","version":"1","apiVersion":"2.x","compiledAgainst":{"iface":"new-hash"}}"#,
+            r#"{"id":"consumer","version":"1","apiVersion":"2.x","compiledAgainst":{"iface":"old-hash"}}"#,
         ).unwrap();
         consumer.plugin_dependencies.insert("iface".into(), "1.x".into());
-        let batch = HashMap::from([("iface".to_string(), "new-hash".to_string())]);
-        assert!(verify_compiled_against_batch(&consumer, &batch).is_ok());
-        let stale = HashMap::from([("iface".to_string(), "old-hash".to_string())]);
-        assert!(verify_compiled_against_batch(&consumer, &stale).unwrap_err().contains("contract drift"));
+        consumer.interface_contracts.insert(
+            "iface".into(),
+            contract(serde_json::json!({"keep": num.clone(), "gone": num.clone(), "retyped": num.clone()})),
+        );
+
+        // Same hash, or no producer: nothing to say.
+        let same = |_: &str| Some(PublishedShape { types_sha256: "old-hash".into(), contract: None });
+        assert!(contract_drift_notes(&consumer, same).is_empty());
+        assert!(contract_drift_notes(&consumer, |_| None).is_empty());
+
+        // The producer added a member and dropped/retyped two: the note names exactly those two.
+        let producer = contract(serde_json::json!({"keep": num.clone(), "retyped": text, "added": num.clone()}));
+        let notes = contract_drift_notes(&consumer, |_| {
+            Some(PublishedShape { types_sha256: "new-hash".into(), contract: Some(producer.clone()) })
+        });
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("contract drift on 'iface'"), "{}", notes[0]);
+        assert!(notes[0].contains("loading anyway"), "{}", notes[0]);
+        assert!(notes[0].contains("method gone (removed)"), "{}", notes[0]);
+        assert!(notes[0].contains("method retyped (types changed)"), "{}", notes[0]);
+        assert!(!notes[0].contains("keep"), "{}", notes[0]);
+
+        // Only the declaration file changed (comments, or a member added): it loads normally.
+        let superset = contract(serde_json::json!({"keep": num.clone(), "gone": num.clone(), "retyped": num.clone(), "added": num}));
+        let notes = contract_drift_notes(&consumer, |_| {
+            Some(PublishedShape { types_sha256: "new-hash".into(), contract: Some(superset.clone()) })
+        });
+        assert!(notes[0].contains("every member it compiled against is unchanged"), "{}", notes[0]);
     }
 
     #[test]
@@ -2579,84 +2555,6 @@ mod tests {
     }
 
     #[test]
-    fn contract_fixed_point_removes_consumers_of_a_refused_candidate_producer() {
-        let producer: Manifest = serde_json::from_str(
-            r#"{
-                "id":"producer","version":"2","apiVersion":"2.x",
-                "publishes":{"iface":{"version":"2","typesSha256":"new"}},
-                "compiledAgainst":{"gate":"wrong"}
-            }"#,
-        ).unwrap();
-        let consumer: Manifest = serde_json::from_str(
-            r#"{
-                "id":"consumer","version":"2","apiVersion":"2.x",
-                "compiledAgainst":{"iface":"new"}
-            }"#,
-        ).unwrap();
-        let candidates = vec![
-            (PathBuf::from("producer.s2sp"), &producer),
-            (PathBuf::from("consumer.s2sp"), &consumer),
-        ];
-        let rejected = resolve_contract_rejections(&candidates, &std::collections::HashSet::new(), |name| {
-            match name {
-                "gate" => Some("current".to_string()),
-                "iface" => Some("old".to_string()),
-                _ => None,
-            }
-        });
-        assert!(rejected.contains_key(Path::new("producer.s2sp")));
-        assert!(rejected.contains_key(Path::new("consumer.s2sp")));
-    }
-
-    #[test]
-    fn contract_resolution_reconsiders_a_consumer_against_the_retained_live_producer() {
-        let producer: Manifest = serde_json::from_str(
-            r#"{
-                "id":"producer","version":"2","apiVersion":"2.x",
-                "publishes":{"iface":{"version":"2","typesSha256":"new"}},
-                "compiledAgainst":{"gate":"wrong"}
-            }"#,
-        ).unwrap();
-        let consumer: Manifest = serde_json::from_str(
-            r#"{
-                "id":"consumer","version":"2","apiVersion":"2.x",
-                "compiledAgainst":{"iface":"old"}
-            }"#,
-        ).unwrap();
-        let candidates = vec![
-            (PathBuf::from("producer.s2sp"), &producer),
-            (PathBuf::from("consumer.s2sp"), &consumer),
-        ];
-        let rejected = resolve_contract_rejections(&candidates, &std::collections::HashSet::new(), |name| {
-            match name {
-                "gate" => Some("current".to_string()),
-                "iface" => Some("old".to_string()),
-                _ => None,
-            }
-        });
-        assert!(rejected.contains_key(Path::new("producer.s2sp")));
-        assert!(!rejected.contains_key(Path::new("consumer.s2sp")));
-    }
-
-    #[test]
-    fn oscillating_provider_contract_is_refused_instead_of_selecting_an_arbitrary_state() {
-        let provider: Manifest = serde_json::from_str(
-            r#"{
-                "id":"provider","version":"2","apiVersion":"2.x",
-                "publishes":{"iface":{"version":"2","typesSha256":"new"}},
-                "compiledAgainst":{"iface":"old"}
-            }"#,
-        ).unwrap();
-        let path = PathBuf::from("provider.s2sp");
-        let rejected = resolve_contract_rejections(
-            &[(path.clone(), &provider)],
-            &std::collections::HashSet::new(),
-            |name| (name == "iface").then(|| "old".to_string()),
-        );
-        assert!(rejected[&path].contains("cycle"));
-    }
-
-    #[test]
     fn drain_budget_defers_a_second_large_apply_instead_of_draining_the_batch() {
         let mut budget = LoaderDrainBudget::new(8, 10, Duration::from_secs(1));
         assert!(budget.try_admit(7));
@@ -2713,8 +2611,9 @@ mod tests {
     }
 
     #[test]
-    fn waiting_release_revalidates_contract_against_the_now_live_producer() {
-        crate::v8host::init(crate::v8host::frame_tests::dummy_logger()).unwrap();
+    fn waiting_release_loads_a_drifted_consumer_and_warns() {
+        crate::v8host::frame_tests::LOG.lock().unwrap().clear();
+        crate::v8host::init(crate::v8host::frame_tests::logger).unwrap();
         crate::v8host::set_plugin_publishes(
             "producer",
             HashMap::from([("iface".to_string(), PublishDecl {
@@ -2748,7 +2647,12 @@ mod tests {
         start_unblocked_waiters();
         let mut budget = LoaderDrainBudget::new(8, 1024, Duration::from_secs(1));
         drain_ready(&mut budget);
-        assert!(crate::v8host::is_failed("consumer"));
+        assert!(!crate::v8host::is_failed("consumer"), "a drifted hash alone must not refuse the load");
+        assert!(crate::v8host::plugin_phase("consumer").is_some(), "the consumer loads");
+        assert!(
+            crate::v8host::frame_tests::LOG.lock().unwrap().iter().any(|l| l.contains("contract drift on 'iface'") && l.contains("loading anyway")),
+            "drift is reported as a warning"
+        );
         assert_eq!(ledger.usage(), (0, 0));
         crate::v8host::shutdown();
     }
@@ -2774,7 +2678,7 @@ mod tests {
         let ledger = RetainedLedger::new(1, 1024);
         let manifest: Manifest = serde_json::from_str(
             r#"{
-                "id":"replacement","version":"2","apiVersion":"2.x",
+                "id":"replacement","version":"2","apiVersion":"99.x",
                 "pluginDependencies":{"iface":"1.x"},
                 "compiledAgainst":{"iface":"new"}
             }"#,
