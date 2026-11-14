@@ -196,6 +196,7 @@ fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path, receip
         crate::gamedata_calls::register_plugin(&manifest.id, gd);
         crate::gamedata_hooks::register_plugin(&manifest.id, gd);
     }
+    remember_meta(manifest);
     start_load(manifest, &prepared.js, cfg, receipt);
     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
     WATCH_STATE.with(|w| { w.borrow_mut().insert(path.to_path_buf(), WatchedPlugin {
@@ -299,6 +300,47 @@ thread_local! {
     /// once every hard-dep interface is published, or after `LOAD_TIMEOUT_FRAMES` (resolved decision
     /// #3 — an unmet hard dep loads lazily; the proxy throws `InterfaceUnavailable` at call).
     static WAITING: std::cell::RefCell<HashMap<String, WaitingLoad>> = std::cell::RefCell::new(HashMap::new());
+    /// What `sm plugins list` / `info` show for each plugin id: the manifest of the version that
+    /// was last started (or refused, for a plugin that never ran). A refused reload keeps the
+    /// running version's row, so the list names the version actually running.
+    static PLUGIN_META: std::cell::RefCell<HashMap<String, PluginMeta>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// A plugin's descriptive manifest fields, for `sm plugins list` / `sm plugins info`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PluginMeta {
+    pub version: String,
+    pub description: Option<String>,
+    pub author: Option<String>,
+    pub url: Option<String>,
+}
+
+impl PluginMeta {
+    fn of(m: &Manifest) -> Self {
+        let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        PluginMeta { version: m.version.clone(), description: text(&m.description), author: text(&m.author), url: text(&m.url) }
+    }
+}
+
+fn remember_meta(m: &Manifest) {
+    PLUGIN_META.with(|meta| { meta.borrow_mut().insert(m.id.clone(), PluginMeta::of(m)); });
+}
+
+/// The manifest fields of the version of `id` that is running, failed, or parked waiting.
+pub(crate) fn plugin_meta(id: &str) -> Option<PluginMeta> {
+    PLUGIN_META.with(|meta| meta.borrow().get(id).cloned())
+        .or_else(|| WAITING.with(|w| w.borrow().get(id).map(|item| PluginMeta::of(&item.row.prepared.manifest))))
+}
+
+/// The `.s2sp` file `id` was loaded from, relative to plugins/ (`sm plugins info`'s `Filename:`).
+pub(crate) fn plugin_file(id: &str) -> Option<String> {
+    let path = path_of_loaded(id).or_else(|| SUPPRESSED.with(|s| s.borrow().iter().find(|(_, i)| *i == id).map(|(p, _)| p.clone())))?;
+    let plugins = PLUGINS_DIR.with(|d| d.borrow().clone());
+    let rel = plugins.and_then(|dir| {
+        let base = dir.canonicalize().unwrap_or(dir.clone());
+        path.strip_prefix(&base).or_else(|_| path.strip_prefix(&dir)).ok().map(Path::to_path_buf)
+    });
+    Some(rel.unwrap_or_else(|| path.file_name().map(PathBuf::from).unwrap_or(path.clone())).to_string_lossy().replace('\\', "/"))
 }
 
 /// True if any plugin preparation or lifecycle application remains pending.
@@ -1106,6 +1148,7 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
         if retained_old_was_running != Some(false) { crate::v8host::unload_plugin(&id); }
         crate::v8host::clear_pending_handoff(&id);
         crate::v8host::clear_failed(&id);
+        PLUGIN_META.with(|meta| { meta.borrow_mut().remove(&id); });
         WATCH_STATE.with(|w| { w.borrow_mut().remove(&path); });
         FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
     }
@@ -1140,7 +1183,10 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
 fn refuse_prepared(path: &Path, prepared: &PreparedPlugin, reason: &str, old_id: Option<&str>) {
     crate::v8host::log_warn(&format!("WARN: poll_plugins: refusing {:?}: {}{}", path, reason,
         if old_id.is_some() { " - keeping the running version" } else { "" }));
-    if old_id.is_none() { crate::v8host::set_failed(&prepared.manifest.id, reason); }
+    if old_id.is_none() {
+        crate::v8host::set_failed(&prepared.manifest.id, reason);
+        remember_meta(&prepared.manifest);
+    }
     commit_path(path, prepared.stamp, old_id.unwrap_or(&prepared.manifest.id));
 }
 
@@ -1724,6 +1770,7 @@ pub(crate) fn shutdown_worker() {
     SUPPRESSED.with(|s| s.borrow_mut().clear());
     PENDING_OPS.with(|p| p.borrow_mut().clear());
     WAITING.with(|w| w.borrow_mut().clear());
+    PLUGIN_META.with(|meta| meta.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
     SCANNED.with(|s| s.set(false));
@@ -2247,6 +2294,23 @@ mod tests {
         let (m, js, _gd) = read_s2sp(&bytes).expect("valid s2sp");
         assert_eq!(m.id, "@demo/hello");
         assert!(js.contains("factory"));
+    }
+
+    /// The descriptive fields are optional: an older `.s2sp` has none, and blanks read as absent.
+    #[test]
+    fn plugin_meta_fields_are_optional() {
+        let old = make_test_s2sp(r#"{"id":"@demo/old","version":"0.1.0","apiVersion":"3.x"}"#, "module.exports={};");
+        let (m, _, _) = read_s2sp(&old).expect("valid s2sp");
+        assert_eq!(PluginMeta::of(&m), PluginMeta { version: "0.1.0".into(), ..Default::default() });
+        let new = make_test_s2sp(
+            r#"{"id":"@demo/new","version":"2.0.0","apiVersion":"3.x","description":" Does things ","author":"","url":"https://e.test"}"#,
+            "module.exports={};",
+        );
+        let (m, _, _) = read_s2sp(&new).expect("valid s2sp");
+        assert_eq!(
+            PluginMeta::of(&m),
+            PluginMeta { version: "2.0.0".into(), description: Some("Does things".into()), author: None, url: Some("https://e.test".into()) }
+        );
     }
 
     /// A `.s2sp` without `manifest.json` is rejected with an error mentioning "manifest".
@@ -3079,7 +3143,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("_boot_gated.s2sp"),
-            make_test_s2sp(r#"{"id":"@boot/gated","version":"1.0.0","apiVersion":"3.x"}"#, "module.exports.OnPluginStart = () => {};"),
+            make_test_s2sp(
+                r#"{"id":"@boot/gated","version":"1.0.0","apiVersion":"3.x","description":"Gated","author":"Ann","url":"https://x.test/"}"#,
+                "module.exports.OnPluginStart = () => {};",
+            ),
         ).unwrap();
         set_plugins_dir(dir.to_str().unwrap());
         crate::server_update::hold_first_scan_for_test(Duration::from_millis(300));
@@ -3089,6 +3156,17 @@ mod tests {
         assert!(started.elapsed() >= Duration::from_millis(300), "{log:#?}");
         assert!(log.iter().any(|l| l.contains("[update] timed out")), "{log:#?}");
         assert_eq!(plugin_list(), vec![("@boot/gated".to_string(), "running".to_string())], "{log:#?}");
+        // `sm plugins list` / `info` read the running version's manifest fields and its file.
+        assert_eq!(
+            plugin_meta("@boot/gated"),
+            Some(PluginMeta {
+                version: "1.0.0".into(),
+                description: Some("Gated".into()),
+                author: Some("Ann".into()),
+                url: Some("https://x.test/".into()),
+            })
+        );
+        assert_eq!(plugin_file("@boot/gated").as_deref(), Some("_boot_gated.s2sp"));
         crate::v8host::unload_plugin("@boot/gated");
         shutdown_worker();
         crate::v8host::shutdown();

@@ -42,7 +42,7 @@ pub(crate) use lifecycle::{
     iface_published, iface_published_types_sha256, is_failed, is_loading, any_loading, load_plugin_js, load_plugin_js_prepared,
     materialize_for_load, materialize_for_load_snapshot, plugin_phase, queue_pending_reload,
     read_engine_config, re_materialize_config, re_materialize_config_snapshot, reconcile_initial_config_snapshot, set_failed,
-    set_plugin_version, store_config_decls, unload_plugin,
+    set_plugin_version, store_config_decls, unload_plugin, failed_reason,
 };
 use lifecycle::{s2_config_on_change, s2_handoff_take, s2_load_failed, s2_load_settled};
 use natives::install_natives;
@@ -3292,7 +3292,7 @@ fn s2_voice_audible_stats(scope: &mut v8::PinScope, _args: v8::FunctionCallbackA
     }));
 }
 
-/// `__s2_plugins_list() -> string` — JSON array of `{id, loaded, state}` for `sm plugins list` /
+/// `__s2_plugins_list() -> string` — JSON array of `{id, loaded, state, folder, version}` for `sm plugins list` /
 /// `Plugins.list()`. `state` is one of running|loading|waiting|failed|unloaded (L1 lifecycle v2);
 /// `loaded` is kept and is exactly `state === "running"`.
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -3300,7 +3300,8 @@ fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
         let items: Vec<serde_json::Value> = crate::loader::plugin_list().into_iter()
             .map(|(id, state)| {
                 let folder = crate::loader::session_folder(&id);
-                serde_json::json!({ "id": id, "loaded": state == "running", "state": state, "folder": folder })
+                let version = crate::loader::plugin_meta(&id).map(|m| m.version);
+                serde_json::json!({ "id": id, "loaded": state == "running", "state": state, "folder": folder, "version": version })
             })
             .collect();
         let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());

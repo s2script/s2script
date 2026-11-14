@@ -1348,6 +1348,11 @@ pub(crate) fn clear_failed(id: &str) {
     FAILED_PLUGINS.with(|f| { f.borrow_mut().remove(id); });
 }
 
+/// Why `id`'s load failed (`sm plugins info`'s `Error:` line), if it did.
+pub(crate) fn failed_reason(id: &str) -> Option<String> {
+    FAILED_PLUGINS.with(|f| f.borrow().get(id).cloned())
+}
+
 /// Every plugin id whose load FAILED (for `sm plugins list`'s `failed` state).
 pub(crate) fn failed_plugin_ids() -> Vec<String> {
     FAILED_PLUGINS.with(|f| f.borrow().keys().cloned().collect())

@@ -4,6 +4,9 @@
 export interface PluginInfo {
   /** the plugin id (from its manifest). */
   readonly id: string;
+  /** the manifest version of the copy that is running (or failed, or waiting) — what
+   * `sm plugins list` prints beside the id. null only if the loader has not read its manifest. */
+  readonly version: string | null;
   /** true = running; false = not running (loading, waiting, failed, or manually unloaded). Exactly
    * `state === "running"`. */
   readonly loaded: boolean;

@@ -1,6 +1,9 @@
 {
   "name": "@s2script/adminmenu",
   "version": "0.0.0",
+  "description": "Administration menu",
+  "author": "s2script",
+  "homepage": "https://www.s2script.com/",
   "private": true,
   "main": "src/plugin.ts"
 }

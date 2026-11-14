@@ -34,6 +34,10 @@ import { emitEngineFunctionTypes } from "./engine-functions/emit-dts.ts";
 interface PluginPackageJson {
   name: string;
   version: string;
+  /** npm standard fields; the build copies them into the manifest for `sm plugins info`. */
+  description?: string;
+  author?: string | { name?: string; email?: string; url?: string };
+  homepage?: string;
   main?: string;
   types?: string;
   s2script?: {
@@ -59,6 +63,25 @@ interface PluginPackageJson {
   };
   /** npm build-deps only (per CLAUDE.md); gated by npm-deps-gate.ts before the libraries check. */
   dependencies?: Record<string, string>;
+}
+
+/** npm's `author` is a string ("Name <email> (url)") or an object; the manifest carries the name. */
+export function authorName(author: PluginPackageJson["author"]): string | undefined {
+  const raw = typeof author === "string" ? author.replace(/\s*[<(].*$/, "") : author?.name;
+  const name = raw?.trim();
+  return name ? name : undefined;
+}
+
+/** The descriptive manifest fields (`description`, `author`, `url`) a package.json supplies. */
+export function pluginInfo(pkg: Pick<PluginPackageJson, "description" | "author" | "homepage">): Record<string, string> {
+  const info: Record<string, string> = {};
+  const description = pkg.description?.trim();
+  if (description) info.description = description;
+  const author = authorName(pkg.author);
+  if (author) info.author = author;
+  const url = pkg.homepage?.trim();
+  if (url) info.url = url;
+  return info;
 }
 
 /**
@@ -357,6 +380,10 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     pluginDependencies,
     optionalPluginDependencies,
   };
+  // What `sm plugins list` / `sm plugins info` print beside the id, from npm's own fields. The
+  // loader treats every one as optional, so an older runtime ignores them and an older .s2sp
+  // simply lists without them.
+  Object.assign(manifest, pluginInfo(pkg));
   // publishes.ts owns the grammar; the block was derived + validated up front (fail fast).
   if (Object.keys(derivedPublishes).length > 0) {
     manifest.publishes = derivedPublishes;
