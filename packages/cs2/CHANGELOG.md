@@ -1,5 +1,11 @@
 # @s2script/cs2
 
+## 0.27.0
+
+### Minor Changes
+
+- 0715a6a: `FooterButton` gains an optional `disabled` flag: the button stays in its footer slot, greyed out, and its clicks are dropped. Center (HUD) menus now use it so Back and Next keep fixed positions on every page instead of swapping places.
+
 ## 0.26.3
 
 ### Patch Changes
