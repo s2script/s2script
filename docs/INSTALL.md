@@ -162,11 +162,17 @@ listed as unmanaged and never touched. Either way you end up with:
   deleted on the next start, unless you edited the file by hand, in which case it is left alone.
   Plugins you drop into `plugins/` yourself are never touched.
 
+**And at every map change** (`updateOnMapChange`, on by default), it runs the same update as
+`sm plugins update` in the background: the new map does not wait for the registry. Updated
+plugins hot-reload as soon as their files land; on an empty, hibernating server they reload at the
+next map start or when the first player joins. A check that fails changes nothing.
+
 The console shows what happened (`[update] installed @edge/rtv@1.2.4 -> _edge_rtv.s2sp`). Settings:
 
 | Key                    | Default                    | Meaning                                                 |
 | ---------------------- | -------------------------- | ------------------------------------------------------- |
-| `autoUpdate`           | `true`                     | Update at startup. `false` loads the lock as installed. |
+| `autoUpdate`           | `true`                     | Update at startup. `false` loads the lock as installed (and turns off `updateOnMapChange`). |
+| `updateOnMapChange`    | `true`                     | Also update at every map change, in the background.     |
 | `reviewedOnly`         | `false`                    | Refuse any plugin s2script has not reviewed.            |
 | `updateTimeoutSeconds` | `60`                       | How long plugin loading may wait (5–600).               |
 | `registry`             | `https://www.s2script.com` | Registry URL (`S2SCRIPT_REGISTRY_URL` overrides).       |

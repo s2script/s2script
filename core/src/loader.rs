@@ -1523,10 +1523,23 @@ const BOOT_PACE: Duration = Duration::from_millis(15);
 /// start or on a late load) loads plugins/; later map starts are no-ops. Only counts once a plugins
 /// dir is set, so a call that arrives first cannot use up the startup load.
 pub(crate) fn boot_load_once() {
-    if !is_watching() || BOOTED.with(|b| b.replace(true)) {
+    if !is_watching() {
+        return;
+    }
+    if BOOTED.with(|b| b.replace(true)) {
+        map_change();
         return;
     }
     boot_load();
+}
+
+/// Every map start after the first: reload what a background update swapped in while the server
+/// ran no frames, then start the map-change registry check (`plugins.json` `updateOnMapChange`).
+fn map_change() {
+    settle_without_frames();
+    if let Some(root) = PLUGINS_DIR.with(|d| d.borrow().clone()).and_then(|d| d.parent().map(Path::to_path_buf)) {
+        crate::server_update::check_on_map_change(&root);
+    }
 }
 
 /// Load the plugins in plugins/ now, at the first map start, without waiting for a server frame.
