@@ -1770,6 +1770,7 @@ pub(crate) fn shutdown_worker() {
     SUPPRESSED.with(|s| s.borrow_mut().clear());
     PENDING_OPS.with(|p| p.borrow_mut().clear());
     WAITING.with(|w| w.borrow_mut().clear());
+    PLUGIN_META.with(|meta| meta.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
     SCANNED.with(|s| s.set(false));
