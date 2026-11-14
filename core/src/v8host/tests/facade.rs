@@ -224,3 +224,60 @@ fn facade_call_survives_a_sweep_during_the_call() {
     assert_eq!(eval_in_context_string("cons", "JSON.stringify([__c.getCount(), __c.getCount()])"), r#"[{"n":5},{"n":5}]"#);
     shutdown();
 }
+
+/// The consumer compiled against an older contract: `getCount` is unchanged, `gone` was removed and
+/// `retyped` changed its argument type. Both the facade and the native path keep serving
+/// `getCount`, and only the two drifted members throw, naming themselves, when they're called.
+#[test]
+fn drifted_contract_fails_only_the_members_that_changed() {
+    protocol2_setup();
+    let number = crate::interop::Field { schema: crate::interop::Schema::Number, optional: false };
+    let string = crate::interop::Field { schema: crate::interop::Schema::String, optional: false };
+    let mut produced = published_contract("@x/counter").unwrap().as_ref().clone();
+    produced.metadata.methods.insert("retyped".into(), crate::interop::Method {
+        args: vec![string], result: crate::interop::Schema::Number,
+    });
+    let digest = |m: &crate::interop::Metadata| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(serde_json_canonicalizer::to_vec(m).unwrap()))
+    };
+    produced.sha256 = digest(&produced.metadata);
+    let mut expected = published_contract("@x/counter").unwrap().as_ref().clone();
+    for name in ["gone", "retyped"] {
+        expected.metadata.methods.insert(name.into(), crate::interop::Method {
+            args: vec![number.clone()], result: crate::interop::Schema::Number,
+        });
+    }
+    expected.sha256 = digest(&expected.metadata);
+    set_plugin_publishes("prod", [("@x/counter".into(), crate::loader::PublishDecl {
+        version: "1.0.0".into(), types_sha256: "a".repeat(64), contract: Some(produced),
+    })].into_iter().collect());
+    create_plugin_context("prod");
+    eval_in_context("prod", "__s2_iface_publish('@x/counter',{getCount:()=>1,retyped:s=>s.length})").unwrap();
+    set_plugin_imports("cons", vec![crate::interfaces::ImportSpec {
+        name: "@x/counter".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard,
+        compiled_types_sha256: Some("b".repeat(64)),
+    }]);
+    set_plugin_interop("cons", [("@x/counter".into(), expected)].into_iter().collect());
+    create_plugin_context("cons");
+    eval_in_context("cons", "globalThis.__c = __s2_require('@x/counter')").unwrap();
+    let attempt = |code: &str| eval_in_context_string("cons",
+        &format!("(()=>{{try{{return 'ok:'+String({code})}}catch(e){{return e.message}}}})()"));
+
+    assert_eq!(attempt("__c.getCount()"), "ok:1");
+    assert_eq!(attempt("__s2_iface_call('@x/counter','getCount',[])"), "ok:1");
+    for (code, error, member) in [
+        ("__c.gone(1)", "InterfaceUnknownMethod", "@x/counter.gone"),
+        ("__s2_iface_call('@x/counter','gone',[1])", "InterfaceUnknownMethod", "@x/counter.gone"),
+        ("__c.retyped(1)", "InterfaceTypesMismatch", "@x/counter.retyped"),
+        ("__s2_iface_call('@x/counter','retyped',[1])", "InterfaceTypesMismatch", "@x/counter.retyped"),
+    ] {
+        let outcome = attempt(code);
+        assert!(outcome.starts_with(error) && outcome.contains(member), "{code}: {outcome}");
+    }
+    // The unchanged forward still subscribes and delivers.
+    eval_in_context("cons", "globalThis.got=0;__s2_iface_on('@x/counter','OnCountChanged',e=>{got=e.count})").unwrap();
+    eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:5})").unwrap();
+    assert_eq!(eval_in_context_string("cons", "String(got)"), "5");
+    shutdown();
+}

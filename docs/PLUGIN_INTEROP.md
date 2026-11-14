@@ -203,6 +203,23 @@ reattachment across provider generations.
 
 SDK builds now stamp host API `3.x`. Protocol 2 archives carry `interfaceProtocol: 2`, a `contract` containing metadata format version 1 and its SHA-256 digest in each `publishes` entry, plus dependency-keyed `interfaceContracts`. `typesSha256` and `compiledAgainst` hash the exact resolved declaration bytes. Canonical metadata sorts object keys recursively and preserves array order. Downloaded copies carrying a receipt are rechecked against that receipt before building.
 
+### Contract drift
+
+A consumer whose `compiledAgainst` hash differs from the producer's `typesSha256` still loads. The
+hash covers the whole declaration file, so a comment, a new member, or a change to a member the
+consumer never touches would otherwise refuse a plugin that works. Instead the loader logs one
+`contract drift on '<interface>'` warning that names the members the consumer compiled against
+which the producer has removed or retyped (or says that none changed), and each member is checked
+where it is used. Two members match when their argument, result, or payload schemas are identical.
+
+| Use | Producer has the same member | Member removed | Member's types changed |
+| --- | --- | --- | --- |
+| Method call (facade or `__s2_iface_call`) | works | throws `InterfaceUnknownMethod: <iface>.<method>` | throws `InterfaceTypesMismatch: <iface>.<method>` |
+| `on(<forward>)` | works | throws `InterfaceUnknownForward: <iface>.<forward>` | throws `InterfaceTypesMismatch: <iface>.<forward>` |
+| Forward delivery after a producer reload | delivered | skipped for that consumer | skipped for that consumer |
+
+Rebuilding the consumer against the producer's current declarations clears the warning.
+
 The API 3 host explicitly accepts API 2 protocol 1 archives. Their existing generic types and permissive wire behavior are retained. Protocol 2 requires API 3 and complete valid metadata; an archive cannot evade the requirement by declaring API 2. Old API 2 hosts reject newly built API 3 archives. Library acquisition and `.s2lib` bundling retain their existing workflow.
 
 Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Explicit named binding maps are supported as described above.

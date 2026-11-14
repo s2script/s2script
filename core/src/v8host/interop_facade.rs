@@ -221,18 +221,19 @@ pub(super) fn s2_iface_bind(
         match IFACES.with(|r| r.borrow().bind_target(&consumer, &name)) {
             crate::interfaces::CallTarget::Unavailable => return throw_named(scope, "InterfaceUnavailable", &name),
             crate::interfaces::CallTarget::VersionMismatch => return throw_named(scope, "InterfaceVersionMismatch", &name),
-            crate::interfaces::CallTarget::TypesMismatch => return throw_named(scope, "InterfaceTypesMismatch", &name),
+            // No method is named when binding the whole interface.
+            crate::interfaces::CallTarget::UnknownMethod => return throw_named(scope, "InterfaceUnavailable", &name),
             crate::interfaces::CallTarget::Ok => {}
         }
-        let contract = match checked_contract(&consumer, &name) {
+        let actual = match checked_contract(&consumer, &name) {
             Ok(Some(contract)) => contract,
             Ok(None) => return throw_named(scope, "InterfaceTypesMismatch", &name),
             Err(e) => return throw_named(scope, e, &name),
         };
-        // The facade compiled its copiers from this contract; a different one can't be trusted.
-        if contract.sha256 != sha {
+        // The facade compiled its copiers from the consumer's own contract; that's the one bound.
+        let Some(contract) = expected_contract(&consumer, &name).filter(|c| c.sha256 == sha) else {
             return throw_named(scope, "InterfaceTypesMismatch", &name);
-        }
+        };
         if !live_interop_context(scope, &consumer) {
             return throw_named(scope, "InterfaceUnavailable", &consumer);
         }
@@ -245,16 +246,25 @@ pub(super) fn s2_iface_bind(
         let Some(producer_ctx) = PLUGINS.with(|p| p.borrow().get(&producer).map(|pi| pi.context.clone())) else {
             return throw_named(scope, "InterfaceUnavailable", &name);
         };
-        let methods: Vec<Option<v8::Global<v8::Function>>> = contract
+        // Per member: a method whose shape is the same on both sides binds to the producer's
+        // function; one the producer dropped or changed binds to the error a call throws, so the
+        // rest of a drifted interface keeps working.
+        let methods: Vec<Result<v8::Global<v8::Function>, &'static str>> = contract
             .metadata
             .methods
             .keys()
-            .map(|m| IFACE_METHODS.with(|mm| mm.borrow().get(&(name.clone(), m.clone())).cloned()))
+            .map(|m| match contract.method_drift(&actual, m) {
+                Some(drift) => Err(drift.error(false)),
+                None => IFACE_METHODS
+                    .with(|mm| mm.borrow().get(&(name.clone(), m.clone())).cloned())
+                    .ok_or("InterfaceUnavailable"),
+            })
             .collect();
         let epoch = read(EPOCH);
 
-        // The producer's own kit compiles the copier for arguments, from the producer's own copy of
-        // the contract (identical, by hash), so values are checked and built in its realm.
+        // The producer's own kit compiles the copier for arguments, from the consumer's contract
+        // (every method bound above has the identical shape on both sides), so values are checked
+        // and built in the producer's realm.
         let Some(kit) = ({
             let ctx = v8::Local::new(scope, &producer_ctx);
             let global = ctx.global(scope);
@@ -291,9 +301,19 @@ pub(super) fn s2_iface_bind(
         // can reach, so a missing method reads as undefined.
         let Ok(fns) = v8::Local::<v8::Object>::try_from(args.get(3)) else { return };
         for (i, method) in methods.iter().enumerate() {
-            if let Some(method) = method {
-                let f = v8::Local::new(scope, method);
-                fns.set_index(scope, i as u32, f.into());
+            match method {
+                Ok(method) => {
+                    let f = v8::Local::new(scope, method);
+                    fns.set_index(scope, i as u32, f.into());
+                }
+                // A missing producer function reads as undefined (InterfaceUnavailable); a drifted
+                // member carries the name of the error its call throws.
+                Err("InterfaceUnavailable") => {}
+                Err(e) => {
+                    if let Some(e) = v8::String::new(scope, e) {
+                        fns.set_index(scope, i as u32, e.into());
+                    }
+                }
             }
         }
         put(scope, cell, "fns", fns.into());

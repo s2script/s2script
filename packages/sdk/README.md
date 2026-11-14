@@ -100,8 +100,8 @@ from "@me/shop"` resolves straight to `@me/shop`'s own published `types` file un
 `moduleResolution: "bundler"`, no config and no copy required. Contrast this with depending on a
 **registry** package (`s2s add @edge/admin-core`): that pulls the producer's `.d.ts` down into your
 own `.s2script/types/<dep>/index.d.ts`, because a registry producer isn't sitting in the same
-checkout — a byte-copy (hashed into `manifest.compiledAgainst`, re-verified against the producer's
-published hash at load) is the only way your build can see its shape at all, and it goes stale the
+checkout — a byte-copy (hashed into `manifest.compiledAgainst`, compared with the producer's
+published hash at load, where a mismatch warns and only members that actually changed fail when used) is the only way your build can see its shape at all, and it goes stale the
 moment the producer's interface changes until you re-run `s2s add`. A workspace sibling's contract
 can never go stale that way: the file your build resolves to *is* the producer's current contract,
 on the same disk, in the same commit. If a plugin still carries a pre-migration

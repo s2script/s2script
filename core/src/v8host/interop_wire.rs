@@ -81,6 +81,33 @@ pub(super) fn published_contract(name: &str) -> Option<std::rc::Rc<crate::intero
     let (owner, _) = IFACES.with(|r| r.borrow().producer_of(name))?;
     PLUGIN_PUBLISHES.with(|p| p.borrow().get(&owner)?.get(name)?.contract.clone())
 }
+/// The contract `consumer` compiled against for `name`, if it imported it with protocol 2.
+pub(super) fn expected_contract(
+    consumer: &str,
+    name: &str,
+) -> Option<std::rc::Rc<crate::interop::Contract>> {
+    PLUGIN_INTEROP.with(|p| p.borrow().get(consumer).and_then(|m| m.get(name)).cloned())
+}
+/// The named error for calling `method` across `consumer`'s and the producer's contracts, if any.
+pub(super) fn method_drift_error(
+    consumer: &str,
+    name: &str,
+    actual: &crate::interop::Contract,
+    method: &str,
+) -> Option<&'static str> {
+    let expected = expected_contract(consumer, name)?;
+    expected.method_drift(actual, method).map(|d| d.error(false))
+}
+/// `method_drift_error` for subscribing to (or receiving) `forward`.
+pub(super) fn forward_drift_error(
+    consumer: &str,
+    name: &str,
+    actual: &crate::interop::Contract,
+    forward: &str,
+) -> Option<&'static str> {
+    let expected = expected_contract(consumer, name)?;
+    expected.forward_drift(actual, forward).map(|d| d.error(true))
+}
 pub(super) fn checked_contract(
     consumer: &str,
     name: &str,
@@ -97,14 +124,11 @@ pub(super) fn checked_contract(
         if !live {
             return Err("InterfaceUnavailable");
         }
-        let (Some(actual), Some(expected)) = (actual, expected) else {
+        let (Some(actual), Some(_)) = (actual, expected) else {
             return Err("InterfaceTypesMismatch");
         };
-        if actual.sha256 != expected.sha256
-            || !IFACES.with(|r| r.borrow().verified_import(consumer, name))
-        {
-            return Err("InterfaceTypesMismatch");
-        }
+        // A drifted contract is fine here: each member is checked where it's used
+        // (`method_drift`/`forward_drift`), so only the members that actually changed fail.
         return Ok(Some(actual));
     }
     Ok(None)

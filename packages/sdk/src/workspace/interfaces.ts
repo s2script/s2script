@@ -19,7 +19,7 @@
  * by its package name builds green but `iface_published(D)` is never true, so the consumer parks in
  * `waiting` forever; and a sibling whose package name happens to match a dependency it does not
  * publish shadows the consumer's legitimate `.s2script/types/<dep>/index.d.ts`, so the build hashes
- * the WRONG contract into `compiledAgainst` and `loader.rs:192` refuses the load.
+ * the WRONG contract into `compiledAgainst` and the loader reports contract drift against it.
  *
  * Hence this module: ONE index, keyed on published interface names, shared by `siblings.ts` (which
  * decides what typechecks and what gets hashed) and `graph.ts` (ordering + the §5.2 range gate).

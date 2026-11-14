@@ -242,7 +242,11 @@ globalThis.__s2_interop_facade = (function () {
       if (slots[PROFILING] !== 0) return slowCall(iface, m.name, slice(arguments));
       if (cell.epoch !== slots[EPOCH]) bindNative(iface, plans.sha, cell, new Bare());
       var f = cell.fns[mi];
-      if (f === undefined) throw named("InterfaceUnavailable", iface);
+      if (typeof f !== "function") {
+        // A string is the error the host bound for a member this producer dropped or changed.
+        if (f === undefined) throw named("InterfaceUnavailable", iface);
+        throw named(f, label);
+      }
       if (slots[DEPTH] >= 32) throw named("InterfaceRecursionLimit", "maximum 32 active calls");
       if (n > argc || n < required) throw named("InterfaceValueNotSerializable", NOTSER_ARGS);
       var x0, x1, x2, x3, rest = null;

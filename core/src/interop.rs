@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Schema {
     Null,
@@ -18,19 +18,19 @@ pub enum Schema {
     Object { fields: BTreeMap<String, Field> },
     Union { variants: Vec<Schema> },
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
     pub schema: Schema,
     pub optional: bool,
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Method {
     pub args: Vec<Field>,
     pub result: Schema,
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Forward {
     pub kind: String,
@@ -221,6 +221,62 @@ impl Contract {
             return Err("InterfaceContractError: metadata digest mismatch".into());
         }
         Ok(())
+    }
+}
+/// Why one member of an interface can't be used across two copies of its contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberDrift {
+    /// The producer no longer has it (or the consumer never compiled against it).
+    Missing,
+    /// Both sides have it, with different argument, result, or payload types.
+    Changed,
+}
+impl MemberDrift {
+    /// The named error a call or subscription throws for this member.
+    pub fn error(self, forward: bool) -> &'static str {
+        match (self, forward) {
+            (Self::Missing, false) => "InterfaceUnknownMethod",
+            (Self::Missing, true) => "InterfaceUnknownForward",
+            (Self::Changed, _) => "InterfaceTypesMismatch",
+        }
+    }
+}
+fn member_drift<T: PartialEq>(expected: Option<&T>, actual: Option<&T>) -> Option<MemberDrift> {
+    match (expected, actual) {
+        (Some(e), Some(a)) if e == a => None,
+        (Some(_), Some(_)) => Some(MemberDrift::Changed),
+        _ => Some(MemberDrift::Missing),
+    }
+}
+impl Contract {
+    /// Can a consumer compiled against `self` call `method` on a producer publishing `actual`?
+    /// Contracts are compared member by member, so a producer that added, removed, or changed
+    /// OTHER members still serves this one.
+    pub fn method_drift(&self, actual: &Contract, method: &str) -> Option<MemberDrift> {
+        member_drift(self.metadata.methods.get(method), actual.metadata.methods.get(method))
+    }
+    /// `method_drift` for a forward (event) the consumer subscribes to.
+    pub fn forward_drift(&self, actual: &Contract, forward: &str) -> Option<MemberDrift> {
+        member_drift(self.metadata.forwards.get(forward), actual.metadata.forwards.get(forward))
+    }
+    /// Every member of `self` that `actual` can't serve, sorted, as `(name, is_forward, drift)`.
+    /// Empty when the consumer can use the whole contract it compiled against.
+    pub fn drifted_members(&self, actual: &Contract) -> Vec<(String, bool, MemberDrift)> {
+        let mut out = Vec::new();
+        if self.sha256 == actual.sha256 {
+            return out;
+        }
+        for name in self.metadata.methods.keys() {
+            if let Some(d) = self.method_drift(actual, name) {
+                out.push((name.clone(), false, d));
+            }
+        }
+        for name in self.metadata.forwards.keys() {
+            if let Some(d) = self.forward_drift(actual, name) {
+                out.push((name.clone(), true, d));
+            }
+        }
+        out
     }
 }
 pub fn valid_hash(value: &str) -> bool {
