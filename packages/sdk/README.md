@@ -188,6 +188,83 @@ Each listed directory keeps a package.json that describes its bundle and nothing
 The membership claim travels in the registry upload only — the `.s2sp` manifest the runtime loads
 is unchanged, and the runtime has no notion of bundles.
 
+### Development snapshots
+
+For an ephemeral CI checkout, `s2s version --snapshot` assigns prerelease versions without
+consuming `.changeset/*.md`, writing changelogs, or changing stable release intent:
+
+```bash
+# First successful development release: snapshot every workspace package and bundle.
+s2s version --snapshot dev.12.gabcdef123456 --output next.json
+
+# Later releases: compare against the last successfully published source commit.
+s2s version --snapshot dev.13.g123456abcdef \
+  --since <previous-source-sha> --snapshot-state previous.json --output next.json
+s2s build
+s2s deploy --ci
+```
+
+The identifier must be a safe semver prerelease identifier, starting with a letter. Use a
+monotonically increasing sequence and source hash; retry a source with the same identifier.
+Snapshot versions are `0.0.0-<identifier>`, so every stable release sorts above them, including
+packages and bundles whose stable version is still `0.0.0`. `publishConfig.access` and `private`
+remain unchanged. Private workspace packages are included in version planning and builds, and
+remain excluded from publication.
+
+`--since` uses committed Git changes through `HEAD` and must name an ancestor of `HEAD`. A source
+or contract change selects its owning package plus every transitive npm, `s2script.libraries`,
+hard-interface and optional-interface consumer. Interface edges use the published interface name,
+which may differ from the package name. Shared product source selects the nested packages it
+serves; root build/runtime/release tooling and lockfiles conservatively select the whole workspace.
+Documentation, tests and changesets alone select no packages. Each bundle follows its selected
+members, while a bundle descriptor change selects that bundle. For a root bundle, metadata-only
+edits select the bundle; changes to its workspace or build configuration select every member.
+Deleted or renamed package
+manifests fail explicitly; reconcile membership and start a fresh snapshot checkpoint when
+removing packages.
+
+The previous report supplies the effective versions of unchanged packages, so a new bundle keeps
+its unchanged members pinned to their already published snapshots. Sibling build dependencies
+are pinned to those effective versions. Before assigning a snapshot, `publishes: "self"` becomes
+an explicit map of its authored interface version; independent interface versions and runtime
+dependency ranges stay authored. Rebuilding affected consumers therefore refreshes their
+`compiledAgainst` hashes while retaining the interface versions the runtime expects.
+
+`--output` writes a JSON report atomically after all manifest edits succeed:
+
+```json
+{
+  "schemaVersion": 1,
+  "source": "<full HEAD commit SHA>",
+  "id": "dev.13.g123456abcdef",
+  "packages": [
+    {
+      "name": "@edge/example",
+      "version": "0.0.0-dev.13.g123456abcdef",
+      "path": "plugins/example",
+      "kind": "plugin",
+      "private": false,
+      "access": "restricted"
+    }
+  ],
+  "versions": { "@edge/example": "0.0.0-dev.13.g123456abcdef" }
+}
+```
+
+`packages` contains only this run's new snapshots, including private shared code; `kind` is
+`plugin`, `library`, or `bundle`, and `access` is omitted when not authored. `path` is a directory
+relative to the workspace root (`.` for a root bundle). `versions` contains every current package
+and bundle, including unchanged versions. On a same-source retry with its prior state and
+`--since`, `packages` is empty and every published version is restored to the checkout. A prior
+state missing an unchanged package's effective version is refused before any manifest is edited.
+
+Persist the report as the next checkpoint only after publication succeeds, including for a no-op
+run. If supplied, `--snapshot-state` must exist, and its source must match `--since`. Omit both
+for the first release. All three options (`--since`, `--snapshot-state`, `--output`) are optional
+in snapshot mode; state/output paths resolve from the command's working directory. Output must
+not overwrite tracked source or workspace metadata. Snapshot edits belong only in the temporary
+checkout; regular `s2s version` continues to apply stable changesets as before.
+
 ## Publishing
 
 `s2s deploy` builds the package and publishes it to the registry. Its page on s2script.com

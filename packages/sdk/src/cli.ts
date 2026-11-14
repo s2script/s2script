@@ -20,6 +20,7 @@ function usage(): void {
       "  s2s deploy [dir|workspace root] [--filter <pattern>]... [--dry-run] [--yes|--ci]\n" +
       "             [--access public|restricted] [--registry <url>] [--packages-dir <path>]\n" +
       "  s2s version [dir] [--since <ref>]\n" +
+      "              [--snapshot <id> [--snapshot-state <prior.json>] [--output <next.json>]]\n" +
       "  s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]\n" +
       "  s2s install [name[@range]...] [--with <member>] [--disabled] [--server <addons/s2script>] [--dry-run]\n" +
       "  s2s enable <name>... | s2s disable <name>...   [--server <addons/s2script>] [--dry-run]\n" +
