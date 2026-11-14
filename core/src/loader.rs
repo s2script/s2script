@@ -911,12 +911,16 @@ fn drain_command_intents() {
                     cancel_path_work(&path);
                     SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
                     FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
+                    // The next scan does the reload: until one has, there is work left
+                    // (`boot_settled`, `settle_without_frames`).
+                    LAST_SCAN_CLEAN.with(|c| c.set(None));
                 }
             }
             PendingOp::Load => {
                 let path = SUPPRESSED.with(|s| s.borrow().iter().find(|(_, v)| **v == id).map(|(p, _)| p.clone()));
                 if let Some(path) = path { cancel_path_work(&path); }
                 SUPPRESSED.with(|s| { s.borrow_mut().retain(|_, v| *v != id); });
+                LAST_SCAN_CLEAN.with(|c| c.set(None));
             }
         }
     }
@@ -1519,10 +1523,23 @@ const BOOT_PACE: Duration = Duration::from_millis(15);
 /// start or on a late load) loads plugins/; later map starts are no-ops. Only counts once a plugins
 /// dir is set, so a call that arrives first cannot use up the startup load.
 pub(crate) fn boot_load_once() {
-    if !is_watching() || BOOTED.with(|b| b.replace(true)) {
+    if !is_watching() {
+        return;
+    }
+    if BOOTED.with(|b| b.replace(true)) {
+        map_change();
         return;
     }
     boot_load();
+}
+
+/// Every map start after the first: reload what a background update swapped in while the server
+/// ran no frames, then start the map-change registry check (`plugins.json` `updateOnMapChange`).
+fn map_change() {
+    settle_without_frames();
+    if let Some(root) = PLUGINS_DIR.with(|d| d.borrow().clone()).and_then(|d| d.parent().map(Path::to_path_buf)) {
+        crate::server_update::check_on_map_change(&root);
+    }
 }
 
 /// Load the plugins in plugins/ now, at the first map start, without waiting for a server frame.
@@ -1565,6 +1582,58 @@ pub(crate) fn boot_load() {
     ));
 }
 
+thread_local! {
+    /// When the last engine `GameFrame` ran (`note_frame`). None until the first one.
+    static LAST_FRAME: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// How long without a `GameFrame` before the server counts as hibernating. A ticking server runs
+/// one every ~16 ms; a hibernating one runs none, or a few far apart.
+const FRAMELESS_AFTER: Duration = Duration::from_millis(500);
+
+/// The engine ran a `GameFrame` (the frame hook's POST, before the loader poll).
+pub(crate) fn note_frame() {
+    LAST_FRAME.with(|f| f.set(Some(std::time::Instant::now())));
+}
+
+/// The server is running frames, so the frame-driven loader will get to queued work by itself.
+pub(crate) fn frames_running() -> bool {
+    LAST_FRAME.with(Cell::get).is_some_and(|t| t.elapsed() < FRAMELESS_AFTER)
+}
+
+/// Finish the loader's queued work now, without waiting for a frame: a changed `.s2sp` reloads,
+/// an `sm plugins load|unload|reload` applies, the reports of finished `sm plugins` registry
+/// operations print. For a console command on an empty server, which hibernates and runs no
+/// `GameFrame` — there, all of that otherwise waits for the first player to join, so
+/// `sm plugins update` looked like it did nothing.
+///
+/// Runs only once the startup load has, and only while no frames run (a ticking server does this
+/// work itself within a second). Pumps at frame pace, as the startup load does, until a scan that
+/// started after this call finds nothing left to load, or the budget runs out. Returns whether it
+/// ran at all.
+pub(crate) fn settle_without_frames() -> bool {
+    if !is_watching() || !BOOTED.with(Cell::get) || frames_running() {
+        return false;
+    }
+    // Whatever the last scan saw is stale (the files may have changed since): drop a scan still in
+    // flight and require a new one.
+    SCAN_REVISION.with(|r| r.set(r.get().wrapping_add(1)));
+    LAST_SCAN_CLEAN.with(|c| c.set(None));
+    let started = std::time::Instant::now();
+    while started.elapsed() < BOOT_LOAD_BUDGET {
+        boot_tick();
+        if boot_settled() {
+            return true;
+        }
+        std::thread::sleep(BOOT_PACE);
+    }
+    crate::v8host::log_warn(&format!(
+        "WARN: [plugins] still loading after {}s; the rest finishes once the server runs frames",
+        BOOT_LOAD_BUDGET.as_secs()
+    ));
+    true
+}
+
 /// One startup step: a frame's POST work without a frame.
 fn boot_tick() {
     crate::v8host::frame_async_drain();
@@ -1583,6 +1652,7 @@ fn boot_tick() {
 /// flight; it is the ordinary periodic watch, not startup work.)
 fn boot_settled() -> bool {
     LAST_SCAN_CLEAN.with(Cell::get) == Some(true)
+        && PENDING_OPS.with(|q| q.borrow().is_empty())
         && !has_waiting()
         && APPLYING.with(Cell::get) == 0
         && !crate::v8host::any_loading()
@@ -3072,6 +3142,67 @@ mod tests {
         );
         assert_eq!(plugin_file("@boot/gated").as_deref(), Some("_boot_gated.s2sp"));
         crate::v8host::unload_plugin("@boot/gated");
+        shutdown_worker();
+        crate::v8host::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `sm plugins update` on an empty server: the server hibernates and runs no frame, so the new
+    /// `.s2sp` the update swapped in must reload when the console command settles the loader —
+    /// not whenever the first player joins. A server that runs frames is left to its own watcher.
+    #[test]
+    fn a_changed_plugin_reloads_without_a_frame() {
+        BOOT_LOG.lock().unwrap().clear();
+        crate::v8host::init(boot_logger).unwrap();
+        let dir = std::env::temp_dir().join(format!("s2s-frameless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("_edge_rtv.s2sp");
+        let build = |version: &str| {
+            make_test_s2sp(
+                &format!(r#"{{"id":"@edge/rtv","version":"{version}","apiVersion":"3.x"}}"#),
+                "module.exports.OnPluginStart = () => {};",
+            )
+        };
+        std::fs::write(&file, build("1.0.0")).unwrap();
+        let path = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+        crate::ffi::s2script_core_set_plugins_dir(path.as_ptr());
+        // Before the startup load there is nothing to settle; the startup load owns plugins/.
+        assert!(!settle_without_frames());
+        crate::ffi::s2script_core_boot_load();
+        assert_eq!(plugin_meta("@edge/rtv").map(|m| m.version).as_deref(), Some("1.0.0"));
+
+        // The update renames the new version into place, as `server_update::commit` does.
+        let tmp = dir.join("_edge_rtv.s2sp.s2s-tmp");
+        std::fs::write(&tmp, build("1.1.0")).unwrap();
+        std::fs::rename(&tmp, &file).unwrap();
+
+        // A ticking server: the watcher gets to it, so the command does not hold the console.
+        note_frame();
+        assert!(frames_running());
+        assert!(!settle_without_frames());
+        assert_eq!(plugin_meta("@edge/rtv").map(|m| m.version).as_deref(), Some("1.0.0"));
+
+        // Hibernating: no frame since. The command settles the loader itself.
+        LAST_FRAME.with(|f| f.set(None));
+        assert!(!frames_running());
+        assert!(settle_without_frames());
+        let log = BOOT_LOG.lock().unwrap().clone();
+        assert_eq!(plugin_meta("@edge/rtv").map(|m| m.version).as_deref(), Some("1.1.0"), "{log:#?}");
+        assert_eq!(plugin_list(), vec![("@edge/rtv".to_string(), "running".to_string())], "{log:#?}");
+
+        // A reload request (`sm plugins reload`, or one deferred while the plugin was still
+        // starting) is work left until a scan has carried it out, even after a clean scan.
+        assert!(boot_settled());
+        assert!(request_reload("@edge/rtv"));
+        assert!(!boot_settled(), "a queued reload is not settled");
+        drain_command_intents();
+        assert!(!boot_settled(), "a drained reload waits for the scan that performs it");
+        assert!(settle_without_frames());
+        assert!(boot_settled());
+        assert_eq!(plugin_list(), vec![("@edge/rtv".to_string(), "running".to_string())]);
+
+        crate::v8host::unload_plugin("@edge/rtv");
         shutdown_worker();
         crate::v8host::shutdown();
         let _ = std::fs::remove_dir_all(&dir);

@@ -162,11 +162,17 @@ listed as unmanaged and never touched. Either way you end up with:
   deleted on the next start, unless you edited the file by hand, in which case it is left alone.
   Plugins you drop into `plugins/` yourself are never touched.
 
+**And at every map change** (`updateOnMapChange`, on by default), it runs the same update as
+`sm plugins update` in the background: the new map does not wait for the registry. Updated
+plugins hot-reload as soon as their files land; on an empty, hibernating server they reload at the
+next map start or when the first player joins. A check that fails changes nothing.
+
 The console shows what happened (`[update] installed @edge/rtv@1.2.4 -> _edge_rtv.s2sp`). Settings:
 
 | Key                    | Default                    | Meaning                                                 |
 | ---------------------- | -------------------------- | ------------------------------------------------------- |
-| `autoUpdate`           | `true`                     | Update at startup. `false` loads the lock as installed. |
+| `autoUpdate`           | `true`                     | Update at startup. `false` loads the lock as installed (and turns off `updateOnMapChange`). |
+| `updateOnMapChange`    | `true`                     | Also update at every map change, in the background.     |
 | `reviewedOnly`         | `false`                    | Refuse any plugin s2script has not reviewed.            |
 | `updateTimeoutSeconds` | `60`                       | How long plugin loading may wait (5–600).               |
 | `registry`             | `https://www.s2script.com` | Registry URL (`S2SCRIPT_REGISTRY_URL` overrides).       |
@@ -223,6 +229,11 @@ sm plugins info 1                       // file, title, author, version, URL, st
 The registry operations (install, update, remove, enable, disable, outdated) run in the background
 and print their report when done. The loader picks up the changed files on its own: a new plugin
 loads, an updated one hot-reloads, a removed one unloads. No restart.
+
+An empty server with `sv_hibernate_when_empty 1` (the default) runs no frames, and the loader is
+frame-driven. So on a hibernating server, these commands (and `sm plugins load|unload|reload`)
+finish in the command itself: the console waits for the registry operation (up to 2 minutes),
+prints its report, and reloads what changed before it returns.
 
 `sm` is built into the runtime, as in SourceMod, so it works with no plugin loaded. It is a server
 console command: everything above answers only the server console and RCON. A player who types `sm`

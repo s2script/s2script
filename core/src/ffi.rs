@@ -116,6 +116,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
                     v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
                 }
                 let _p = framework("plugin loader");
+                crate::loader::note_frame();
                 crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
             }
             out

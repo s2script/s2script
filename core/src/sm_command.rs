@@ -83,6 +83,59 @@ pub(crate) fn handle(slot: i32, args: &str) {
     for line in lines {
         out.line(&line);
     }
+    if out == Out::Server {
+        finish_without_frames(queued_work(args));
+    }
+}
+
+/// What a server-console `sm` leaves for the frame-driven loader to finish.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Queued {
+    Nothing,
+    /// `sm plugins load|unload|reload`: a loader request.
+    Loader,
+    /// A registry operation: its thread's report, then the files it swapped in to reload.
+    Registry,
+}
+
+fn queued_work(args: &str) -> Queued {
+    let argv: Vec<String> = args.split_whitespace().take(2).map(str::to_ascii_lowercase).collect();
+    match argv.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["plugins", "load" | "unload" | "reload"] => Queued::Loader,
+        ["plugins", "install" | "update" | "remove" | "outdated" | "enable" | "disable"] => Queued::Registry,
+        _ => Queued::Nothing,
+    }
+}
+
+/// How long a console command on a hibernating server waits for its registry operation. Each
+/// registry request has its own 30 s timeout; this only bounds how long the console is held.
+const REGISTRY_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// On a server that runs frames, everything `sm` queued finishes by itself within a second. An
+/// empty server hibernates and runs none, so finish it here: wait for the registry operation, then
+/// reload what it changed and print its report. Nobody is connected to notice the console being
+/// held meanwhile.
+fn finish_without_frames(queued: Queued) {
+    if queued == Queued::Nothing || crate::loader::frames_running() {
+        return;
+    }
+    if queued == Queued::Registry {
+        let started = std::time::Instant::now();
+        while crate::server_update::console_op_active() {
+            if started.elapsed() >= REGISTRY_WAIT {
+                Out::Server.line(&format!(
+                    "[S2S] Still working after {}s; the report follows once the server runs frames.",
+                    REGISTRY_WAIT.as_secs()
+                ));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+    }
+    // The report first, so it reads before the reload lines the loader logs.
+    drain_reports();
+    crate::loader::settle_without_frames();
+    drain_reports();
 }
 
 /// A player's `sm`, admin or not, as SourceMod answers one: the running plugins, the credits, or
@@ -405,6 +458,19 @@ mod tests {
         assert!(lines[1].contains("sm plugins"), "{lines:?}");
         assert_eq!(run("version")[0], version_line());
         assert_eq!(run("CREDITS"), credits());
+    }
+
+    /// The server-console commands whose work the frame-driven loader finishes, which a
+    /// hibernating server has to finish in the command itself.
+    #[test]
+    fn queued_work_names_what_waits_for_a_frame() {
+        assert_eq!(queued_work("plugins update"), Queued::Registry);
+        assert_eq!(queued_work("PLUGINS Install @edge/rtv"), Queued::Registry);
+        assert_eq!(queued_work("plugins outdated"), Queued::Registry);
+        assert_eq!(queued_work("plugins reload rtv"), Queued::Loader);
+        assert_eq!(queued_work("plugins list"), Queued::Nothing);
+        assert_eq!(queued_work("plugins"), Queued::Nothing);
+        assert_eq!(queued_work("version"), Queued::Nothing);
     }
 
     #[test]

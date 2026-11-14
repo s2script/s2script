@@ -10,6 +10,7 @@
  *     "with": { "@edge/jailbreak": ["@edge/jailbreak-gangperks"] },  // optional bundle members
  *     "disabled": ["@edge/rtv"],   // kept in plugins/disabled/: installed and updated, never loaded
  *     "autoUpdate": true,          // the runtime updates within these ranges at startup (default)
+ *     "updateOnMapChange": true,   // ...and again at every map change (default; needs autoUpdate)
  *     "reviewedOnly": false,       // refuse plugins s2script has not reviewed
  *     "updateTimeoutSeconds": 60,  // how long plugin loading may wait for that update
  *     "registry": "https://www.s2script.com"
