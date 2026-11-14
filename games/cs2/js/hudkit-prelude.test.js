@@ -904,8 +904,13 @@ test("built-in menus keep Next and Back bound to the player who sees them", () =
   first.view = () => ({ ...firstView, page: 0, pageCount: 2 });
   second.view = () => ({ ...secondView, page: 1, pageCount: 2 });
   p.renderers.center.open(first); p.renderers.center.open(second);
-  p.click(1, "s2_m0_f0"); p.click(2, "s2_m0_f0");
-  assert.deepEqual(first.picks, [9], "Next must stay Next after another player paints Back");
+  // Footer: f0 Close, f1 Back, f2 Next on every page. The same slot is the same action for both
+  // players; only its enabled state differs with the page each one is on.
+  p.click(1, "s2_m0_f2"); p.click(2, "s2_m0_f2");
+  assert.deepEqual(first.picks, [9], "Next must stay Next after another player's paint");
+  assert.deepEqual(second.picks, [], "Next on the last page is greyed and inert");
+  p.click(1, "s2_m0_f1"); p.click(2, "s2_m0_f1");
+  assert.deepEqual(first.picks, [9], "Back on the first page is greyed and inert");
   assert.deepEqual(second.picks, [8]);
 });
 

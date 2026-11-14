@@ -172,6 +172,30 @@ test("a footer button's variant reaches a class (it was accepted and dropped)", 
   assert.ok(classSet(calls, "s2-btn-bad"), "variant must be applied, not merely stored");
 });
 
+test("a disabled footer button keeps its slot, greys out, and drops its click", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let clicks = 0;
+  let disabled = true;
+  const m = ui.modal({
+    title: "T", rows: [],
+    buttons: () => [
+      { text: "Back", disabled, onClick: () => { clicks++; } },
+      { text: "Next", onClick: () => {} },
+    ],
+  });
+  m.open(1);
+  assert.ok(calls.some((c) => c.op === "cls" && c.id === "s2_m0_f0" && c.cls === "s2-btn-disabled" && c.on === true),
+    "the disabled button is greyed, not hidden");
+  assert.ok(calls.some((c) => c.op === "show" && c.id === "s2_m0_f0"), "the disabled button keeps its slot");
+  clickHandlers.s2_m0_f0(1);
+  assert.strictEqual(clicks, 0, "a disabled footer's click is dropped");
+  disabled = false;
+  m.refresh(1);
+  assert.ok(calls.some((c) => c.op === "cls" && c.id === "s2_m0_f0" && c.cls === "s2-btn-disabled" && c.on === false));
+  clickHandlers.s2_m0_f0(1);
+  assert.strictEqual(clicks, 1);
+});
+
 test("each component family uses its own fade class", () => {
   const { ui, calls } = mount();
   ui.toast(1, { title: "t", message: "m", variant: "good", holdSeconds: 0 });

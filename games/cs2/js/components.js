@@ -75,6 +75,7 @@
   var CALLOUT_VARIANT = { good: "s2-callout-good", warn: "s2-callout-warn", bad: "s2-callout-bad" };
   var BADGE_ACCENT = { accent: "s2-hudbadge-accent", good: "s2-hudbadge-good",
                        warn: "s2-hudbadge-warn", bad: "s2-hudbadge-bad" };
+  var BTN_DISABLED = "s2-btn-disabled";
   var BTN_VARIANT = { primary: "s2-btn-primary", good: "s2-btn-good", bad: "s2-btn-bad",
                       warn: "s2-btn-warn", ghost: "s2-btn-ghost" };
   // Row tone. Applied to the row BUTTON, so the stylesheet tints the cell through a descendant
@@ -1873,12 +1874,16 @@
       }
 
       // Caller buttons first; prev/next take the trailing footer slots, and only when the data
-      // actually needs paging — a one-page list shows no pager.
+      // actually needs paging — a one-page list shows no pager. A disabled caller button keeps its
+      // slot (greyed, click dropped) so a pager that is unavailable on this page never lets the
+      // buttons after it slide into its place under the player's cursor.
       function footerPlan(slot, pages) {
         var plan = [];
         var mine = typeof s.buttons === "function" ? (s.buttons(slot) || []) : (s.buttons || []);
         for (var i = 0; i < mine.length && plan.length < FOOTERS; i++) {
-          plan.push({ text: mine[i].text, variant: mine[i].variant || "ghost", fn: mine[i].onClick });
+          var disabled = !!mine[i].disabled;
+          plan.push({ text: mine[i].text, variant: mine[i].variant || "ghost", disabled: disabled,
+                      fn: disabled ? null : mine[i].onClick });
         }
         if (pages > 1 && plan.length + 2 <= FOOTERS) {
           plan.push({ text: "‹ Prev", variant: "ghost", fn: function (sl) { self.page(sl, -1); } });
@@ -2063,6 +2068,7 @@
               paintClass(slot, ids.footers[f].id, BTN_VARIANT[bk], BTN_VARIANT[bk] === wantBtn);
             }
           }
+          paintClass(slot, ids.footers[f].id, BTN_DISABLED, !!snapshot.footerPlan[f].disabled);
         }
         if (rootOpts) {
           paintClass(slot, ids.root, FADE.sheet, false);
