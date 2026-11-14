@@ -22,6 +22,11 @@
 // `cargo build`, and so no workflow path filter can route around it.
 #![deny(unreachable_patterns)]
 
+/// The framework version this build reports (`sm version`, crash envelopes, profiles), stamped by
+/// `build.rs` from `scripts/framework-version.sh` exactly as the shim is. Never `CARGO_PKG_VERSION`,
+/// which stays 0.0.0.
+pub const VERSION: &str = env!("S2SCRIPT_VERSION");
+
 mod engine_functions;
 mod game_packages;
 mod async_limits;

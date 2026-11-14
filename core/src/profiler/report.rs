@@ -398,7 +398,7 @@ pub(crate) fn write_trace(w: &mut impl Write, t: &TraceData) -> std::io::Result<
     write!(
         w,
         "{{\"displayTimeUnit\":\"ms\",\"otherData\":{{\"producer\":\"s2script {}\",\"startedUnixMicros\":{}}},\"traceEvents\":[",
-        env!("CARGO_PKG_VERSION"),
+        crate::VERSION,
         started_us
     )?;
     write!(w, "{{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":1,\"args\":{{\"name\":\"s2script\"}}}}")?;
