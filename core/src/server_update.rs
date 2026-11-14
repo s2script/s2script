@@ -51,6 +51,8 @@ pub(crate) struct ServerManifest {
     /// Dependencies kept in plugins/disabled/: installed and updated, never loaded.
     pub disabled: BTreeSet<String>,
     pub auto_update: bool,
+    /// Also check at every map change after the first (needs `auto_update`).
+    pub update_on_map_change: bool,
     pub reviewed_only: bool,
     pub registry: Option<String>,
     pub timeout: Duration,
@@ -107,6 +109,7 @@ pub(crate) fn parse_manifest(text: &str, fallback_name: &str) -> Result<ServerMa
         with,
         disabled,
         auto_update: s2.get("autoUpdate").and_then(Value::as_bool) != Some(false),
+        update_on_map_change: s2.get("updateOnMapChange").and_then(Value::as_bool) != Some(false),
         reviewed_only: s2.get("reviewedOnly").and_then(Value::as_bool) == Some(true),
         registry: s2.get("registry").and_then(Value::as_str).map(str::to_string),
         timeout: Duration::from_secs(timeout_secs),
@@ -828,7 +831,7 @@ fn write_manifest(root: &Path, manifest: &ServerManifest) -> Result<(), String> 
     }
     raw.entry("autoUpdate").or_insert(Value::Bool(true));
     // Known keys first, in the order the docs show them; anything else after, as found.
-    let order = ["name", "dependencies", "with", "disabled", "autoUpdate", "reviewedOnly", "updateTimeoutSeconds", "registry"];
+    let order = ["name", "dependencies", "with", "disabled", "autoUpdate", "updateOnMapChange", "reviewedOnly", "updateTimeoutSeconds", "registry"];
     let mut out = String::from("{\n");
     let mut entries: Vec<(&String, &Value)> = order.iter().filter_map(|k| raw.get_key_value(*k)).collect();
     entries.extend(raw.iter().filter(|(k, _)| !order.contains(&k.as_str())));
@@ -1059,6 +1062,30 @@ pub(crate) fn spawn_console_op(root: PathBuf, op: Op, token: Option<String>, lab
     Ok(())
 }
 
+/// The map-change update check: when `plugins.json` has `autoUpdate` and `updateOnMapChange` (both
+/// default on), move every plugin to the newest version its range allows, as `sm plugins update`
+/// does, in the background — the map is not held for the registry. The loader hot-reloads what
+/// changed (on a hibernating server, at the next map start or the first frame). Skipped while
+/// another `sm plugins` operation runs. Main thread (reads configs/registry.json).
+pub(crate) fn check_on_map_change(root: &Path) {
+    let cfg = match load_config(root, std::env::var("S2SCRIPT_REGISTRY_URL").ok().filter(|s| !s.is_empty())) {
+        Ok(Some(cfg)) if cfg.manifest.update_on_map_change => cfg,
+        Ok(_) => return,
+        Err(e) => {
+            crate::v8host::log_warn(&format!("WARN: [update] {e} — plugins not checked for updates"));
+            return;
+        }
+    };
+    match spawn_console_op(root.to_path_buf(), Op::Update { names: Vec::new() }, registry_token(), "update (map change)") {
+        Ok(()) => crate::v8host::log_warn(&format!(
+            "[update] map change: checking {} plugin(s) from {MANIFEST_FILE} against {}",
+            cfg.manifest.dependencies.len(),
+            cfg.registry
+        )),
+        Err(e) => crate::v8host::log_warn(&format!("[update] map change: update check skipped — {e}")),
+    }
+}
+
 /// The queued report lines of finished `sm` console operations (taken once, main thread).
 pub(crate) fn take_console_report() -> Vec<String> {
     std::mem::take(&mut *CONSOLE_REPORT.lock().unwrap_or_else(|e| e.into_inner()))
@@ -1146,6 +1173,7 @@ mod tests {
             with: BTreeMap::new(),
             disabled: BTreeSet::new(),
             auto_update: true,
+            update_on_map_change: true,
             reviewed_only: false,
             registry: None,
             timeout: Duration::from_secs(60),
@@ -1189,6 +1217,30 @@ mod tests {
             let data: Vec<u8> = (0..n).collect();
             assert_eq!(unbase64(&base64(&data)).unwrap(), data);
         }
+    }
+
+    #[test]
+    fn map_change_checks_default_on_and_can_be_turned_off() {
+        let on = parse_manifest(r#"{"dependencies":{"@edge/rtv":"^1.0.0"}}"#, "srv").unwrap();
+        assert!(on.auto_update && on.update_on_map_change);
+        let off = parse_manifest(r#"{"dependencies":{},"updateOnMapChange":false}"#, "srv").unwrap();
+        assert!(off.auto_update && !off.update_on_map_change);
+    }
+
+    /// A map change with the check on runs `sm plugins update` in the background; with it off, or
+    /// with no plugins.json, it does nothing.
+    #[test]
+    fn the_map_change_check_runs_only_when_configured() {
+        let root = tmpdir("mapchange");
+        check_on_map_change(&root);
+        assert!(!console_op_active(), "no plugins.json: nothing to check");
+        std::fs::write(root.join(MANIFEST_FILE), r#"{"dependencies":{"@edge/rtv":"^1.0.0"},"updateOnMapChange":false}"#).unwrap();
+        check_on_map_change(&root);
+        assert!(!console_op_active(), "turned off");
+        std::fs::write(root.join(MANIFEST_FILE), r#"{"dependencies":{"@edge/rtv":"^1.0.0"},"autoUpdate":false}"#).unwrap();
+        check_on_map_change(&root);
+        assert!(!console_op_active(), "autoUpdate off turns it off too");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
