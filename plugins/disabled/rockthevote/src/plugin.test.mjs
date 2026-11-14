@@ -32,8 +32,8 @@ test('deferred A disconnect preserves B RTV request and A request never counts a
   assert.equal(messages.at(-1), 'Rtv Already Voted', 'B request survives A disconnect');
 });
 
-async function loadVotingPlugin(maplist = 'de_nuke') {
-  const hooks = new Map(), admins = new Map(), commands = [];
+async function loadVotingPlugin(maplist = 'de_nuke', changetime = 1) {
+  const hooks = new Map(), admins = new Map(), commands = [], timers = [];
   let vote;
   const server = { mapName: 'de_inferno', command: line => commands.push(line) };
   const db = { execute: async () => {}, query: async () => [] };
@@ -41,7 +41,8 @@ async function loadVotingPlugin(maplist = 'de_nuke') {
     Activity: { show() {}, showT() {}, log() {}, describe: () => '', targetName: () => '' },
     Clients: { all: () => [] }, Server: server,
     UserMessages: { onPre() {} }, Database: { open: async () => db },
-    config: { readFile: () => maplist, getInt: name => name === 'rtv_map_count' ? 1 : 0, getBool: () => false },
+    config: { readFile: () => maplist, getInt: name => name === 'rtv_map_count' ? 1 : name === 'rtv_changetime' ? changetime : 0, getBool: () => false },
+    delay: ms => new Promise(resolve => timers.push({ ms, resolve })),
     command: { admin: (name, _flags, handler) => admins.set(name, handler) },
     hook: { on: (name, handler) => hooks.set(name, handler) },
     watchOptional() {},
@@ -60,7 +61,8 @@ async function loadVotingPlugin(maplist = 'de_nuke') {
   await new Promise(setImmediate);
   assert.ok(vote, 'the real ballot path starts a vote');
   vote.onEnd({ winner: 0, counts: [1, 0], total: 1 });
-  return { hooks, commands, server, poll };
+  const elapse = async () => { for (const t of timers.splice(0)) t.resolve(); await new Promise(setImmediate); };
+  return { hooks, commands, server, poll, timers, elapse };
 }
 
 for (const [maplist, command] of [['de_nuke', 'changelevel de_nuke'], ['awp_lego_2:3070284539', 'host_workshop_map 3070284539']]) {
@@ -87,6 +89,36 @@ test('RTV discards a queued winner if another map became live before the map pol
 test('RTV can apply after match end when no following round will start', async () => {
   const host = await loadVotingPlugin();
   assert.equal(typeof host.hooks.get('cs_win_panel_match'), 'function');
+  host.hooks.get('cs_win_panel_match')();
+  assert.deepEqual(host.commands, ['changelevel de_nuke']);
+});
+
+for (const [maplist, command] of [['de_nuke', 'changelevel de_nuke'], ['awp_lego_2:3070284539', 'host_workshop_map 3070284539']]) {
+  test(`rtv_changetime 0 (the default) applies ${command} a few seconds after the vote, without a round boundary`, async () => {
+    const host = await loadVotingPlugin(maplist, 0);
+    assert.deepEqual(host.commands, [], 'the result is shown before the level changes');
+    assert.deepEqual(host.timers.map(t => t.ms), [3000]);
+    await host.elapse();
+    assert.deepEqual(host.commands, [command]);
+    host.hooks.get('round_prestart')();
+    host.hooks.get('cs_win_panel_match')();
+    assert.deepEqual(host.commands, [command], 'applied once');
+  });
+}
+
+test('rtv_changetime 0 drops the change if another map became live during the pause', async () => {
+  const host = await loadVotingPlugin('de_nuke', 0);
+  host.server.mapName = 'de_mirage';
+  await host.elapse();
+  assert.deepEqual(host.commands, []);
+});
+
+test('rtv_changetime 2 waits for the end of the map, not the next round', async () => {
+  const host = await loadVotingPlugin('de_nuke', 2);
+  assert.deepEqual(host.timers, []);
+  host.hooks.get('round_prestart')();
+  host.hooks.get('round_prestart')();
+  assert.deepEqual(host.commands, [], 'round starts do not change the map');
   host.hooks.get('cs_win_panel_match')();
   assert.deepEqual(host.commands, ['changelevel de_nuke']);
 });

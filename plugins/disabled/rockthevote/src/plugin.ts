@@ -1,15 +1,16 @@
 // @s2script/rockthevote — SourceMod rockthevote: chat `rtv`/`sm_forcertv` starts a map vote once
 // enough connected non-bot players have asked, at a configurable turnout threshold; the winner
-// changes the map at the following round prestart (or match end).
+// changes the map right away by default, or at the next round start or the end of the map
+// (rtv_changetime).
 //
 // Task 1: the plugin scaffold, the chat/command trigger, the turnout threshold, per-map state
 // reset, and disconnect cleanup.
 // Task 2 (this file, current state): the ballot (nominations + random pool-fill − cooldown +
-// "Don't Change"), the @s2script/votes vote, and the round-boundary map-change apply (workshop/stock).
+// "Don't Change"), the @s2script/votes vote, and the map-change apply (workshop/stock).
 
 import {
   command, hook, translations, watchOptional, ADMFLAG, Chat, HookResult, UserMessages, Vote, Clients,
-  Server, config, Database, Events, Translations, Activity,
+  Server, config, Database, Events, Translations, Activity, delay,
 } from "@s2script/sdk";
 import type { HookResultValue, VoteResult, Client } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
@@ -22,6 +23,15 @@ interface MapEntry { name: string; workshopId: string | null; }
 // Colour is now carried entirely by tags inside phrases.ts (own {green}[RTV]{grey}/{lime}/{yellow}/
 // {lightred} per phrase) — see that file's header comment for the mapping from the original
 // ChatColors constants that used to live here.
+
+/** rtv_changetime: when a won RTV changes the map. */
+enum ChangeTime { Instant = 0, RoundEnd = 1, MapEnd = 2 }
+function changeTime(): ChangeTime {
+  const v = config.getInt("rtv_changetime");
+  return v >= 2 ? ChangeTime.MapEnd : v === 1 ? ChangeTime.RoundEnd : ChangeTime.Instant;
+}
+/** The pause between announcing an instant winner and the level change, so the result is read. */
+const INSTANT_CHANGE_DELAY_MS = 3000;
 
 /** The non-map ballot sentinel (SM "Don't Change") — one literal, referenced by both build + finish.
  *  Deliberately NEVER translated — see phrases.ts's header note. */
@@ -37,6 +47,7 @@ let voteMap = "";   // the map the running (or building) RTV ballot belongs to
 let votedThisMap = false;
 let pendingMap: MapEntry | null = null;
 let pendingMapSource = "";
+let pendingChange: ChangeTime = ChangeTime.Instant;   // when pendingMap is applied, fixed when the vote won
 let currentMap = "";
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
 let mapStartMs = Date.now(); // when the current map began — the rtv_initialdelay window counts from here
@@ -244,7 +255,7 @@ function runBallot(options: string[], entries: Map<string, MapEntry>, runoff: nu
 
 /** Apply the vote's result: map the winning index back to its display string, then either keep
  *  the map (no votes / "Don't Change"), run a runoff between the tied leaders, or stage the
- *  winner for the next round boundary. */
+ *  winner (applied now, at the next round start, or at map end — rtv_changetime). */
 function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>, runoff = 0, sourceMap = Server.mapName): void {
   voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — no votes /
                          // "Don't Change" / invalid winner leaves RTV open to re-accumulate (SM parity)
@@ -281,9 +292,23 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
 
   pendingMap = entry;
   pendingMapSource = Server.mapName;
-  votedThisMap = true;   // a change is queued for round end — block further RTV until the map changes
-  console.log("[rockthevote] vote won by " + chosen + (entry.workshopId ? " (workshop " + entry.workshopId + ")" : "") + " — queued for round prestart or match end");
-  Chat.toAll(Translations.translate(-1, "Rtv Winner", chosen));
+  pendingChange = changeTime();
+  votedThisMap = true;   // a change is queued — block further RTV until the map changes
+  const when = pendingChange === ChangeTime.Instant ? "now" : pendingChange === ChangeTime.RoundEnd ? "at round prestart or match end" : "at match end";
+  console.log("[rockthevote] vote won by " + chosen + (entry.workshopId ? " (workshop " + entry.workshopId + ")" : "") + " — changing " + when);
+  const phrase = pendingChange === ChangeTime.Instant ? "Rtv Winner" : pendingChange === ChangeTime.RoundEnd ? "Rtv Winner Round End" : "Rtv Winner Map End";
+  Chat.toAll(Translations.translate(-1, phrase, chosen));
+  if (pendingChange === ChangeTime.Instant) delay(INSTANT_CHANGE_DELAY_MS).then(applyPendingMap).catch(logErr);
+}
+
+/** Change to the queued winner, once. Dropped if another map became live since the vote won. */
+function applyPendingMap(): void {
+  if (!pendingMap) return;
+  const m = pendingMap;
+  pendingMap = null;
+  if (Server.mapName !== pendingMapSource) return;
+  // The workshop/stock split is load-bearing — see buildBallot's nomination resolution.
+  Server.command(m.workshopId ? "host_workshop_map " + m.workshopId : "changelevel " + m.name);
 }
 
 /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
@@ -448,15 +473,9 @@ export async function OnPluginStart(): Promise<void> {
     },
   });
 
-  const applyPendingMap = () => {
-    if (!pendingMap) return;
-    const m = pendingMap;
-    pendingMap = null;
-    if (Server.mapName !== pendingMapSource) return;
-    // The workshop/stock split is load-bearing — see buildBallot's nomination resolution.
-    Server.command(m.workshopId ? "host_workshop_map " + m.workshopId : "changelevel " + m.name);
-  };
-  hook.on("round_prestart", applyPendingMap);
+  // rtv_changetime 1 waits for the next round start. Every mode applies at match end, where no
+  // further round will start (and where map-end mode belongs).
+  hook.on("round_prestart", () => { if (pendingChange === ChangeTime.RoundEnd) applyPendingMap(); });
   hook.on("cs_win_panel_match", applyPendingMap);
 
   command.admin("sm_forcertv", ADMFLAG.CHANGEMAP, (cmd) => {
