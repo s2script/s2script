@@ -1,5 +1,18 @@
 # @s2script/cli
 
+## 0.40.0
+
+### Minor Changes
+
+- 6e226c9: `s2s build` copies the package's `description`, `author` and `homepage` into the plugin manifest,
+  so `sm plugins list` shows each plugin's version and author and the new `sm plugins info` shows its
+  description and URL. `Plugins.list()` entries gain `version`.
+
+### Patch Changes
+
+- 42466f6: Docs: a consumer built against an older copy of a producer's types now loads. The host warns about
+  the drift and fails only the members that were removed or retyped, when they're used.
+
 ## 0.39.0
 
 ### Minor Changes
