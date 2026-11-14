@@ -173,9 +173,52 @@ test("pager footer Next calls pickNumber(9)", () => {
   const s = session({ page: 1, pageCount: 3 });
   mounted.registered.center.open(s);
   const buttons = mounted.spec().buttons(3);
-  assert.deepEqual(buttons.map((b) => b.text), ["Back", "Next", "Close"]);
-  buttons[1].onClick(3);
+  assert.deepEqual(buttons.map((b) => b.text), ["Close", "\u2039 Back", "Next \u203a"]);
+  buttons[2].onClick(3);
   assert.equal(s.actions.next, 1);
+  buttons[1].onClick(3);
+  assert.equal(s.actions.prev, 1);
+});
+
+test("Back and Next keep the same footer slots on every page", () => {
+  // Regression: the footer used to list only the pager buttons that applied, so page 1 painted
+  // Next in the slot page 2 painted Back. Clicking the same spot bounced between two pages.
+  const layouts = [];
+  for (let page = 0; page < 3; page++) {
+    for (const exitButton of [true, false]) {
+      const mounted = mount();
+      mounted.registered.center.open(session({ page, pageCount: 3, exitButton }));
+      const buttons = mounted.spec().buttons(3);
+      const base = exitButton ? 1 : 0;
+      assert.equal(buttons.length, base + 2, `page ${page}: both pagers always present`);
+      assert.equal(buttons[base].text, "\u2039 Back");
+      assert.equal(buttons[base + 1].text, "Next \u203a");
+      assert.equal(!!buttons[base].disabled, page === 0, `page ${page}: Back disabled only on the first page`);
+      assert.equal(!!buttons[base + 1].disabled, page === 2, `page ${page}: Next disabled only on the last page`);
+      layouts.push(buttons.map((b) => b.text).join("|") + (exitButton ? "" : "-noexit"));
+    }
+  }
+  assert.equal(new Set(layouts).size, 2, "one footer layout per exit setting, regardless of page");
+});
+
+test("a disabled pager end is inert even if its click arrives", () => {
+  const mounted = mount();
+  const first = session({ page: 0, pageCount: 2 });
+  mounted.registered.center.open(first);
+  mounted.spec().buttons(3)[1].onClick(3);
+  assert.equal(first.actions.prev, 0, "Back on the first page does nothing");
+
+  const mounted2 = mount();
+  const last = session({ page: 1, pageCount: 2 });
+  mounted2.registered.center.open(last);
+  mounted2.spec().buttons(3)[2].onClick(3);
+  assert.equal(last.actions.next, 0, "Next on the last page does nothing");
+});
+
+test("a one-page menu shows no pager", () => {
+  const mounted = mount();
+  mounted.registered.center.open(session({ page: 0, pageCount: 1 }));
+  assert.deepEqual(mounted.spec().buttons(3).map((b) => b.text), ["Close"]);
 });
 
 test("a menu never freezes the player, even when the menu asks for it", () => {

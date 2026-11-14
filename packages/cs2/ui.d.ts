@@ -353,6 +353,13 @@ export interface Row {
 export interface FooterButton {
   readonly text: string;
   readonly variant?: Variant;
+  /**
+   * Grey the button out and drop its clicks while keeping its footer slot, so the buttons after
+   * it do not shift position. Use it for an action that is unavailable right now (a pager at its
+   * first or last page) instead of omitting the button. Requires `.s2-btn-disabled` in the
+   * workshop addon; on an older addon the button only stops responding.
+   */
+  readonly disabled?: boolean;
   readonly onClick: (slot: number, view: ModalView) => void;
 }
 

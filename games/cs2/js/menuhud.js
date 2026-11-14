@@ -82,35 +82,44 @@
     return rows;
   }
 
+  // Footer slots are positional: f0 sits alone on the left, f1..f4 are right-aligned. The pager
+  // must therefore never change shape between pages. When it used to emit only the buttons that
+  // applied, page 1 painted Next where page 2 painted Back, so a player clicking the same spot
+  // bounced between two pages forever. Close (when present) takes the left slot, then Back and
+  // Next always both appear on a multi-page menu, Next rightmost, greyed and inert at either end.
   function footerButtons(slot) {
     var session = sessions[slot];
     if (!session || typeof session.view !== "function") return [];
     var view = session.view();
     var buttons = [];
-    if (view.page > 0) {
-      buttons.push({
-        text: "Back",
-        onClick: function (sl) {
-          var s = sessions[sl];
-          if (s && typeof s.pickNumber === "function") s.pickNumber(8);
-        }
-      });
-    }
-    if (view.page < view.pageCount - 1) {
-      buttons.push({
-        text: "Next",
-        onClick: function (sl) {
-          var s = sessions[sl];
-          if (s && typeof s.pickNumber === "function") s.pickNumber(9);
-        }
-      });
-    }
     if (view.exit) {
       buttons.push({
         text: "Close",
         onClick: function (sl) {
           var s = sessions[sl];
           if (s && typeof s.cancel === "function") s.cancel();
+        }
+      });
+    }
+    if (view.pageCount > 1) {
+      buttons.push({
+        text: "\u2039 Back",
+        disabled: !(view.page > 0),
+        onClick: function (sl) {
+          var s = sessions[sl];
+          if (!s || typeof s.view !== "function" || !(s.view().page > 0)) return;
+          if (typeof s.pickNumber === "function") s.pickNumber(8);
+        }
+      });
+      buttons.push({
+        text: "Next \u203a",
+        disabled: !(view.page < view.pageCount - 1),
+        onClick: function (sl) {
+          var s = sessions[sl];
+          if (!s || typeof s.view !== "function") return;
+          var v = s.view();
+          if (!(v.page < v.pageCount - 1)) return;
+          if (typeof s.pickNumber === "function") s.pickNumber(9);
         }
       });
     }
