@@ -30,7 +30,7 @@ pub struct CrashBreadcrumb {
     pub magic: u32,
     pub version: u32,
     // --- identity / treadmill ---
-    pub s2_version: [u8; 32],
+    pub s2_version: [u8; 64],
     pub api_version: u32,
     pub gamedata_fingerprint: [u8; 40],
     pub gamedata_generated_at: [u8; 32],
@@ -65,7 +65,7 @@ unsafe impl Sync for BreadcrumbCell {}
 static BREADCRUMB: BreadcrumbCell = BreadcrumbCell(UnsafeCell::new(CrashBreadcrumb {
     magic: BREADCRUMB_MAGIC,
     version: BREADCRUMB_VERSION,
-    s2_version: [0; 32],
+    s2_version: [0; 64],
     api_version: 0,
     gamedata_fingerprint: [0; 40],
     gamedata_generated_at: [0; 32],
@@ -124,7 +124,7 @@ pub(crate) fn read_cstr(src: &[u8]) -> String {
 
 pub fn set_identity(fingerprint: &str, generated_at: &str, hl2sdk: &str, schema_build: &str, stale: bool) {
     let b = bc();
-    copy_cstr(&mut b.s2_version, env!("CARGO_PKG_VERSION"));
+    copy_cstr(&mut b.s2_version, crate::VERSION);
     b.api_version = crate::loader::HOST_API_VERSION_MAJOR;
     copy_cstr(&mut b.gamedata_fingerprint, fingerprint);
     copy_cstr(&mut b.gamedata_generated_at, generated_at);
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(s.players, 7);
         assert_eq!(read_cstr(&s.engine_op), "ent_ref_read");
         assert_eq!(read_cstr(&s.js_location), "myplugin:42");
-        assert_eq!(read_cstr(&s.s2_version), env!("CARGO_PKG_VERSION"));
+        assert_eq!(read_cstr(&s.s2_version), crate::VERSION);
     }
 
     #[test]

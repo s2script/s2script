@@ -512,7 +512,7 @@ fn load_one(file: &Path) {
         api: HostApi {
             size: std::mem::size_of::<HostApi>() as u32,
             abi: ABI_VERSION,
-            host_version: Box::leak(CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_boxed_c_str()).as_ptr(),
+            host_version: Box::leak(CString::new(crate::VERSION).unwrap().into_boxed_c_str()).as_ptr(),
             log: host_log,
             schema_offset: host_schema_offset,
             fail: host_fail,
@@ -745,6 +745,20 @@ pub(crate) fn types(name: &str) -> Option<String> {
         out.push_str(&format!("export declare function {}({}): {};\n", n.name, params.join(", "), n.ret.ts(true)));
     }
     Some(out)
+}
+
+/// A player's `sm exts`: one ` "name" (version)` line per running extension, nothing about
+/// refusals, files or which plugins use one.
+pub(crate) fn client_lines() -> Vec<String> {
+    EXTENSIONS.with(|e| {
+        let running: Vec<String> = e
+            .borrow()
+            .iter()
+            .filter(|x| matches!(x.state, State::Loaded) && !x.name.is_empty())
+            .map(|x| if x.version.is_empty() { format!(" \"{}\"", x.name) } else { format!(" \"{}\" ({})", x.name, x.version) })
+            .collect();
+        if running.is_empty() { vec!["[S2S] No extensions found.".to_string()] } else { running }
+    })
 }
 
 /// `sm ext list`.

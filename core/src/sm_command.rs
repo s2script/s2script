@@ -7,12 +7,14 @@
 //!   unload|reload`, and the registry operations `sm plugins install|update|remove|outdated|enable|
 //!   disable`;
 //! - a player who types `sm` in their own console gets what SourceMod gives one (its
-//!   `PlayerManager::OnClientCommand`): `sm plugins` lists the running plugins, `sm credits` the
-//!   credits, anything else the version banner. Nothing that changes the server, admins included;
+//!   `PlayerManager::OnClientCommand`): `sm plugins` lists the running plugins, `sm exts` the
+//!   running extensions, `sm credits` the credits, anything else the version banner. Nothing that changes the server, admins included;
 //!   an in-game admin runs the rest through `sm_rcon sm …`.
 //!
-//! The command is registered client-executable so a player's `sm` reaches here at all; the split
-//! between the two is decided by the caller slot, not by hiding the command.
+//! The command is registered client-executable so a player's `sm` reaches here at all, and the
+//! ClientCommand hook matches it by name too (`commands::dispatch_client_command`), since it is
+//! not in the plugin command table. The split between the two is decided by the caller slot, not
+//! by hiding the command.
 
 use crate::v8host::{engine_ops, log_warn};
 use std::ffi::CString;
@@ -35,7 +37,7 @@ pub(crate) fn register() {
 }
 
 fn version_line() -> String {
-    format!("s2script {}, by Gabriel Hirakawa", env!("CARGO_PKG_VERSION"))
+    format!("s2script {}, by Gabriel Hirakawa", crate::VERSION)
 }
 
 /// What a bare `sm` prints, as SourceMod's does.
@@ -138,8 +140,9 @@ fn finish_without_frames(queued: Queued) {
     drain_reports();
 }
 
-/// A player's `sm`, admin or not, as SourceMod answers one: the running plugins, the credits, or
-/// the version banner. Read-only; nothing here changes the server.
+/// A player's `sm`, admin or not, as SourceMod answers one: the running plugins, the running
+/// extensions, the credits, or the version banner. Read-only; nothing here changes the server, so
+/// `sm plugins info|load|unload|reload|update…` stay on the server console / RCON.
 fn client_lines(args: &str) -> Vec<String> {
     match args.split_whitespace().next().unwrap_or("").to_ascii_lowercase().as_str() {
         "plugins" => {
@@ -148,13 +151,23 @@ fn client_lines(args: &str) -> Vec<String> {
                 .filter(|(_, state)| state == "running")
                 .map(|(id, _)| id)
                 .collect();
-            let mut lines = vec![format!("Listing {} plugin(s):", running.len())];
-            lines.extend(running.iter().map(|id| format!("  {}", identity(id, crate::loader::plugin_meta(id).as_ref()))));
-            lines
+            client_plugin_lines(&running, crate::loader::plugin_meta)
         }
+        "exts" => crate::extensions::client_lines(),
         "credits" => credits(),
         _ => banner(),
     }
+}
+
+/// A player's `sm plugins`: one ` "id" (version) by author` line per running plugin.
+fn client_plugin_lines(
+    running: &[String],
+    meta_of: impl Fn(&str) -> Option<crate::loader::PluginMeta>,
+) -> Vec<String> {
+    if running.is_empty() {
+        return vec!["[S2S] No plugins found.".to_string()];
+    }
+    running.iter().map(|id| format!(" {}", identity(id, meta_of(id).as_ref()))).collect()
 }
 
 /// The server console's `sm`: the lines to print for `args`.
@@ -624,6 +637,17 @@ mod tests {
         assert_eq!(run("prof"), vec![PROF_USAGE.to_string()]);
     }
 
+    /// A player's plugin list reads like SourceMod's: no numbers, no state tags, no errors.
+    #[test]
+    fn a_players_plugin_list_names_version_and_author() {
+        let running = vec!["@s2script/basecommands".to_string(), "old".to_string()];
+        let lines = client_plugin_lines(&running, |id| {
+            (id == "@s2script/basecommands").then(|| meta("1.2.0", Some("s2script"), None))
+        });
+        assert_eq!(lines, vec![" \"@s2script/basecommands\" (1.2.0) by s2script".to_string(), " \"old\"".to_string()]);
+        assert_eq!(client_plugin_lines(&[], |_| None), vec!["[S2S] No plugins found.".to_string()]);
+    }
+
     /// A player can never start the profiler: their `sm prof` is the version banner.
     #[test]
     fn a_player_cannot_profile() {
@@ -637,11 +661,12 @@ mod tests {
         assert_eq!(client_lines(""), banner());
         assert_eq!(client_lines("version"), banner());
         assert_eq!(client_lines("CREDITS"), credits());
-        for args in ["plugins install @evil/x", "plugins unload @s2script/basecommands", "plugins reload x"] {
-            let lines = client_lines(args);
-            assert!(lines[0].starts_with("Listing "), "{args}: {lines:?}");
+        let list = client_lines("plugins");
+        for args in ["plugins install @evil/x", "plugins unload @s2script/basecommands", "plugins reload x", "plugins info 1", "plugins 11"] {
+            assert_eq!(client_lines(args), list, "{args}");
         }
-        for args in ["frobnicate", "exts", "plugins_install"] {
+        assert_eq!(client_lines("exts"), crate::extensions::client_lines());
+        for args in ["frobnicate", "ext list", "plugins_install"] {
             assert_eq!(client_lines(args), banner(), "{args}");
         }
         let banner = banner();

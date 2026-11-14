@@ -281,7 +281,9 @@ fn chat_args<'s>(tc: &mut v8::PinScope<'s, '_>, slot: i32, text: &str, teamonly:
 /// Returns true iff a registered command matched + was dispatched (the caller then SUPERCEDEs).
 pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool {
     // Listeners are NOT run here. They are driven from the shim's `DispatchConCommand` hook.
-    let matched = CONCOMMANDS.with(|m| m.borrow().contains_key(name));
+    // `sm` is the runtime's own command and never in CONCOMMANDS: match it by name, or a player's
+    // `sm` falls through to the engine and never answers.
+    let matched = name == crate::sm_command::NAME || CONCOMMANDS.with(|m| m.borrow().contains_key(name));
     if matched {
         dispatch_concommand(name, slot, args, ReplySource::Console);
         return true;
@@ -430,6 +432,8 @@ mod tests {
         "#, "{}");
         dispatch_concommand("sm", -1, "", ReplySource::from_slot(-1));
         dispatch_concommand("sm", 3, "plugins unload smgrab", ReplySource::from_slot(3));
+        // A player's `sm` arriving through the ClientCommand hook is matched and superseded too.
+        assert!(dispatch_client_command(3, "sm", "plugins"), "a player's sm must be handled");
         assert_eq!(eval_in_context_string("smgrab", "String(globalThis.__grabbed)"), "no");
         let log = LOG.lock().unwrap().clone();
         assert!(log.iter().any(|m| m.contains("belongs to the runtime")), "{log:?}");
