@@ -18,7 +18,9 @@
   "Rtv Vote Already Running": "{green}[RTV] {grey}A vote is already running.",
   "Rtv Vote Tied": "{green}[RTV] {lightred}Vote tied{grey} — the map stays.",
   "Rtv Wants To Vote": "{green}[RTV] {lime}{1}{grey} wants to rock the vote — {yellow}{2}{grey} more needed.",
-  "Rtv Winner": "{green}[RTV] {lime}{1}{grey} won — changing at the end of the round.",
+  "Rtv Winner": "{green}[RTV] {lime}{1}{grey} won — changing map now.",
+  "Rtv Winner Round End": "{green}[RTV] {lime}{1}{grey} won — changing at the end of the round.",
+  "Rtv Winner Map End": "{green}[RTV] {lime}{1}{grey} won — it will be the next map.",
   "Rtv Winner Invalid": "{green}[RTV] {lightred}Winner invalid{grey} — the map is unchanged.",
   "Initiated Vote Map": "forced a map vote."
 }

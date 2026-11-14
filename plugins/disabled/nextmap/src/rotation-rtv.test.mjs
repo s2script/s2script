@@ -17,7 +17,7 @@ async function loadBoth(order, winner, waitForRound = true) {
     },
     config: {
       readFile: () => 'de_inferno\nde_nuke\nde_mirage',
-      getInt: name => name === 'nextmap_change_delay' ? 5 : name === 'rtv_map_count' ? 1 : 0,
+      getInt: name => name === 'nextmap_change_delay' ? 5 : name === 'rtv_map_count' ? 1 : name === 'rtv_changetime' ? 1 : 0,
       getBool: name => name === 'nextmap_random_startup' ? false : name === 'nextmap_wait_for_round' ? waitForRound : true,
     },
     delay: () => new Promise(resolve => pending.push(resolve)),

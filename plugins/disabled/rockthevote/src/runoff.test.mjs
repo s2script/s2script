@@ -17,7 +17,8 @@ async function loadRtv({ runoff = true, pollFirst = true } = {}) {
     Database: { open: async () => ({ execute: async () => {}, query: async () => [] }) },
     config: {
       readFile: () => 'de_nuke\nde_mirage\nde_ancient',
-      getInt: name => name === 'rtv_map_count' ? 3 : name === 'rtv_vote_duration' ? 20 : 0,
+      // Round-end mode, so a winner stays queued and each test can inspect it before it applies.
+      getInt: name => name === 'rtv_map_count' ? 3 : name === 'rtv_vote_duration' ? 20 : name === 'rtv_changetime' ? 1 : 0,
       getBool: name => name === 'rtv_runoff' ? runoff : false,
     },
     command: { admin: (name, _flags, handler) => admins.set(name, handler) },
@@ -67,7 +68,7 @@ test('a tie runs a runoff of only the tied options, repeating until one wins', a
   assert.ok(host.chat.includes('Rtv Runoff|2'));
   host.end([1, 4]);
   assert.equal(host.active, null);
-  assert.ok(host.chat.includes('Rtv Winner|' + b));
+  assert.ok(host.chat.includes('Rtv Winner Round End|' + b));
   host.hooks.get('round_prestart')();
   assert.deepEqual(host.commands, ['changelevel ' + b]);
 });
