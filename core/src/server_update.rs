@@ -1017,11 +1017,19 @@ pub(crate) fn console_token() -> Option<String> {
 /// Lines a background `sm plugins …` operation produced, waiting for the main thread to print
 /// them (the console logger is only reachable there). Drained by `take_console_report`.
 static CONSOLE_REPORT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// A `spawn_console_op` thread is running: set before it starts, cleared once its report is queued.
+static CONSOLE_OP_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A background `sm plugins …` registry operation has not queued its report yet.
+pub(crate) fn console_op_active() -> bool {
+    CONSOLE_OP_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+}
 
 /// Run a registry operation for the `sm` console command on its own thread. Its report (or the
 /// reason it failed) is queued for `take_console_report`; the slot is released when it ends.
 pub(crate) fn spawn_console_op(root: PathBuf, op: Op, token: Option<String>, label: &str) -> Result<(), String> {
     try_begin_op()?;
+    CONSOLE_OP_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
     let label = label.to_string();
     let spawned = std::thread::Builder::new()
         .name("s2s-sm-plugins".into())
@@ -1033,8 +1041,11 @@ pub(crate) fn spawn_console_op(root: PathBuf, op: Op, token: Option<String>, lab
             let mut report = CONSOLE_REPORT.lock().unwrap();
             report.extend(lines);
             report.push(format!("sm plugins {label}: done"));
+            drop(report);
+            CONSOLE_OP_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
         });
     if let Err(e) = spawned {
+        CONSOLE_OP_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
         abort_op();
         return Err(format!("could not start the operation: {e}"));
     }

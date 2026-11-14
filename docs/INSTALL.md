@@ -224,6 +224,11 @@ The registry operations (install, update, remove, enable, disable, outdated) run
 and print their report when done. The loader picks up the changed files on its own: a new plugin
 loads, an updated one hot-reloads, a removed one unloads. No restart.
 
+An empty server with `sv_hibernate_when_empty 1` (the default) runs no frames, and the loader is
+frame-driven. So on a hibernating server, these commands (and `sm plugins load|unload|reload`)
+finish in the command itself: the console waits for the registry operation (up to 2 minutes),
+prints its report, and reloads what changed before it returns.
+
 `sm` is built into the runtime, as in SourceMod, so it works with no plugin loaded. It is a server
 console command: everything above answers only the server console and RCON. A player who types `sm`
 in their own console gets what SourceMod gives one: `sm plugins` lists the running plugins,
