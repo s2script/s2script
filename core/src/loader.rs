@@ -911,12 +911,16 @@ fn drain_command_intents() {
                     cancel_path_work(&path);
                     SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
                     FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
+                    // The next scan does the reload: until one has, there is work left
+                    // (`boot_settled`, `settle_without_frames`).
+                    LAST_SCAN_CLEAN.with(|c| c.set(None));
                 }
             }
             PendingOp::Load => {
                 let path = SUPPRESSED.with(|s| s.borrow().iter().find(|(_, v)| **v == id).map(|(p, _)| p.clone()));
                 if let Some(path) = path { cancel_path_work(&path); }
                 SUPPRESSED.with(|s| { s.borrow_mut().retain(|_, v| *v != id); });
+                LAST_SCAN_CLEAN.with(|c| c.set(None));
             }
         }
     }
@@ -1635,6 +1639,7 @@ fn boot_tick() {
 /// flight; it is the ordinary periodic watch, not startup work.)
 fn boot_settled() -> bool {
     LAST_SCAN_CLEAN.with(Cell::get) == Some(true)
+        && PENDING_OPS.with(|q| q.borrow().is_empty())
         && !has_waiting()
         && APPLYING.with(Cell::get) == 0
         && !crate::v8host::any_loading()
@@ -3172,6 +3177,17 @@ mod tests {
         let log = BOOT_LOG.lock().unwrap().clone();
         assert_eq!(plugin_meta("@edge/rtv").map(|m| m.version).as_deref(), Some("1.1.0"), "{log:#?}");
         assert_eq!(plugin_list(), vec![("@edge/rtv".to_string(), "running".to_string())], "{log:#?}");
+
+        // A reload request (`sm plugins reload`, or one deferred while the plugin was still
+        // starting) is work left until a scan has carried it out, even after a clean scan.
+        assert!(boot_settled());
+        assert!(request_reload("@edge/rtv"));
+        assert!(!boot_settled(), "a queued reload is not settled");
+        drain_command_intents();
+        assert!(!boot_settled(), "a drained reload waits for the scan that performs it");
+        assert!(settle_without_frames());
+        assert!(boot_settled());
+        assert_eq!(plugin_list(), vec![("@edge/rtv".to_string(), "running".to_string())]);
 
         crate::v8host::unload_plugin("@edge/rtv");
         shutdown_worker();

@@ -1034,15 +1034,22 @@ pub(crate) fn spawn_console_op(root: PathBuf, op: Op, token: Option<String>, lab
     let spawned = std::thread::Builder::new()
         .name("s2s-sm-plugins".into())
         .spawn(move || {
+            // Cleared however the thread ends, a panic included, so a hibernating console command
+            // never waits out its bound on an operation that is gone.
+            struct Active;
+            impl Drop for Active {
+                fn drop(&mut self) {
+                    CONSOLE_OP_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let _active = Active;
             let lines = match run_op_blocking(root, op, token) {
                 Ok(()) => take_op_result(),
                 Err(e) => vec![format!("sm plugins {label} failed: {e}")],
             };
-            let mut report = CONSOLE_REPORT.lock().unwrap();
+            let mut report = CONSOLE_REPORT.lock().unwrap_or_else(|e| e.into_inner());
             report.extend(lines);
             report.push(format!("sm plugins {label}: done"));
-            drop(report);
-            CONSOLE_OP_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
         });
     if let Err(e) = spawned {
         CONSOLE_OP_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
@@ -1054,7 +1061,7 @@ pub(crate) fn spawn_console_op(root: PathBuf, op: Op, token: Option<String>, lab
 
 /// The queued report lines of finished `sm` console operations (taken once, main thread).
 pub(crate) fn take_console_report() -> Vec<String> {
-    std::mem::take(&mut *CONSOLE_REPORT.lock().unwrap())
+    std::mem::take(&mut *CONSOLE_REPORT.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 #[cfg(test)]
