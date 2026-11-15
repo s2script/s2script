@@ -334,7 +334,9 @@
       return c && typeof c.plain === "function" ? c.plain(s) : s.replace(/\{[A-Za-z]+\}/g, "");
     }
 
-    function driveSetDialogVariable(slot, panelId, variableName, value) {
+    // `raw` skips the colour-tag strip: an image path carries Panorama tokens such as
+    // `{images}` that share the tag grammar and must reach the client intact.
+    function driveSetDialogVariable(slot, panelId, variableName, value, raw) {
       panelId = String(panelId); variableName = String(variableName);
       if (!setDialogVariableStringForPlayer) {
         return uiFail("Unavailable", "unavailable: " + engineStatus("setDialogVariableStringForPlayer"));
@@ -342,7 +344,7 @@
       if (slot < 0) return uiFail("InvalidArgument", "needs a player slot");
       var ent = bindEntity(ctxState.ensureEntity(layout));
       if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
-      var str = hudText(value);
+      var str = raw ? String(value) : hudText(value);
       if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
       var key = cacheKey(slot, "v", panelId, variableName);
       if (lastValue[key] === str) return uiOk(undefined);
@@ -495,6 +497,7 @@
         return on ? driveAcquireCursor(slot, panelId) : driveReleaseCursor(slot, panelId);
       },
       set: driveSet,
+      setRaw: function (slot, id, value) { return driveSetDialogVariable(slot, id, id, value, true); },
       setText: driveSetText,
       setClass: driveSetClass,
       setMeter: driveSetMeter,
@@ -509,7 +512,7 @@
     // Private structured seam for game-package components. Every call captures the actual client
     // generation, then the raw operation re-checks it after argument coercion and reentrancy.
     api._drive = {};
-    "show hide cursor cursorForPanel set setText setClass setMeter setPool setDisabled".split(" ")
+    "show hide cursor cursorForPanel set setRaw setText setClass setMeter setPool setDisabled".split(" ")
       .forEach(function (name) {
         api._drive[name] = function (slot) {
           var actualClient = currentClient(slot);
@@ -537,6 +540,10 @@
     };
     api.set = function (slot, id, value) {
       return legacyResult(api._drive.set(slot, id, value));
+    };
+    // Game-package seam: a dialog variable written verbatim (no colour-tag strip), for image paths.
+    api._setRaw = function (slot, id, value) {
+      return legacyResult(api._drive.setRaw(slot, id, value));
     };
     api.setText = function (slot, panelId, value) {
       return legacyResult(api._drive.setText(slot, panelId, value));

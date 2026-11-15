@@ -38,6 +38,8 @@ function mount(opts = {}) {
     hide: (slot, id) => drive(slot, () => { panel(slot, id).classes.add("s2-hide"); }),
     setClass: (slot, id, cls, on) => drive(slot, () => { if (on) panel(slot, id).classes.add(cls); else panel(slot, id).classes.delete(cls); }),
     setMeter: (slot, name, pct) => drive(slot, () => { meters[slot + "|" + name] = pct; }),
+    _setRaw: (slot, id, v) => drive(slot, () => { panel(slot, id).text = String(v); }),
+    invalidatePanelTree: () => {},
   };
   let hudCalls = 0;
   const base = { hud: (desc) => { hudCalls++; assert.equal(desc.observable, false); return hud; } };
@@ -212,4 +214,37 @@ test("GameHud needs plugin context", () => {
   evalFile("gamekit.generated.js");
   evalFile("gamekit.js");
   assert.throws(() => globalThis.__s2pkg_cs2.GameHud.rail(), /requires plugin context/);
+});
+
+test("theme clears the layout's default theme and another plugin's theme", () => {
+  const m = mount();
+  // The layout ships gk-theme-amber; another plugin's context painted red.
+  m.panels["0|gk_theme"] = { classes: new Set(["gk-theme-amber", "gk-theme-red"]), text: undefined };
+  m.GameHud.theme(0, "teal");
+  assert.deepEqual([...m.panels["0|gk_theme"].classes], ["gk-theme-teal"]);
+});
+
+test("a toast clears an edge another plugin left on the shared toast", () => {
+  const m = mount();
+  m.panels["0|gk_toast"] = { classes: new Set(["gk-e-red"]), text: undefined };
+  m.GameHud.toast(0, { title: "Hi", tone: "green" });
+  assert.equal(m.has(0, "gk_toast", "gk-e-red"), false);
+  assert.equal(m.has(0, "gk_toast", "gk-e-green"), true);
+});
+
+test("a status paint without bars leaves the bars alone", () => {
+  const m = mount();
+  const st = m.GameHud.status();
+  st.set(0, { role: "Guard", bars: [{ label: "HP", value: 80 }] });
+  st.set(0, { hint: "Open cells at 0:30" });
+  assert.equal(m.hidden(0, "gk_bar0"), false);
+  assert.equal(m.text(0, "gk_bar0_val"), "80");
+  st.set(0, { bars: [] });
+  assert.equal(m.hidden(0, "gk_bar0"), true);
+});
+
+test("weapon icon paths keep their Panorama tokens", () => {
+  const m = mount();
+  m.GameHud.feed().push({ victim: "V", icon: "file://{images}/icons/equipment/ak47.svg" }, [0]);
+  assert.equal(m.text(0, "gk_kf0_wi"), "file://{images}/icons/equipment/ak47.svg");
 });

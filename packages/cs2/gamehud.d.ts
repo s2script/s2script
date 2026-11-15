@@ -94,7 +94,10 @@ export interface GameHudFeedEntry {
   readonly victim: GameHudText;
   /** Weapon text, shown when there is no icon. */
   readonly weapon?: GameHudText;
-  /** A Panorama image path for the weapon icon. */
+  /**
+   * A Panorama image path for the weapon icon, sent as is (tokens such as `{images}` are kept),
+   * for example `"file://{images}/icons/equipment/ak47.svg"`.
+   */
   readonly icon?: string;
   readonly headshot?: boolean;
   /** A short leading tag, such as `"{red}RDM"`. */

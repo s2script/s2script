@@ -187,6 +187,32 @@
       return cls ? setClass(slot, id, cls, true) : null;
     }
 
+    /**
+     * Apply one class of a family on a SHARED panel (theme root, toast). Another plugin may have
+     * painted this panel from its own context, so neither our record nor ui.js's diff cache knows
+     * what is on it: drop the cache for the panel and clear every other class in the family.
+     */
+    function exclusive(slot, id, family, list, cls) {
+      var h = hud();
+      if (typeof h.invalidatePanelTree === "function") h.invalidatePanelTree(id);
+      var first = null;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] === cls) continue;
+        var r = setClass(slot, id, list[i], false);
+        if (!ok(r) && first === null) first = r;
+      }
+      var bySlot = applied[slot] || (applied[slot] = {});
+      var byId = bySlot[id] || (bySlot[id] = {});
+      byId[family] = cls;
+      var add = setClass(slot, id, cls, true);
+      return ok(add) ? first : add;
+    }
+
+    function setRaw(slot, id, value) {
+      var h = hud();
+      return typeof h._setRaw === "function" ? h._setRaw(slot, id, value) : h.set(slot, id, value);
+    }
+
     function forgetSlot(slot) {
       delete applied[slot];
       delete feeds[slot];
@@ -288,7 +314,8 @@
                 setText(s, "gk_status_role", spec.role);
               }
               if (spec.hint !== undefined) setText(s, "gk_status_hint", spec.hint);
-              for (var b = 0; b < BARS; b++) {
+              // Bars are left as they are unless this paint names them.
+              for (var b = 0; spec.bars !== undefined && b < BARS; b++) {
                 var bar = bars[b];
                 var row = "gk_bar" + b;
                 if (!bar) { hide(s, row); continue; }
@@ -332,7 +359,7 @@
       note(swap(slot, r + "_a", "text", entry.attacker ? "gk-t-" + pickTone(entry.attackerTone, entry.attacker, "default") : null));
       note(setText(slot, r + "_a", entry.attacker || ""));
       note(setClass(slot, r + "_a", HIDE, !entry.attacker));
-      note(hud().set(slot, r + "_wi", entry.icon || ""));
+      note(setRaw(slot, r + "_wi", entry.icon || ""));
       note(setClass(slot, r + "_wi", HIDE, !entry.icon));
       note(setText(slot, r + "_w", entry.icon ? "" : (entry.weapon || "")));
       note(setClass(slot, r + "_w", HIDE, !!entry.icon || !entry.weapon));
@@ -429,7 +456,7 @@
         var s = slots[i];
         var first = null;
         var note = function (err) { if (!ok(err) && first === null) first = err; };
-        note(swap(s, "gk_toast", "edge", "gk-e-" + tone));
+        note(exclusive(s, "gk_toast", "edge", GK.classes.edge, "gk-e-" + tone));
         note(setText(s, "gk_toast_t", spec.title));
         note(setText(s, "gk_toast_s", spec.sub == null ? "" : spec.sub));
         note(setClass(s, "gk_toast_s", HIDE, spec.sub == null || spec.sub === ""));
@@ -449,7 +476,7 @@
     function theme(audience, name) {
       if (!isTheme(name)) throw new Error('GameHud.theme: unknown theme "' + name + '"');
       var slots = slotsFor(audience);
-      for (var i = 0; i < slots.length; i++) swap(slots[i], "gk_theme", "theme", "gk-theme-" + name);
+      for (var i = 0; i < slots.length; i++) exclusive(slots[i], "gk_theme", "theme", GK.classes.theme, "gk-theme-" + name);
     }
 
     return {
