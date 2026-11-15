@@ -159,6 +159,62 @@ ones. Callout, banner, MOTD, and the TopMenu dashboard are one root each on this
 layout — not a second `CustomHudLayout` and not a third center sheet. Republish after
 compiling so `s2_dash` reaches clients.
 
+### Game kit (`s2script_gamehud.xml` and `s2script_gamepanels.xml`)
+
+Two more layouts in the same addon, both spawned `observable=false` so a spectator never sees the
+watched player's private panels or hidden feed rows:
+
+- **`s2script_gamehud.xml`**: the in-round HUD. Top rail, kill feed, status card, toast.
+- **`s2script_gamepanels.xml`**: panels. Pop-up vote, drawer list, prompt, sheet, intro and spectate hub.
+
+They are separate because each `custom_hud_layout` entity has its own 1024-entry intern budget per
+vector, and the panels (a sheet alone is about 250 ids) would crowd the in-round HUD's.
+
+**Generated. Do not edit the XML or CSS by hand.** `scripts/gen-gamehud-layout.mjs` writes both
+layouts, one shared stylesheet (`s2script_gamekit.css`: `scripts/gamehud/base.css` plus generated
+meter, theme and tone families), `s2script_gamekit.manifest.json` (every id, variable, button,
+meter and pool) and the runtime's copy of the same descriptor, `games/cs2/js/gamekit.generated.js`.
+`scripts/check-gamehud-layout-generated.sh` fails CI when any of them is stale.
+
+| root id | layout | contents |
+|---|---|---|
+| `gk_theme` | both | theme wrapper (`gk-theme-amber`, `-red`, `-orange`, `-teal`, `-blue`, `-violet`, `-green`); the root Panel cannot carry an id |
+| `gk_rail` | hud | `gk_rail_l` / `gk_rail_r` score blocks (`_lscore`, `_llab`, pips `_lp0`-`9`, same for `r`), `gk_rail_clock`, `gk_rail_sub` |
+| `gk_feed` | hud | rows `gk_kf0`-`gk_kf5`: `_tag`, `_a`, `_wi` (icon src), `_w`, `_hs`, `_v`; each row is `width: fit-children` |
+| `gk_status` | hud | `gk_status_role`, `gk_status_hint`, bars `gk_bar0` / `gk_bar1` (`_lab`, `_fill` meter, `_val`) |
+| `gk_toast` | hud | `gk_toast_t`, `gk_toast_s` |
+| `gk_vote` | panels | title, timer meter, question, option buttons `gk_vo0`-`7` (`_n`, `_t`, `_c`, `_fill` meter), footer |
+| `gk_drawer` | panels | title, tabs `gk_dr_tab0`-`4`, row buttons `gk_dr_r0`-`7` (`_img`, `_t`, `_s`, `_m`), footer |
+| `gk_prompt` | panels | title, `gk_pr_q`, `gk_pr_why`, answer buttons `gk_pr_a0`-`3`, footer |
+| `gk_sheet` | panels | title, close, side slots `gk_sh_s0`-`15` (tab or `gk-grp` header), body heading and one of: list `gk_sh_li*`, paragraphs `gk_sh_p*`, toggles `gk_sh_tg*`, grid `gk_sh_g*`, table `gk_sh_th*` / `gk_sh_tr*` with row actions; pager |
+| `gk_hub` | panels | brand (`gk_hub_eye`, `_title`, `_sub`), item list `gk_hub_i0`-`7`, profile card `gk_hub_card` with `gk_hub_kv0`-`5`, player picker `gk_hub_p0`-`11`, shot label `gk_hub_shot` |
+
+State is classes only: `s2-hide`, meter steps `s2-w0`-`s2-w10` (10% each), `gk-sel`, `gk-on`,
+`gk-hl`, `gk-grp`, `gk-new`, `gk-fade`, `gk-mine`, `gk-off`, `s2-btn-disabled`. Colour is a tone
+class: `gk-t-<tone>` on a label, `gk-f-<tone>` on a fill, `gk-e-<tone>` for a coloured edge. The
+tones are the chat colour tags (`grey`, `white`, `yellow`, `green`, `blue`, `orange`, `red`,
+`lightred`, `lightblue`, `darkred`, and the rest of the CS2 chat table), plus `accent`, which follows
+the theme.
+
+There is no Panorama JavaScript: Valve's `custom_hud_layout` contract says client-side scripting is
+not supported.
+
+**First live check after publishing**, with hud-lab loaded (nothing paints until the server writes):
+
+```
+sm_hud_create panorama/layout/custom_game/s2script_gamehud.xml 0
+sm_hud_class gk_rail s2-hide 0            # rail frame appears top centre
+sm_hud_var gk_rail_clock gk_rail_clock 1:45
+sm_hud_class gk_rail_l gk-e-blue 1        # blue edge, blue score
+sm_hud_class gk_kf0 s2-hide 0             # one feed row, as wide as its text
+sm_hud_var gk_kf0_a gk_kf0_a Mara
+sm_hud_class gk_theme gk-theme-red 1      # accent changes everywhere
+sm_hud_create panorama/layout/custom_game/s2script_gamepanels.xml 0
+sm_hud_class gk_sheet s2-hide 0           # sheet frame, centre
+```
+
+Watch for the client's CSS error dialog on load: it is the only validator.
+
 ## How the server drives it
 
 Two engine calls, both armed in `../gamedata/hud-lab.gamedata.jsonc`:
