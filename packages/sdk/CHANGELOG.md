@@ -1,5 +1,17 @@
 # @s2script/cli
 
+## 0.41.0
+
+### Minor Changes
+
+- 13b035a: Add native `s2s version --snapshot` support for changed-only development releases, preserving
+  stable changesets, authored interface versions, private shared-code dependency cascades, and
+  cumulative workspace and bundle member versions between successful publications.
+
+### Patch Changes
+
+- 7fac5e4: HUD text no longer shows chat colour tags: a chat phrase such as `{lime}{1}` reused as a menu row, vote option or toast now paints as plain text instead of a literal `{lime}`.
+
 ## 0.40.0
 
 ### Minor Changes
