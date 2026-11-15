@@ -447,7 +447,7 @@
 	margin-top: 220px;
 	padding: 10px 18px;
 	background-color: #090b0deb;
-	border-bottom: 3px solid #e8b04a;
+	border-bottom: 3px solid #ffffff12;
 	transition-property: opacity;
 	transition-duration: 0.3s;
 }
@@ -509,10 +509,13 @@
 	padding: 0px 0px;
 }
 
+/* The fill track sits behind the row and takes no part in its size; the text row is the in-flow
+   child that gives the button its height (a 100% child of a fit-children parent has none). */
 .gk-vote-track
 {
 	width: 100%;
 	height: 100%;
+	ignore-parent-flow: true;
 }
 
 .gk-vote-fill
@@ -527,7 +530,6 @@
 	width: 100%;
 	flow-children: right;
 	padding: 8px 13px;
-	ignore-parent-flow: true;
 }
 
 /* ---- panels: drawer -------------------------------------------------------------------------- */
@@ -1162,6 +1164,14 @@
 	padding: 7px 10px;
 	background-color: #090b0dcc;
 	border: 1px solid #00000000;
+	transition-property: background-color;
+	transition-duration: 0.09s;
+}
+
+/* Hover and selection tint the card and never touch its border, which carries the team stripe. */
+.gk-pcard:hover
+{
+	background-color: #1a1e22e6;
 }
 
 .gk-pcard-t

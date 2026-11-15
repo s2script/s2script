@@ -414,7 +414,9 @@ for (const [theme, hex] of Object.entries(S.themes)) {
   css.push(`.gk-theme-${theme} .gk-dot.gk-on { background-color: ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-tog.gk-on .gk-tog-box { background-color: ${hex}; border: 2px solid ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-vote-fill { background-color: ${hex}33; }`);
-  css.push(`.gk-theme-${theme} .gk-card:hover, .gk-theme-${theme} .gk-pcard:hover { border: 1px solid ${hex}; }`);
+  css.push(`.gk-theme-${theme} .gk-card:hover { border: 1px solid ${hex}; }`);
+  css.push(`.gk-theme-${theme} .gk-pcard.gk-sel { background-color: ${hex}24; border-bottom: 2px solid ${hex}; }`);
+  css.push(`.gk-theme-${theme} .gk-toast { border-bottom: 3px solid ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-li.gk-hl { background-color: ${hex}24; border-left: 3px solid ${hex}; }`);
 }
 css.push(``);
@@ -433,11 +435,13 @@ for (const [tone, hex] of Object.entries(S.tones)) {
   css.push(`.gk-side.gk-e-${tone} .gk-score { color: ${hex}; }`);
   css.push(`.gk-side.gk-e-${tone} .gk-pip { background-color: ${hex}; }`);
   css.push(`.gk-pcard.gk-e-${tone} { border-left: 0px solid ${hex}; border-top: 3px solid ${hex}; }`);
+  css.push(`.gk-toast.gk-e-${tone} { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
 }
 for (const [theme, hex] of Object.entries(S.themes)) {
   css.push(`.gk-theme-${theme} .gk-side.gk-e-accent { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-side.gk-e-accent .gk-score { color: ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-side.gk-e-accent .gk-pip { background-color: ${hex}; }`);
+  css.push(`.gk-theme-${theme} .gk-toast.gk-e-accent { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
 }
 const cssOut = readFileSync(BASE_CSS, "utf8").trimEnd() + "\n\n" + css.join("\n") + "\n";
 
