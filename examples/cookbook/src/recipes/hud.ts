@@ -43,6 +43,11 @@ export function OnPluginStart(): void {
   command("sm_showhud", (cmd) => {
     const targets = Player.target(cmd.arg(0), cmd.callerSlot);
     const bits = cmd.argCount > 1 ? parse(cmd.arg(1)) : null;
+    // A part that does not parse is a typo, not "everything": refuse instead of resetting.
+    if (targets.length === 0 || (cmd.argCount > 1 && bits === null)) {
+      cmd.reply(`[cookbook] usage: sm_showhud <target> [${Object.keys(PARTS).join("|")}|bits]`);
+      return HookResult.Handled;
+    }
     for (const p of targets) {
       if (bits === null) Hud.reset(p.slot); else Hud.show(p.slot, bits);
     }
