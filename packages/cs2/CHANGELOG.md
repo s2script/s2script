@@ -1,5 +1,17 @@
 # @s2script/cs2
 
+## 0.28.0
+
+### Minor Changes
+
+- e310f24: Add `GameHud`: the in-round game HUD (top rail, kill feed, status card, toast and theme) over the game-kit workshop layout, with per-player audiences, chat colour tags as tones, host-arbitrated region claims, and a chat fallback when the HUD refuses a kill-feed row or toast.
+- cf5d111: `@s2script/sdk/hud` hides parts of a player's native HUD. `Hud.hide(slot, bits)` / `show` / `set` / `reset` keep a per-plugin mask that the host ORs together on the player's current pawn (`m_iHideHUD`), on top of the game's own bits. The mask follows the player across respawns and spectating, is re-applied if the game resets it, and an unload removes only that plugin's bits. `@s2script/cs2` names CS2's bits as `HideHud` (`Radar`, `Health`, `Crosshair`, `Money`, `RoundTimer`, `Chat`).
+
+### Patch Changes
+
+- Updated dependencies [cf5d111]
+  - @s2script/sdk@0.42.0
+
 ## 0.27.1
 
 ### Patch Changes
