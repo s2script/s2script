@@ -92,7 +92,8 @@ function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleK
   const m = new Menu(Translations.translate(slot, titleKey));
   m.style = MenuStyle.Chat;   // ignored on CS2 (HUD either way); freeze stays off mid-round
   // Colour tags in the DISPLAY string still expand on a Chat backend. CS2 paints a HUD sheet, so
-  // they render as plain labels there — the disabled cooldown rows stay visible and unselectable.
+  // the HUD text driver strips them (ui.js driveSetDialogVariable) — the disabled cooldown rows stay visible
+  // and unselectable, just without colour.
   for (const e of recent) {
     m.addItem(e.name, Translations.translate(slot, "Nominate Recent Item", e.name), { disabled: true });
   }
