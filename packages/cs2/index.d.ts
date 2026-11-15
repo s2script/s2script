@@ -410,6 +410,24 @@ export { Activity } from "@s2script/sdk/commands";
 export type { ActivityActor } from "@s2script/sdk/commands";
 
 /**
+ * CS2's `m_iHideHUD` bits: pass them to `Hud.hide` / `Hud.show` from `@s2script/sdk/hud`, which
+ * multiplexes the mask across plugins and keeps it on the player's current pawn. Bits not named here
+ * pass through as plain numbers.
+ * @example
+ * import { Hud } from "@s2script/sdk/hud";
+ * import { HideHud } from "@s2script/cs2";
+ * Hud.hide(slot, HideHud.Radar | HideHud.RoundTimer);
+ */
+export declare const HideHud: {
+  /** The radar / minimap (`1 << 1`). */ readonly Radar: number;
+  /** Health and armour (`1 << 2`). */ readonly Health: number;
+  /** The crosshair (`1 << 3`). */ readonly Crosshair: number;
+  /** Money (`1 << 4`). */ readonly Money: number;
+  /** The round timer (`1 << 5`). */ readonly RoundTimer: number;
+  /** Chat (`1 << 6`). */ readonly Chat: number;
+};
+
+/**
  * CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). Prepend one to a chat
  * message to color it — CS2 requires a leading control byte for the message to render at all. The plugin
  * owns color (SourceMod-parity): e.g. `Chat.toAll(ChatColors.Green + "[S2S] hello")`.

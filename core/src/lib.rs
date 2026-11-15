@@ -79,6 +79,7 @@ mod sm_command;
 mod profiler;
 mod sqldb;
 mod steam;
+mod hide_hud;
 mod addons;
 mod stringtables;
 mod ui_pool;

@@ -146,6 +146,9 @@
     "./voice": {
       "types": "./voice.d.ts"
     },
+    "./hud": {
+      "types": "./hud.d.ts"
+    },
     "./votes": {
       "types": "./votes.d.ts"
     },

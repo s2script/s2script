@@ -6693,6 +6693,7 @@ pub(crate) fn frame_async_drain() {
     crate::client::sweep_convar_queries();
     crate::server_capture::sweep();
     crate::steam::sweep();
+    crate::hide_hud::sweep();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
@@ -6999,6 +7000,7 @@ pub(crate) fn register_builtin_stores() {
     crate::client::register_store();
     crate::server_capture::register_store();
     crate::steam::register_store();
+    crate::hide_hud::register_store();
     crate::addons::register_store();
     crate::surface_leases::register_store();
     crate::shared_entity_switch::register_store();

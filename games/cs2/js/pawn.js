@@ -882,6 +882,12 @@
     BlueGrey: "\x0D", Purple: "\x0E", LightRed: "\x0F", Orange: "\x10"
   });
 
+  // CS2's m_iHideHUD bits, for @s2script/sdk/hud's Hud.hide/show. The mask itself is engine-generic
+  // and multiplexed in core; only what each bit hides is a CS2 fact. Other bits pass through as numbers.
+  var HideHud = Object.freeze({
+    Radar: 1 << 1, Health: 1 << 2, Crosshair: 1 << 3, Money: 1 << 4, RoundTimer: 1 << 5, Chat: 1 << 6
+  });
+
   // Hand the tag table to core's expander (core/js/colors.js). This is the ONLY direction game
   // colour knowledge may travel: core receives a map, it never holds one. setTable lowercases the
   // keys, so `Green` above is reachable as `{green}` in any phrase file an operator edits.
@@ -1463,7 +1469,7 @@
     return sceneNodeGetter.call({ ref: ref });
   }
 
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, CenterText: CenterText, AlertText: AlertText, CenterHtml: CenterHtml, TriggerZone: TriggerZone, Sounds: Sounds, Grenades: Grenades, Particles: Particles, MapGroups: MapGroups });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, HideHud: HideHud, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, CenterText: CenterText, AlertText: AlertText, CenterHtml: CenterHtml, TriggerZone: TriggerZone, Sounds: Sounds, Grenades: Grenades, Particles: Particles, MapGroups: MapGroups });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger

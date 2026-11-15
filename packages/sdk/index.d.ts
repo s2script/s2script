@@ -44,6 +44,7 @@ export * from "./transmit";
 export * from "./usercmd";
 export * from "./usermessages";
 export * from "./voice";
+export * from "./hud";
 export * from "./stringtables";
 export * from "./steam";
 export * from "./addons";
