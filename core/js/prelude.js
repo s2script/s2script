@@ -1177,6 +1177,35 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     resetAll: function () { __s2_voice_reset_all(); },
     stats: function () { return __s2_voice_audible_stats(); }
   };
+  // @s2script/sdk/hud — a per-player HUD-hide mask over CBasePlayerPawn::m_iHideHUD, multiplexed
+  // host-side: the pawn carries the OR of every plugin's bits on top of the game's own, follows the
+  // player across pawns, is re-asserted each frame, and loses only this plugin's bits on unload.
+  // What each bit hides is the game's business (@s2script/cs2 exports CS2's as HideHud).
+  function hudSlot(who, fn) {
+    var slot = (who !== null && typeof who === "object") ? who.slot : who;
+    if (typeof slot !== "number" || slot !== (slot | 0) || slot < 0 || slot >= 64)
+      throw new RangeError("Hud." + fn + ": slot must be an integer in [0, 64)");
+    return slot;
+  }
+  function hudBits(bits, fn) {
+    if (typeof bits !== "number" || bits !== Math.floor(bits) || bits < 0 || bits > 0xFFFFFFFF)
+      throw new TypeError("Hud." + fn + ": bits must be an unsigned 32-bit integer");
+    return bits;
+  }
+  var Hud = {
+    hide: function (who, bits) { return __s2_hidehud_set(hudSlot(who, "hide"), hudBits(bits, "hide"), 1); },
+    show: function (who, bits) { return __s2_hidehud_set(hudSlot(who, "show"), hudBits(bits, "show"), 2); },
+    set: function (who, bits) { return __s2_hidehud_set(hudSlot(who, "set"), hudBits(bits, "set"), 0); },
+    reset: function (who) { __s2_hidehud_set(hudSlot(who, "reset"), 0, 0); },
+    resetAll: function () { __s2_hidehud_reset_all(); },
+    hidden: function (who) { return __s2_hidehud_get(hudSlot(who, "hidden"), false); },
+    hiddenByAll: function (who) { return __s2_hidehud_get(hudSlot(who, "hiddenByAll"), true); },
+    isHidden: function (who, bits) {
+      var b = hudBits(bits, "isHidden");
+      return b !== 0 && ((__s2_hidehud_get(hudSlot(who, "isHidden"), true) & b) >>> 0) === b;
+    }
+  };
+  globalThis.__s2pkg_hud        = { Hud: Hud };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   // Element kinds for EntityRef.gather plans (the scalar KIND_* subset a Float64Array carries exactly).
   var GatherKind = Object.freeze({ Int32: K.I32, Float32: K.F32, Bool: K.BOOL, Int8: K.I8, Int16: K.I16,
@@ -3236,7 +3265,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
       "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http", "__s2pkg_files",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
-      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_steam", "__s2pkg_addons", "__s2pkg_usermessages",
+      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_hud", "__s2pkg_stringtables", "__s2pkg_steam", "__s2pkg_addons", "__s2pkg_usermessages",
       "__s2pkg_usercmd", "__s2pkg_interfaces",
     ];
     for (var i = 0; i < names.length; i++) {

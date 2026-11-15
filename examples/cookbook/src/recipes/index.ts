@@ -11,6 +11,7 @@ import * as events from "./events.ts";
 import * as files from "./files.ts";
 import * as gamerules from "./gamerules.ts";
 import * as http from "./http.ts";
+import * as hud from "./hud.ts";
 import * as items from "./items.ts";
 import * as menu from "./menu.ts";
 import * as movement from "./movement.ts";
@@ -46,6 +47,7 @@ export const RECIPES: readonly Recipe[] = [
   files,
   gamerules,
   http,
+  hud,
   items,
   menu,
   movement,
