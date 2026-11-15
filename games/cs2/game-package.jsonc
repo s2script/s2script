@@ -6,7 +6,8 @@
   "bootstrapInputs": [
     "js/schema.generated.js", "js/nav.generated.js",
     "js/csitem.generated.js", "js/weapon.js", "js/pawn.js", "js/camera.js",
-    "js/ui.js", "js/components.js", "js/hudinput.js", "js/menuhud.js", "js/voterail.js", "js/exports.js"
+    "js/ui.js", "js/components.js", "js/hudinput.js", "js/menuhud.js", "js/voterail.js",
+    "js/gamekit.generated.js", "js/gamekit.js", "js/exports.js"
   ],
   // Engine-function adapters: frozen semantic contracts (hash-locked) + the reviewed package
   // JavaScript that implements them. The builder prepends the sources to the bootstrap.
