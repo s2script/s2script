@@ -52,7 +52,7 @@ export function OnPluginStart(): void {
 
   command("sm_hudmask", (cmd) => {
     for (const p of Player.target(cmd.arg(0), cmd.callerSlot)) {
-      cmd.reply(`[cookbook] hud: ${p.name}: ours=0x${Hud.hidden(p.slot).toString(16)} all plugins=0x${Hud.hiddenByAll(p.slot).toString(16)}`);
+      cmd.reply(`[cookbook] hud: slot ${p.slot}: ours=0x${Hud.hidden(p.slot).toString(16)} all plugins=0x${Hud.hiddenByAll(p.slot).toString(16)}`);
     }
     return HookResult.Handled;
   });
