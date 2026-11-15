@@ -1,5 +1,14 @@
 # @s2script/cs2
 
+## 0.27.1
+
+### Patch Changes
+
+- 7fac5e4: HUD text no longer shows chat colour tags: a chat phrase such as `{lime}{1}` reused as a menu row, vote option or toast now paints as plain text instead of a literal `{lime}`.
+- Updated dependencies [7fac5e4]
+- Updated dependencies [13b035a]
+  - @s2script/sdk@0.41.0
+
 ## 0.27.0
 
 ### Minor Changes
