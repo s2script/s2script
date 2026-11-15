@@ -442,6 +442,7 @@ for (const [theme, hex] of Object.entries(S.themes)) {
   css.push(`.gk-theme-${theme} .gk-side.gk-e-accent .gk-score { color: ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-side.gk-e-accent .gk-pip { background-color: ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-toast.gk-e-accent { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
+  css.push(`.gk-theme-${theme} .gk-pcard.gk-e-accent { border-left: 0px solid ${hex}; border-top: 3px solid ${hex}; }`);
 }
 const cssOut = readFileSync(BASE_CSS, "utf8").trimEnd() + "\n\n" + css.join("\n") + "\n";
 

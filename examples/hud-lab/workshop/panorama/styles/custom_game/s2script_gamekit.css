@@ -24,8 +24,9 @@
 	opacity: 0;
 }
 
-/* Passive in-round pieces yield to the buy menu and scoreboard. Interactive panels stay: CSS
-   alone cannot release a server-owned cursor. */
+/* Passive in-round pieces yield to the buy menu and scoreboard. Collapsed, not faded: an invisible
+   panel still takes clicks, and this layout paints above the base HUD. Interactive panels stay:
+   CSS alone cannot release a server-owned cursor. */
 .HUD_BUYMENU_VISIBLE .gk-rail,
 .HUD_SCOREBOARD_VISIBLE .gk-rail,
 .HUD_BUYMENU_VISIBLE .gk-feed,
@@ -35,7 +36,7 @@
 .HUD_BUYMENU_VISIBLE .gk-toast,
 .HUD_SCOREBOARD_VISIBLE .gk-toast
 {
-	opacity: 0;
+	visibility: collapse;
 }
 
 /* ---- shared kit ---------------------------------------------------------------------------- */
@@ -1485,27 +1486,34 @@
 .gk-theme-amber .gk-side.gk-e-accent .gk-score { color: #e8b04a; }
 .gk-theme-amber .gk-side.gk-e-accent .gk-pip { background-color: #e8b04a; }
 .gk-theme-amber .gk-toast.gk-e-accent { border-left: 0px solid #e8b04a; border-bottom: 3px solid #e8b04a; }
+.gk-theme-amber .gk-pcard.gk-e-accent { border-left: 0px solid #e8b04a; border-top: 3px solid #e8b04a; }
 .gk-theme-red .gk-side.gk-e-accent { border-left: 0px solid #e5484d; border-bottom: 3px solid #e5484d; }
 .gk-theme-red .gk-side.gk-e-accent .gk-score { color: #e5484d; }
 .gk-theme-red .gk-side.gk-e-accent .gk-pip { background-color: #e5484d; }
 .gk-theme-red .gk-toast.gk-e-accent { border-left: 0px solid #e5484d; border-bottom: 3px solid #e5484d; }
+.gk-theme-red .gk-pcard.gk-e-accent { border-left: 0px solid #e5484d; border-top: 3px solid #e5484d; }
 .gk-theme-orange .gk-side.gk-e-accent { border-left: 0px solid #f28a2e; border-bottom: 3px solid #f28a2e; }
 .gk-theme-orange .gk-side.gk-e-accent .gk-score { color: #f28a2e; }
 .gk-theme-orange .gk-side.gk-e-accent .gk-pip { background-color: #f28a2e; }
 .gk-theme-orange .gk-toast.gk-e-accent { border-left: 0px solid #f28a2e; border-bottom: 3px solid #f28a2e; }
+.gk-theme-orange .gk-pcard.gk-e-accent { border-left: 0px solid #f28a2e; border-top: 3px solid #f28a2e; }
 .gk-theme-teal .gk-side.gk-e-accent { border-left: 0px solid #3fd4b8; border-bottom: 3px solid #3fd4b8; }
 .gk-theme-teal .gk-side.gk-e-accent .gk-score { color: #3fd4b8; }
 .gk-theme-teal .gk-side.gk-e-accent .gk-pip { background-color: #3fd4b8; }
 .gk-theme-teal .gk-toast.gk-e-accent { border-left: 0px solid #3fd4b8; border-bottom: 3px solid #3fd4b8; }
+.gk-theme-teal .gk-pcard.gk-e-accent { border-left: 0px solid #3fd4b8; border-top: 3px solid #3fd4b8; }
 .gk-theme-blue .gk-side.gk-e-accent { border-left: 0px solid #5d9cf5; border-bottom: 3px solid #5d9cf5; }
 .gk-theme-blue .gk-side.gk-e-accent .gk-score { color: #5d9cf5; }
 .gk-theme-blue .gk-side.gk-e-accent .gk-pip { background-color: #5d9cf5; }
 .gk-theme-blue .gk-toast.gk-e-accent { border-left: 0px solid #5d9cf5; border-bottom: 3px solid #5d9cf5; }
+.gk-theme-blue .gk-pcard.gk-e-accent { border-left: 0px solid #5d9cf5; border-top: 3px solid #5d9cf5; }
 .gk-theme-violet .gk-side.gk-e-accent { border-left: 0px solid #a98cff; border-bottom: 3px solid #a98cff; }
 .gk-theme-violet .gk-side.gk-e-accent .gk-score { color: #a98cff; }
 .gk-theme-violet .gk-side.gk-e-accent .gk-pip { background-color: #a98cff; }
 .gk-theme-violet .gk-toast.gk-e-accent { border-left: 0px solid #a98cff; border-bottom: 3px solid #a98cff; }
+.gk-theme-violet .gk-pcard.gk-e-accent { border-left: 0px solid #a98cff; border-top: 3px solid #a98cff; }
 .gk-theme-green .gk-side.gk-e-accent { border-left: 0px solid #46c07a; border-bottom: 3px solid #46c07a; }
 .gk-theme-green .gk-side.gk-e-accent .gk-score { color: #46c07a; }
 .gk-theme-green .gk-side.gk-e-accent .gk-pip { background-color: #46c07a; }
 .gk-theme-green .gk-toast.gk-e-accent { border-left: 0px solid #46c07a; border-bottom: 3px solid #46c07a; }
+.gk-theme-green .gk-pcard.gk-e-accent { border-left: 0px solid #46c07a; border-top: 3px solid #46c07a; }
