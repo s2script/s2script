@@ -91,6 +91,12 @@ export { Weapon, WeaponData } from "./weapon";
 // locally too (the SceneNode pattern on line 14) so activeWeapon/weapons/giveNamedItem stay typed.
 import type { Weapon } from "./weapon";
 export { CustomPlayerCamera, CustomCameraMode } from "./camera";
+export { GameHud } from "./gamehud";
+export type {
+  GameHudAudience, GameHudBar, GameHudFeed, GameHudFeedEntry, GameHudRail, GameHudRailSide,
+  GameHudRailSpec, GameHudRegion, GameHudStatus, GameHudStatusSpec, GameHudText, GameHudTheme,
+  GameHudToastSpec, GameHudTone,
+} from "./gamehud";
 export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
 import type { CustomPlayerCamera } from "./camera";
 
