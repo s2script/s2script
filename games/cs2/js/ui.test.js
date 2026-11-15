@@ -160,6 +160,17 @@ test("a map change drops the value caches so the new entity gets a full repaint"
   assert.notEqual(sets[1].args[0].id, firstEntity.id, "and it must go to the NEW entity");
 });
 
+test("chat colour tags never reach the HUD: a reused chat phrase paints as plain text", () => {
+  const m = mount();
+  const hud = m.ns.hud();
+  assert.equal(hud.setText(0, "s2_dialog_title", "{lime}de_dust2"), null);
+  assert.equal(hud.setText(0, "s2_dialog_body", "{grey}de_nuke {lightred}- (too recently played)\nline two"), null);
+  const sets = m.callsFor("setDialogVariableStringForPlayer");
+  assert.equal(sets[0].args.at(-1), "de_dust2");
+  assert.equal(sets[1].args.at(-1), "de_nuke - (too recently played)\nline two",
+    "tags go, newlines and positional text stay");
+});
+
 test("surface bridge forwards exact binding, owned lane, adapters, and linked focus", () => {
   const m = mount(), hud = m.ns.probe();
   const binding = hud._captureBinding(7);

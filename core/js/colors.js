@@ -34,6 +34,21 @@
     });
   }
 
+  // Plain-text surfaces that paint their own colours (a game HUD panel, a menu row) have no use for
+  // a chat control byte, so a tag there must VANISH rather than turn into an invisible byte or stay
+  // as literal "{lime}". Same tag grammar and the same unknown-tag warning as expand(), but every
+  // tag becomes "", known or not, and nothing else in the text (newlines included) is touched.
+  function plain(text) {
+    return String(text).replace(/\{([A-Za-z]+)\}/g, function (_m, name) {
+      var key = name.toLowerCase();
+      if (typeof table[key] !== "string" && !warned[key]) {
+        warned[key] = true;
+        console.log("[s2script] WARN: unknown colour tag {" + name + "} — removed from output");
+      }
+      return "";
+    });
+  }
+
   var ZWSP = "\u200B";
   // Expand BEFORE the lead-byte test: a line written "{green}hi" must present as "\x04hi" when we
   // decide, or we would read "{" , skip the ZWSP, and the chat box would swallow the colour byte.
@@ -50,7 +65,7 @@
   }
 
   var api = {
-    setTable: setTable, expand: expand, chatLine: chatLine, consoleLine: consoleLine,
+    setTable: setTable, expand: expand, plain: plain, chatLine: chatLine, consoleLine: consoleLine,
     _resetWarnings: function () { warned = Object.create(null); },
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

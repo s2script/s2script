@@ -323,6 +323,17 @@
       return uiOk(undefined);
     }
 
+    // Every HUD string funnels through driveSetDialogVariable, so this is where chat colour tags
+    // die. Plugins routinely reuse a chat phrase ("{lime}{1}") as a menu row, vote option or toast
+    // title; the panel cannot interpret the tag and painted it literally. Core's colors.plain()
+    // removes the tags and keeps everything else (newlines in an MOTD body survive); the regex is
+    // the same grammar for a context without core's colour module (node tests).
+    function hudText(value) {
+      var s = String(value);
+      var c = globalThis.__s2_colors;
+      return c && typeof c.plain === "function" ? c.plain(s) : s.replace(/\{[A-Za-z]+\}/g, "");
+    }
+
     function driveSetDialogVariable(slot, panelId, variableName, value) {
       panelId = String(panelId); variableName = String(variableName);
       if (!setDialogVariableStringForPlayer) {
@@ -331,7 +342,7 @@
       if (slot < 0) return uiFail("InvalidArgument", "needs a player slot");
       var ent = bindEntity(ctxState.ensureEntity(layout));
       if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
-      var str = String(value);
+      var str = hudText(value);
       if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
       var key = cacheKey(slot, "v", panelId, variableName);
       if (lastValue[key] === str) return uiOk(undefined);

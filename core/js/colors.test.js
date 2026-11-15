@@ -79,3 +79,11 @@ test("consoleLine: tags and raw control bytes both vanish", () => {
   assert.strictEqual(colors.consoleLine("\x04hi"), "hi");
   assert.strictEqual(colors.consoleLine("{green}a\x01b"), "ab");
 });
+
+test("plain: every tag vanishes (no control byte), other text and newlines survive", () => {
+  withSpiedConsole(() => {
+    assert.strictEqual(colors.plain("{lime}de_dust2"), "de_dust2");
+    assert.strictEqual(colors.plain("{GREEN}a\n{white}b"), "a\nb");
+    assert.strictEqual(colors.plain("{green}{1} joined"), "{1} joined");
+  });
+});
