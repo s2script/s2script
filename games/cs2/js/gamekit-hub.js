@@ -270,7 +270,9 @@
 
     /** Apply a spec to an open hub and restart the shot timer only if its period changed. */
     function refresh(st, spec) {
-      var hadCursor = st.cursor || st.tabbed;
+      // Only a spec-owned cursor that the spec now turns off is released; a cursor the player took
+      // with Tab stays with them through refreshes.
+      var hadCursor = st.cursor;
       var period = st.shotSeconds;
       applySpec(st, spec);
       syncInput(st, hadCursor);

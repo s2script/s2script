@@ -222,3 +222,13 @@ test("update switches cursor and Tab, and a vote over the hub hands Tab back", (
   h.update({ cursor: true });
   assert.equal(m.armed[0], undefined, "Tab disarmed when the hub takes the cursor");
 });
+
+test("a refresh keeps a cursor the player took with Tab", () => {
+  const m = mount();
+  const h = m.GameHud.spectate(0, { title: "S", cursor: false, players });
+  m.armed[0].onActivate();
+  assert.equal(m.cursors["0|gk_hub"], true);
+  h.update({ players: players.slice(0, 1) });
+  m.GameHud.spectate(0, { players });
+  assert.equal(m.cursors["0|gk_hub"], true, "still holding the cursor");
+});
