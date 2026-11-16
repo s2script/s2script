@@ -2033,6 +2033,20 @@ static const char* s2_client_steamid(int slot) {
     return s_steamidBuf.c_str();
 }
 
+// Who a server-log line is about, in the same form Activity.describe() uses for admin logs:
+// "Name<userid><steamid64><>" (BOT for bots). Falls back to slot=N when the slot has no name, e.g.
+// a command handler already disconnected the caller before the line is printed.
+static std::string S2_ClientLogLabel(int slot) {
+    const char* raw = s2_client_name(slot);
+    std::string name = raw ? raw : "";
+    name.erase(std::remove_if(name.begin(), name.end(), [](char c) {
+        return (unsigned char)c < 0x20 || c == '"' || c == '<' || c == '>'; }), name.end());
+    if (name.empty()) return "slot=" + std::to_string(slot);
+    const bool bot = slot >= 0 && slot < kMaxClientSlots && s_clientFake[slot];
+    return "\"" + name + "<" + std::to_string(s2_client_userid(slot)) + "><" +
+           (bot ? std::string("BOT") : std::string(s2_client_steamid(slot))) + "><>\"";
+}
+
 // ---------------------------------------------------------------------------
 // client_kick (Slice 6.3) — disconnect a client via IVEngineServer2::KickClient (a gamedata slot).
 // No-op for a null engine, an out-of-range slot, or a disabled slot (degrade-never-crash). A
@@ -7508,20 +7522,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientCommand(ISource2GameClients* clie
     }
     // FFI is 1 iff a registered command matched (bool, not a HookResult int).
     if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
-        // Name the player the same way Activity.describe() does for admin logs: "Name<userid><steamid64><>"
-        // (BOT for bots). The handler has already run, so if it disconnected the caller the name is
-        // gone; fall back to the slot then rather than print an empty identity.
-        int s = slot.Get();
-        std::string who = s2_client_name(s) ? s2_client_name(s) : "";
-        who.erase(std::remove_if(who.begin(), who.end(), [](char c) {
-            return (unsigned char)c < 0x20 || c == '"' || c == '<' || c == '>'; }), who.end());
-        if (who.empty()) {
-            META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, s);
-        } else {
-            const bool bot = s >= 0 && s < kMaxClientSlots && s_clientFake[s];
-            META_CONPRINTF("[s2script] console command '%s' by \"%s<%d><%s><>\"\n", name, who.c_str(),
-                           s2_client_userid(s), bot ? "BOT" : s2_client_steamid(s));
-        }
+        META_CONPRINTF("[s2script] console command '%s' by %s\n", name, S2_ClientLogLabel(slot.Get()).c_str());
         return S2_Supersede();   // ours → engine won't also handle it (no "Unknown command" server-side)
     }
     return S2_Ignore();         // not ours → the engine handles it normally

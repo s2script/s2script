@@ -34,6 +34,7 @@ bool S2Hook_EnterDispatch(bool observed) { return observed; }
 KHook::Return<void> S2_Ignore() { return {KHook::Action::Ignore}; }
 KHook::Return<void> S2_Supersede() { return {KHook::Action::Supersede}; }
 #define META_CONPRINTF(...) ((void)0)
+std::string S2_ClientLogLabel(int slot) { return "slot=" + std::to_string(slot); }
 static int listeners, commands, listener_result, command_result, seen_slot;
 static std::string seen_name, seen_args;
 int s2script_core_dispatch_command_listeners(int slot, const char* name, const char* args) {
