@@ -211,7 +211,7 @@ export interface GameHudDrawerSpec {
 
 export interface GameHudDrawer {
   isOpen(): boolean;
-  /** Repaint with a new spec. */
+  /** Repaint with changed fields; fields you leave out keep their value. */
   update(spec: GameHudDrawerSpec): void;
   setTab(id: string): void;
   close(): void;
@@ -385,7 +385,7 @@ export declare const GameHud: {
   vote(spec: GameHudVoteSpec): GameHudVote | null;
   /**
    * Open a drawer for one player: tabs and clickable rows, with a Close button. It takes the
-   * cursor. Opening again for the same player repaints it. Null when another plugin holds that
+   * cursor. Opening again for the same player repaints it, keeping fields the spec leaves out. Null when another plugin holds that
    * player's drawer.
    */
   drawer(player: number | { readonly slot: number }, spec: GameHudDrawerSpec): GameHudDrawer | null;
