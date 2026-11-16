@@ -16,6 +16,15 @@ done
 if [[ "${1:-}" != "--container" ]]; then
   command -v docker >/dev/null || { echo "error: Docker is required for the KHook sniper build" >&2; exit 1; }
   docker_args=(run --rm --platform linux/amd64 -v "$PWD:/repo" -w /repo)
+  # A checkout that borrows objects from a runner-local mirror (.git/objects/info/alternates) has
+  # no history inside the container unless those object stores are mounted too, and the shim's
+  # version stamp (scripts/framework-version.sh) needs `git describe`.
+  alternates=.git/objects/info/alternates
+  if [[ -f "$alternates" ]]; then
+    while IFS= read -r store; do
+      if [[ "$store" == /* && -d "$store" ]]; then docker_args+=(-v "$store:$store:ro"); fi
+    done < "$alternates"
+  fi
   [[ -z "${S2_BUILD_CPUS:-}" ]] || docker_args+=(--cpus "$S2_BUILD_CPUS")
   [[ -z "${S2_BUILD_MEMORY:-}" ]] || docker_args+=(--memory "$S2_BUILD_MEMORY")
   for job_name in S2_BUILD_JOBS CARGO_BUILD_JOBS; do
