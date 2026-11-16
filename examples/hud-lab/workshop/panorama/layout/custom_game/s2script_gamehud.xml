@@ -59,7 +59,7 @@
 				<Panel id="gk_kf0" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf0_tag" class="gk-kill-tag" text="{s:gk_kf0_tag}" />
 					<Label id="gk_kf0_a" class="gk-kill-name" text="{s:gk_kf0_a}" />
-					<Image id="gk_kf0_wi" class="gk-kill-icon" src="{s:gk_kf0_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf0_wi" class="gk-kill-icon" src="{s:gk_kf0_wi}" />
 					<Label id="gk_kf0_w" class="gk-kill-wtext" text="{s:gk_kf0_w}" />
 					<Panel id="gk_kf0_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf0_v" class="gk-kill-name" text="{s:gk_kf0_v}" />
@@ -67,7 +67,7 @@
 				<Panel id="gk_kf1" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf1_tag" class="gk-kill-tag" text="{s:gk_kf1_tag}" />
 					<Label id="gk_kf1_a" class="gk-kill-name" text="{s:gk_kf1_a}" />
-					<Image id="gk_kf1_wi" class="gk-kill-icon" src="{s:gk_kf1_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf1_wi" class="gk-kill-icon" src="{s:gk_kf1_wi}" />
 					<Label id="gk_kf1_w" class="gk-kill-wtext" text="{s:gk_kf1_w}" />
 					<Panel id="gk_kf1_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf1_v" class="gk-kill-name" text="{s:gk_kf1_v}" />
@@ -75,7 +75,7 @@
 				<Panel id="gk_kf2" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf2_tag" class="gk-kill-tag" text="{s:gk_kf2_tag}" />
 					<Label id="gk_kf2_a" class="gk-kill-name" text="{s:gk_kf2_a}" />
-					<Image id="gk_kf2_wi" class="gk-kill-icon" src="{s:gk_kf2_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf2_wi" class="gk-kill-icon" src="{s:gk_kf2_wi}" />
 					<Label id="gk_kf2_w" class="gk-kill-wtext" text="{s:gk_kf2_w}" />
 					<Panel id="gk_kf2_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf2_v" class="gk-kill-name" text="{s:gk_kf2_v}" />
@@ -83,7 +83,7 @@
 				<Panel id="gk_kf3" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf3_tag" class="gk-kill-tag" text="{s:gk_kf3_tag}" />
 					<Label id="gk_kf3_a" class="gk-kill-name" text="{s:gk_kf3_a}" />
-					<Image id="gk_kf3_wi" class="gk-kill-icon" src="{s:gk_kf3_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf3_wi" class="gk-kill-icon" src="{s:gk_kf3_wi}" />
 					<Label id="gk_kf3_w" class="gk-kill-wtext" text="{s:gk_kf3_w}" />
 					<Panel id="gk_kf3_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf3_v" class="gk-kill-name" text="{s:gk_kf3_v}" />
@@ -91,7 +91,7 @@
 				<Panel id="gk_kf4" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf4_tag" class="gk-kill-tag" text="{s:gk_kf4_tag}" />
 					<Label id="gk_kf4_a" class="gk-kill-name" text="{s:gk_kf4_a}" />
-					<Image id="gk_kf4_wi" class="gk-kill-icon" src="{s:gk_kf4_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf4_wi" class="gk-kill-icon" src="{s:gk_kf4_wi}" />
 					<Label id="gk_kf4_w" class="gk-kill-wtext" text="{s:gk_kf4_w}" />
 					<Panel id="gk_kf4_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf4_v" class="gk-kill-name" text="{s:gk_kf4_v}" />
@@ -99,7 +99,7 @@
 				<Panel id="gk_kf5" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf5_tag" class="gk-kill-tag" text="{s:gk_kf5_tag}" />
 					<Label id="gk_kf5_a" class="gk-kill-name" text="{s:gk_kf5_a}" />
-					<Image id="gk_kf5_wi" class="gk-kill-icon" src="{s:gk_kf5_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf5_wi" class="gk-kill-icon" src="{s:gk_kf5_wi}" />
 					<Label id="gk_kf5_w" class="gk-kill-wtext" text="{s:gk_kf5_w}" />
 					<Panel id="gk_kf5_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf5_v" class="gk-kill-name" text="{s:gk_kf5_v}" />

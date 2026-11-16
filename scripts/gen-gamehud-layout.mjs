@@ -75,7 +75,7 @@ function layoutBuilder(name) {
     close: (d, tag) => st.lines.push(`${T(d)}</${tag}>`),
     panel: (d, id, cls) => st.lines.push(`${T(d)}<Panel${id ? ` id="${reg(id)}"` : ""} class="${cls}" />`),
     label: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Label id="${id}" class="${cls}" text="{s:${id}}" />`); return id; },
-    image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" scaling="stretch-to-fit-preserve-aspect" />`); return id; },
+    image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" />`); return id; },
     button: (d, id, cls, kids) => { b.open(d, "Button", id, cls); st.buttons.push(id); kids(d + 1); b.close(d, "Button"); },
     meter: (d, meterName, fillId, trackCls, fillCls) => {
       b.open(d, "Panel", null, trackCls);
@@ -519,6 +519,23 @@ const jsOut = `// @s2script/cs2 — game-kit layout descriptors.
   globalThis.__s2pkg_gamekit_layout = Object.freeze(${JSON.stringify(descriptor, null, 2).replace(/\n/g, "\n  ")});
 })();
 `;
+
+// ---- CustomHud attribute allowlist ------------------------------------------------------------
+// The client validates a custom_hud layout at load and rejects the WHOLE file for one attribute it
+// does not allow ("Layout contains disallowed attribute scaling for panel type 'Image'"), and the
+// compiler never says. Keep to the attributes a published layout has been seen to load with.
+const ALLOWED_ATTRS = new Set(["id", "class", "text", "src"]);
+for (const [name, xml] of [["s2script_gamehud.xml", hudXml], ["s2script_gamepanels.xml", panelsXml]]) {
+  const body = xml.replace(/<!--[\s\S]*?-->/g, "");
+  for (const tag of body.matchAll(/<([A-Za-z]+)\b([^>]*)>/g)) {
+    for (const [, attr] of tag[2].matchAll(/([A-Za-z_:-]+)\s*=/g)) {
+      if (!ALLOWED_ATTRS.has(attr)) {
+        console.error(`${name}: <${tag[1]}> has attribute '${attr}', which CustomHud validation may reject`);
+        process.exit(1);
+      }
+    }
+  }
+}
 
 // ---- write / check ----------------------------------------------------------------------------
 const outputs = [
