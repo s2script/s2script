@@ -152,6 +152,14 @@
     if (globalThis.__s2gk_claims) delete globalThis.__s2gk_claims[kind];
   }
 
+  // Shared with gamekit-panels.js (concatenated next, same context). Private: not on __s2pkg_cs2.
+  globalThis.__s2pkg_gamekit_util = {
+    GK: GK, log: log, isTone: isTone, isTheme: isTheme, plainText: plainText, leadTone: leadTone,
+    pickTone: pickTone, activeSlots: activeSlots, slotOf: slotOf, slotsFor: slotsFor, chat: chat,
+    fallback: fallback, afterSeconds: afterSeconds, hostClaim: hostClaim, hostRelease: hostRelease,
+    clientsApi: clientsApi
+  };
+
   // ── the kit, bound to one plugin's ui base ──────────────────────────────────────────────────
   function makeKit(base) {
     var layout = null;

@@ -73,7 +73,7 @@ export default [
     //
     // Note that components.js itself is NOT here:
     // it is prelude-only, so a `require` creeping into it must still fail this lint.
-    files: ["components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "gamekit.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
+    files: ["components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "gamekit.test.js", "gamekit-panels.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -86,7 +86,7 @@ export default [
   },
   {
     files: ["**/*.js"],
-    ignores: ["components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "gamekit.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
+    ignores: ["components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "gamekit.test.js", "gamekit-panels.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",

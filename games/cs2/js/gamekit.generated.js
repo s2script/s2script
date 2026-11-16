@@ -252,6 +252,7 @@
         "gk_vo5",
         "gk_vo6",
         "gk_vo7",
+        "gk_dr_close",
         "gk_dr_tab0",
         "gk_dr_tab1",
         "gk_dr_tab2",
