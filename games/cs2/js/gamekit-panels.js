@@ -143,15 +143,40 @@
       return lines;
     }
 
-    function armVoter(st, slot) {
+    // Tab arms. HudInput holds one arm per slot, so surfaces that want Tab (the vote, a spectate
+    // hub without the cursor) share a per-slot stack: the newest arm owns Tab, and disarming it
+    // hands Tab back to the one below instead of leaving the slot unarmed.
+    var arms = {};   // slot -> [{ owner, onActivate }]
+    function applyArm(slot) {
       var HI = hudInput();
-      if (!HI || typeof HI.arm !== "function") return;
-      HI.arm(slot, { onActivate: function () { if (vote === st) cursor(slot, "gk_vote", true); } });
+      if (!HI) return;
+      var list = arms[slot];
+      var top = list && list.length ? list[list.length - 1] : null;
+      if (top) { if (typeof HI.arm === "function") HI.arm(slot, { onActivate: top.onActivate }); }
+      else if (typeof HI.disarm === "function") HI.disarm(slot);
+    }
+    function armSlot(slot, owner, onActivate) {
+      var list = arms[slot] || (arms[slot] = []);
+      for (var i = list.length - 1; i >= 0; i--) if (list[i].owner === owner) list.splice(i, 1);
+      list.push({ owner: owner, onActivate: onActivate });
+      applyArm(slot);
+    }
+    function disarmSlot(slot, owner) {
+      var list = arms[slot];
+      if (!list) return;
+      var before = list.length;
+      for (var i = list.length - 1; i >= 0; i--) if (list[i].owner === owner) list.splice(i, 1);
+      if (list.length === before) return;
+      if (list.length === 0) delete arms[slot];
+      applyArm(slot);
+    }
+
+    function armVoter(st, slot) {
+      armSlot(slot, "vote", function () { if (vote === st) cursor(slot, "gk_vote", true); });
     }
 
     function releaseVoter(slot) {
-      var HI = hudInput();
-      if (HI && typeof HI.disarm === "function") HI.disarm(slot);
+      disarmSlot(slot, "vote");
       cursor(slot, "gk_vote", false);
     }
 
@@ -333,21 +358,25 @@
       }
     }
 
+    // A spec field left out keeps its current value, so `update({ right })` refreshes one line
+    // without clearing the rows or the callbacks.
     function applySpec(st, spec) {
-      st.title = spec.title == null ? "" : String(spec.title);
-      st.right = spec.right == null ? "" : String(spec.right);
-      st.footer = spec.footer == null ? "" : String(spec.footer);
-      st.tabs = Array.isArray(spec.tabs) ? spec.tabs.slice(0, TABS).map(function (t) {
-        return { id: t.id == null ? t.label : t.id, label: t.label == null ? String(t.id) : String(t.label), rows: t.rows };
-      }) : [];
-      st.rows = Array.isArray(spec.rows) ? spec.rows : [];
+      if (spec.title !== undefined) st.title = spec.title == null ? "" : String(spec.title);
+      if (spec.right !== undefined) st.right = spec.right == null ? "" : String(spec.right);
+      if (spec.footer !== undefined) st.footer = spec.footer == null ? "" : String(spec.footer);
+      if (spec.tabs !== undefined) {
+        st.tabs = Array.isArray(spec.tabs) ? spec.tabs.slice(0, TABS).map(function (t) {
+          return { id: t.id == null ? t.label : t.id, label: t.label == null ? String(t.id) : String(t.label), rows: t.rows };
+        }) : [];
+      }
+      if (spec.rows !== undefined) st.rows = Array.isArray(spec.rows) ? spec.rows : [];
       if (spec.tab !== undefined) {
         for (var i = 0; i < st.tabs.length; i++) if (st.tabs[i].id === spec.tab) st.tab = i;
       }
       if (st.tab >= st.tabs.length) st.tab = 0;
-      st.onSelect = spec.onSelect;
-      st.onTab = spec.onTab;
-      st.onClose = spec.onClose;
+      if (spec.onSelect !== undefined) st.onSelect = spec.onSelect;
+      if (spec.onTab !== undefined) st.onTab = spec.onTab;
+      if (spec.onClose !== undefined) st.onClose = spec.onClose;
     }
 
     function closeDrawer(st, fromPlayer) {
@@ -368,7 +397,7 @@
       var existing = drawers[slot];
       if (existing && existing.live) { applySpec(existing, spec); repaint(existing); return existing.handle; }
       if (U.hostClaim("gamekit:drawer:" + slot) < 0) return null;
-      var st = { slot: slot, live: true, tab: 0 };
+      var st = { slot: slot, live: true, tab: 0, title: "", right: "", footer: "", tabs: [], rows: [], toldInChat: false };
       applySpec(st, spec);
       drawers[slot] = st;
       P();
@@ -386,9 +415,13 @@
       return st.handle;
     }
 
+    // A refused drawer is listed in chat once, not on every repaint; a paint that lands clears it.
     function repaint(st) {
       var err = paintDrawer(st);
-      if (!ok(err) && !/stale client/i.test(String(err))) drawerChat(st);
+      if (ok(err)) { st.toldInChat = false; return; }
+      if (st.toldInChat || /stale client/i.test(String(err))) return;
+      st.toldInChat = true;
+      drawerChat(st);
     }
 
     function bindClicks() {
@@ -443,11 +476,8 @@
     function forgetSlot(slot) {
       delete applied[slot];
       var st = drawers[slot];
-      if (st) {
-        st.live = false;
-        delete drawers[slot];
-        U.hostRelease("gamekit:drawer:" + slot);
-      }
+      if (st) closeDrawer(st, false);
+      delete arms[slot];
       if (vote) { delete vote.voters[slot]; delete vote.viewers[slot]; delete vote.votes[slot]; }
       for (var i = 0; i < forgetHooks.length; i++) forgetHooks[i](slot);
     }
