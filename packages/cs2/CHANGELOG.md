@@ -1,5 +1,13 @@
 # @s2script/cs2
 
+## 0.29.0
+
+### Minor Changes
+
+- dbc894b: `GameHud.intro(player, spec)` shows the mode's brand, a menu and a profile card on join. `GameHud.spectate(player, spec)` shows a spectate hub with a menu, a player picker and a camera shot list (follow shots and fixed shots through the player's own observer camera, optionally advancing on a timer). `GameHud.summary(audience, spec)` shows a passive round-end summary with headline stats and a short table.
+- 567b240: `GameHud.sheet(player, spec)` opens a full panel with side tabs (grouped, collapsing and scrolling when they do not fit) and a paged body: a numbered list with stable numbers (open on rule 3 of a section, highlighted), paragraphs, toggles, a card grid or a table with row buttons. `GameHud.prompt(player, spec)` asks one player a question with up to four clickable answers, an optional timer and a Close button, and falls back to typed numbers in chat when the HUD refuses it.
+- ee5f230: `GameHud.vote(spec)` pops up a vote that does not take the cursor: voters type the option number in chat (the line is swallowed) or press Tab to click. `GameHud.drawer(player, spec)` opens a clickable side drawer with tabs, rows and a Close button. Both use the game-kit panels layout and fall back to chat when the HUD refuses them.
+
 ## 0.28.0
 
 ### Minor Changes
