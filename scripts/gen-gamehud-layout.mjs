@@ -238,7 +238,7 @@ const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, she
 
   b.raw(d, `<!-- Prompt: one question at a predictable moment, clickable answers. -->`);
   b.open(d, "Panel", "gk_prompt", "gk-panel gk-prompt s2-hide");
-  head(b, d + 1, "gk_pr");
+  head(b, d + 1, "gk_pr", true);
   b.label(d + 1, "gk_pr_q", "gk-prompt-q");
   b.label(d + 1, "gk_pr_why", "gk-prompt-why");
   for (let i = 0; i < S.prompt.answers; i++) {

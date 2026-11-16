@@ -96,7 +96,10 @@ export type {
   GameHudAudience, GameHudBar, GameHudFeed, GameHudFeedEntry, GameHudRail, GameHudRailSide,
   GameHudRailSpec, GameHudRegion, GameHudStatus, GameHudStatusSpec, GameHudText, GameHudTheme,
   GameHudToastSpec, GameHudTone, GameHudVote, GameHudVoteOption, GameHudVoteResult, GameHudVoteSpec,
-  GameHudDrawer, GameHudDrawerRow, GameHudDrawerSpec, GameHudDrawerTab,
+  GameHudDrawer, GameHudDrawerRow, GameHudDrawerSpec, GameHudDrawerTab, GameHudPrompt, GameHudPromptAnswer,
+  GameHudPromptResult, GameHudPromptSpec, GameHudSheet, GameHudSheetAction, GameHudSheetBody, GameHudSheetCard,
+  GameHudSheetEvent, GameHudSheetListItem, GameHudSheetSection, GameHudSheetSpec, GameHudSheetTableRow,
+  GameHudSheetToggle,
 } from "./gamehud";
 export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
 import type { CustomPlayerCamera } from "./camera";

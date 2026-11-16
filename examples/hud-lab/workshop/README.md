@@ -185,7 +185,7 @@ meter and pool) and the runtime's copy of the same descriptor, `games/cs2/js/gam
 | `gk_toast` | hud | `gk_toast_t`, `gk_toast_s` |
 | `gk_vote` | panels | title, timer meter, question, option buttons `gk_vo0`-`7` (`_n`, `_t`, `_c`, `_fill` meter), footer |
 | `gk_drawer` | panels | title, close button `gk_dr_close` (`_t`), tabs `gk_dr_tab0`-`4`, row buttons `gk_dr_r0`-`7` (`_img`, `_t`, `_s`, `_m`), footer |
-| `gk_prompt` | panels | title, `gk_pr_q`, `gk_pr_why`, answer buttons `gk_pr_a0`-`3`, footer |
+| `gk_prompt` | panels | title, close button `gk_pr_close` (`_t`), `gk_pr_q`, `gk_pr_why`, answer buttons `gk_pr_a0`-`3`, footer |
 | `gk_sheet` | panels | title, close, side slots `gk_sh_s0`-`15` (tab or `gk-grp` header), body heading and one of: list `gk_sh_li*`, paragraphs `gk_sh_p*`, toggles `gk_sh_tg*`, grid `gk_sh_g*`, table `gk_sh_th*` / `gk_sh_tr*` with row actions; pager |
 | `gk_hub` | panels | brand (`gk_hub_eye`, `_title`, `_sub`), item list `gk_hub_i0`-`7`, profile card `gk_hub_card` with `gk_hub_kv0`-`5`, player picker `gk_hub_p0`-`11`, shot label `gk_hub_shot` |
 

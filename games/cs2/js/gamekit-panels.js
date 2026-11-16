@@ -47,6 +47,10 @@
     var vote = null;          // the live vote state, or null
     var drawers = {};         // slot -> drawer state
     var chatSub = false;
+    var routes = {};          // button id -> fn(player)
+    var chatHandlers = [];    // fn(slot, text) -> HANDLED | undefined
+    var forgetHooks = [];
+    var resetHooks = [];
 
     function P() {
       if (!layout) {
@@ -54,6 +58,11 @@
         bindClicks();
       }
       return layout;
+    }
+
+    function route(id, fn) {
+      if (routes[id]) throw new Error("gamekit: button " + id + " already routed");
+      routes[id] = fn;
     }
 
     function setText(slot, id, v) { return P().setText(slot, id, U.plainText(v)); }
@@ -211,16 +220,25 @@
       if (chatSub || typeof globalThis.__s2_chat_on_message !== "function") return;
       chatSub = true;
       globalThis.__s2_chat_on_message(function (slot, text) {
-        var st = vote;
-        if (!st || !st.live || !st.voters[slot]) return;
-        var t = String(text).trim();
-        if (!/^[1-9]$/.test(t)) return;
-        var index = parseInt(t, 10) - 1;
-        if (index >= st.options.length) return;
-        cast(slot, index);
-        return HANDLED;
+        for (var i = 0; i < chatHandlers.length; i++) {
+          var r;
+          try { r = chatHandlers[i](slot, text); } catch (e) { U.log("chat handler threw: " + ((e && e.stack) || e)); }
+          if (r === HANDLED) return HANDLED;
+        }
+        return undefined;
       });
     }
+
+    chatHandlers.push(function (slot, text) {
+      var st = vote;
+      if (!st || !st.live || !st.voters[slot]) return undefined;
+      var t = String(text).trim();
+      if (!/^[1-9]$/.test(t)) return undefined;
+      var index = parseInt(t, 10) - 1;
+      if (index >= st.options.length) return undefined;
+      cast(slot, index);
+      return HANDLED;
+    });
 
     function startVote(spec) {
       spec = spec || {};
@@ -376,41 +394,51 @@
     function bindClicks() {
       if (clicksBound) return;
       clicksBound = true;
-      var h = layout;
-      for (var i = 0; i < OPTIONS; i++) {
-        (function (index) {
-          h.onClick("gk_vo" + index, function (player) { if (player) cast(player.slot, index); });
-        })(i);
-      }
-      for (var t = 0; t < TABS; t++) {
-        (function (index) {
-          h.onClick("gk_dr_tab" + index, function (player) {
-            var st = player && drawers[player.slot];
-            if (!st || !st.live || !st.tabs[index]) return;
-            st.tab = index;
-            if (typeof st.onTab === "function") {
-              try { st.onTab(st.tabs[index].id, st.handle); } catch (e) { U.log("drawer onTab threw: " + ((e && e.stack) || e)); }
-            }
-            if (st.live) repaint(st);
+      var ids = GK.panels.buttons || [];
+      for (var i = 0; i < ids.length; i++) {
+        (function (id) {
+          layout.onClick(id, function (player) {
+            var fn = routes[id];
+            if (!fn || !player) return;
+            try { fn(player); } catch (e) { U.log("click " + id + " threw: " + ((e && e.stack) || e)); }
           });
-        })(t);
+        })(ids[i]);
       }
-      for (var r = 0; r < ROWS; r++) {
-        (function (index) {
-          h.onClick("gk_dr_r" + index, function (player) {
-            var st = player && drawers[player.slot];
-            if (!st || !st.live) return;
-            var row = drawerRows(st)[index];
-            if (!row || row.disabled || typeof st.onSelect !== "function") return;
-            try { st.onSelect(row, st.handle); } catch (e) { U.log("drawer onSelect threw: " + ((e && e.stack) || e)); }
-          });
-        })(r);
-      }
-      h.onClick("gk_dr_close", function (player) {
-        var st = player && drawers[player.slot];
-        if (st) closeDrawer(st, true);
-      });
     }
+
+    for (var oi = 0; oi < OPTIONS; oi++) {
+      (function (index) {
+        route("gk_vo" + index, function (player) { cast(player.slot, index); });
+      })(oi);
+    }
+    for (var ti = 0; ti < TABS; ti++) {
+      (function (index) {
+        route("gk_dr_tab" + index, function (player) {
+          var st = drawers[player.slot];
+          if (!st || !st.live || !st.tabs[index]) return;
+          st.tab = index;
+          if (typeof st.onTab === "function") {
+            try { st.onTab(st.tabs[index].id, st.handle); } catch (e) { U.log("drawer onTab threw: " + ((e && e.stack) || e)); }
+          }
+          if (st.live) repaint(st);
+        });
+      })(ti);
+    }
+    for (var ri = 0; ri < ROWS; ri++) {
+      (function (index) {
+        route("gk_dr_r" + index, function (player) {
+          var st = drawers[player.slot];
+          if (!st || !st.live) return;
+          var row = drawerRows(st)[index];
+          if (!row || row.disabled || typeof st.onSelect !== "function") return;
+          try { st.onSelect(row, st.handle); } catch (e) { U.log("drawer onSelect threw: " + ((e && e.stack) || e)); }
+        });
+      })(ri);
+    }
+    route("gk_dr_close", function (player) {
+      var st = drawers[player.slot];
+      if (st) closeDrawer(st, true);
+    });
 
     function forgetSlot(slot) {
       delete applied[slot];
@@ -421,18 +449,29 @@
         U.hostRelease("gamekit:drawer:" + slot);
       }
       if (vote) { delete vote.voters[slot]; delete vote.viewers[slot]; delete vote.votes[slot]; }
+      for (var i = 0; i < forgetHooks.length; i++) forgetHooks[i](slot);
     }
 
     function resetForMap() {
       applied = {};
       if (vote) finishVote(vote, true);
       for (var s in drawers) if (Object.prototype.hasOwnProperty.call(drawers, s)) closeDrawer(drawers[s], false);
+      for (var i = 0; i < resetHooks.length; i++) resetHooks[i]();
     }
 
     return {
       vote: startVote,
       drawer: openDrawer,
       _forgetSlot: forgetSlot,
+      // The shared panels handle for the other panel surfaces (gamekit-sheet.js). One layout
+      // entity per plugin context, one click route per button.
+      _kit: {
+        P: P, ok: ok, setText: setText, setClass: setClass, show: show, hide: hide, setRaw: setRaw,
+        cursor: cursor, swap: swap, route: route, HANDLED: HANDLED,
+        onChat: function (fn) { chatHandlers.push(fn); ensureChat(); },
+        onForget: function (fn) { forgetHooks.push(fn); },
+        onReset: function (fn) { resetHooks.push(fn); }
+      },
       _resetForMap: resetForMap,
       _castFromChat: function (slot, text) {
         var st = vote;
