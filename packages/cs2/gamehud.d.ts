@@ -212,7 +212,7 @@ export interface GameHudDrawerSpec {
 
 export interface GameHudDrawer {
   isOpen(): boolean;
-  /** Repaint with a new spec. */
+  /** Repaint with changed fields; fields you leave out keep their value. */
   update(spec: GameHudDrawerSpec): void;
   setTab(id: string): void;
   close(): void;
@@ -317,8 +317,11 @@ export interface GameHudSheetSpec {
 
 export interface GameHudSheet {
   isOpen(): boolean;
-  /** Repaint with a new spec. The open section and page stay unless the spec names a section. */
-  update(spec: GameHudSheetSpec): void;
+  /**
+   * Repaint with changed fields; fields you leave out keep their value. The open section, page and
+   * side-tab scroll stay unless the spec names a section or a highlight.
+   */
+  update(spec: Partial<GameHudSheetSpec>): void;
   /** Open a section, optionally on the page of a list number, highlighted. */
   show(section?: string, highlight?: GameHudText): void;
   /** Go to a page (0-based). */
@@ -425,6 +428,7 @@ export type GameHudIntroSpec = GameHudHubSpecBase<GameHudIntro>;
 export interface GameHudIntro {
   isOpen(): boolean;
   kind(): "intro" | "spectate";
+  /** Repaint with changed fields; fields you leave out keep their value. */
   update(spec: GameHudIntroSpec): void;
   close(): void;
 }
@@ -476,6 +480,11 @@ export interface GameHudSpectateSpec extends GameHudHubSpecBase<GameHudSpectate>
 export interface GameHudSpectate {
   isOpen(): boolean;
   kind(): "intro" | "spectate";
+  /**
+   * Repaint with changed fields; fields you leave out keep their value. A refresh does not restart
+   * the shot timer, and after a follow it does not resume it; only a new `shotSeconds` or
+   * `shot()` / `nextShot()` does.
+   */
   update(spec: GameHudSpectateSpec): void;
   /** Follow a player. False when the engine refused the camera command. */
   follow(player: number | { readonly slot: number }, mode?: "eye" | "chase"): boolean;
@@ -514,7 +523,7 @@ export declare const GameHud: {
   vote(spec: GameHudVoteSpec): GameHudVote | null;
   /**
    * Open a drawer for one player: tabs and clickable rows, with a Close button. It takes the
-   * cursor. Opening again for the same player repaints it. Null when another plugin holds that
+   * cursor. Opening again for the same player repaints it, keeping fields the spec leaves out. Null when another plugin holds that
    * player's drawer.
    */
   drawer(player: number | { readonly slot: number }, spec: GameHudDrawerSpec): GameHudDrawer | null;
