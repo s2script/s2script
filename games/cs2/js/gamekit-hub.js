@@ -33,10 +33,6 @@
   function guard(what, fn) {
     try { return fn(); } catch (e) { U.log(what + " threw: " + ((e && e.stack) || e)); return undefined; }
   }
-  function hudInput() {
-    return (globalThis.__s2pkg_hudinput && globalThis.__s2pkg_hudinput.HudInput) ||
-      (globalThis.__s2pkg_cs2 && globalThis.__s2pkg_cs2.HudInput) || null;
-  }
   function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
 
   /** Run a spectator command as the player. False when there is no client or the engine refused. */
@@ -193,9 +189,15 @@
       return done;
     }
 
+    // The shot timer runs while `auto` is on: on open with `shotSeconds`, and again after an
+    // explicit `shot()` / `nextShot()`. Following a player stops it. A refresh never restarts it,
+    // so frequent updates do not hold the countdown back; only a changed `shotSeconds` does.
+    function stopShots(st) { st.shotEpoch++; st.shotTimer = false; }
     function scheduleShots(st) {
       var epoch = ++st.shotEpoch;
-      if (!(st.shotSeconds > 0) || st.shots.length < 2) return;
+      st.shotTimer = false;
+      if (!st.auto || !(st.shotSeconds > 0) || st.shots.length < 2) return;
+      st.shotTimer = true;
       U.afterSeconds(st.shotSeconds, function () {
         if (!st.live || st.shotEpoch !== epoch) return;
         setShot(st, (st.shotIndex + 1) % st.shots.length);
@@ -203,55 +205,85 @@
       });
     }
 
-    function arm(st) {
-      var HI = hudInput();
-      if (st.cursor || !HI || typeof HI.arm !== "function") return;
-      HI.arm(st.slot, {
-        onActivate: function () {
+    // Tab and the cursor. With `cursor: false` the hub arms Tab through the panels' shared arm
+    // stack, so a pop-up vote arming over it hands Tab back when it ends.
+    function syncInput(st, hadCursor) {
+      var wantArm = st.live && !st.cursor;
+      if (wantArm && !st.armed) {
+        kit.arm(st.slot, "hub", function () {
           if (hubs[st.slot] === st && st.live) { st.tabbed = true; kit.cursor(st.slot, "gk_hub", true); }
-        }
-      });
-      st.armed = true;
+        });
+        st.armed = true;
+      } else if (!wantArm && st.armed) {
+        kit.disarm(st.slot, "hub");
+        st.armed = false;
+      }
+      if (hadCursor && !st.cursor) { st.tabbed = false; kit.cursor(st.slot, "gk_hub", false); }
     }
 
-    function disarm(st) {
-      if (!st.armed) return;
-      st.armed = false;
-      var HI = hudInput();
-      if (HI && typeof HI.disarm === "function") HI.disarm(st.slot);
-    }
-
-    function applySpec(st, kind, spec) {
+    function defaults(st, kind) {
       st.kind = kind;
-      st.eyebrow = str(spec.eyebrow);
-      st.title = str(spec.title);
-      st.sub = str(spec.sub);
-      st.listTitle = str(spec.listTitle != null ? spec.listTitle : (kind === "intro" ? "Menu" : "Spectating"));
-      st.listRight = str(spec.listRight);
-      st.footer = str(spec.footer);
-      st.closeable = spec.closeable !== false;
-      st.closeLabel = str(spec.closeLabel != null ? spec.closeLabel : "Close");
-      st.items = Array.isArray(spec.items) ? spec.items.slice(0, HUB.items).map(function (it) {
-        return it && typeof it === "object" ? it : { id: it, label: str(it) };
-      }) : [];
-      st.card = spec.card && typeof spec.card === "object" ? spec.card : null;
-      st.players = kind === "spectate" && Array.isArray(spec.players)
-        ? spec.players.slice(0, HUB.picker).filter(function (p) { return p && typeof p.slot === "number"; })
-        : [];
-      st.shots = kind === "spectate" && Array.isArray(spec.shots) ? spec.shots.slice() : [];
-      st.shotSeconds = kind === "spectate" && spec.shotSeconds > 0 ? Number(spec.shotSeconds) : 0;
-      st.cursor = kind === "intro" ? true : spec.cursor !== false;
-      st.onSelect = spec.onSelect;
-      st.onPick = spec.onPick;
-      st.onShot = spec.onShot;
-      st.onClose = spec.onClose;
+      st.eyebrow = ""; st.title = ""; st.sub = ""; st.listRight = ""; st.footer = "";
+      st.listTitle = kind === "intro" ? "Menu" : "Spectating";
+      st.closeable = true; st.closeLabel = "Close";
+      st.items = []; st.card = null; st.players = []; st.shots = []; st.shotSeconds = 0;
+      st.cursor = true;
+      st.onSelect = st.onPick = st.onShot = st.onClose = undefined;
+    }
+
+    // A spec field left out keeps its current value; switching between intro and spectate starts
+    // from the defaults.
+    function applySpec(st, spec) {
+      var kind = st.kind;
+      if (spec.eyebrow !== undefined) st.eyebrow = str(spec.eyebrow);
+      if (spec.title !== undefined) st.title = str(spec.title);
+      if (spec.sub !== undefined) st.sub = str(spec.sub);
+      if (spec.listTitle !== undefined) st.listTitle = str(spec.listTitle);
+      if (spec.listRight !== undefined) st.listRight = str(spec.listRight);
+      if (spec.footer !== undefined) st.footer = str(spec.footer);
+      if (spec.closeable !== undefined) st.closeable = spec.closeable !== false;
+      if (spec.closeLabel !== undefined) st.closeLabel = str(spec.closeLabel);
+      if (spec.items !== undefined) {
+        st.items = Array.isArray(spec.items) ? spec.items.slice(0, HUB.items).map(function (it) {
+          return it && typeof it === "object" ? it : { id: it, label: str(it) };
+        }) : [];
+      }
+      if (spec.card !== undefined) st.card = spec.card && typeof spec.card === "object" ? spec.card : null;
+      if (kind === "spectate") {
+        if (spec.players !== undefined) {
+          st.players = Array.isArray(spec.players)
+            ? spec.players.slice(0, HUB.picker).filter(function (p) { return p && typeof p.slot === "number"; })
+            : [];
+        }
+        if (spec.shots !== undefined) {
+          st.shots = Array.isArray(spec.shots) ? spec.shots.slice() : [];
+          if (st.shotIndex >= st.shots.length) st.shotIndex = -1;
+        }
+        if (spec.shotSeconds !== undefined) st.shotSeconds = spec.shotSeconds > 0 ? Number(spec.shotSeconds) : 0;
+        if (spec.cursor !== undefined) st.cursor = spec.cursor !== false;
+      }
+      if (spec.onSelect !== undefined) st.onSelect = spec.onSelect;
+      if (spec.onPick !== undefined) st.onPick = spec.onPick;
+      if (spec.onShot !== undefined) st.onShot = spec.onShot;
+      if (spec.onClose !== undefined) st.onClose = spec.onClose;
+    }
+
+    /** Apply a spec to an open hub and restart the shot timer only if its period changed. */
+    function refresh(st, spec) {
+      var hadCursor = st.cursor || st.tabbed;
+      var period = st.shotSeconds;
+      applySpec(st, spec);
+      syncInput(st, hadCursor);
+      repaint(st);
+      // A stopped timer stays stopped unless auto is on (scheduleShots checks it).
+      if (st.kind === "spectate" && (st.shotSeconds !== period || !st.shotTimer)) scheduleShots(st);
     }
 
     function close(st, fromPlayer) {
       if (!st.live) return;
       st.live = false;
-      st.shotEpoch++;
-      disarm(st);
+      stopShots(st);
+      syncInput(st, false);
       if (hubs[st.slot] === st) delete hubs[st.slot];
       kit.hide(st.slot, "gk_hub");
       U.hostRelease("gamekit:hub:" + st.slot);
@@ -264,25 +296,29 @@
       if (slot < 0) throw new Error("GameHud." + name + ": a player or slot is required");
       spec = spec || {};
       var st = hubs[slot];
+      if (st && st.live && st.kind === kind) {
+        // Same plugin, same screen: a refresh.
+        refresh(st, spec);
+        return st.handle;
+      }
       var hadCursor = false;
       if (st && st.live) {
-        // Same plugin: repaint in place, switching intro <-> spectate without a close event.
-        disarm(st);
-        st.shotEpoch++;
-        if (st.kind !== kind) { st.following = -1; st.shotIndex = -1; st.toldInChat = false; }
+        // Same plugin, the other screen: switch in place without a close event.
         hadCursor = st.cursor || st.tabbed;
-        st.tabbed = false;
+        stopShots(st);
+        st.following = -1; st.shotIndex = -1; st.toldInChat = false;
       } else {
         if (U.hostClaim("gamekit:hub:" + slot) < 0) return null;
-        st = { slot: slot, live: true, tabbed: false, following: -1, followLabel: "", shotIndex: -1, shotEpoch: 0, toldInChat: false };
+        st = { slot: slot, live: true, tabbed: false, armed: false, following: -1, followLabel: "", shotIndex: -1, shotEpoch: 0, shotTimer: false, auto: false, toldInChat: false };
         hubs[slot] = st;
         st.handle = makeHandle(st);
       }
-      applySpec(st, kind, spec);
+      defaults(st, kind);
+      applySpec(st, spec);
       kit.P();
-      if (hadCursor && !st.cursor) kit.cursor(slot, "gk_hub", false);
-      arm(st);
-      if (kind === "spectate" && st.shots.length > 0 && st.shotIndex < 0 && st.following < 0) {
+      syncInput(st, hadCursor);
+      st.auto = kind === "spectate" && st.shotSeconds > 0;
+      if (kind === "spectate" && st.shots.length > 0) {
         var first = 0;
         if (spec.shot !== undefined) {
           for (var i = 0; i < st.shots.length; i++) if (st.shots[i].id === spec.shot || i === spec.shot) first = i;
@@ -299,26 +335,24 @@
       return {
         isOpen: function () { return st.live && hubs[st.slot] === st; },
         kind: function () { return st.kind; },
-        update: function (next) {
-          if (!st.live) return;
-          applySpec(st, st.kind, next || {});
-          repaint(st);
-          if (st.kind === "spectate") scheduleShots(st);
-        },
+        update: function (next) { if (st.live) refresh(st, next || {}); },
         follow: function (target, mode) {
           if (!st.live) return false;
-          st.shotEpoch++;
+          st.auto = false;
+          stopShots(st);
           return follow(st, U.slotOf(target), mode);
         },
         shot: function (which) {
           if (!st.live) return false;
           var r = setShot(st, which);
+          st.auto = st.shotSeconds > 0;
           scheduleShots(st);
           return r;
         },
         nextShot: function () {
           if (!st.live || st.shots.length === 0) return false;
           var r = setShot(st, (st.shotIndex + 1) % st.shots.length);
+          st.auto = st.shotSeconds > 0;
           scheduleShots(st);
           return r;
         },
@@ -348,7 +382,8 @@
           var st = live(player);
           var p = st && st.players[n];
           if (!p) return;
-          st.shotEpoch++;
+          st.auto = false;
+          stopShots(st);
           follow(st, p.slot, p.mode);
           if (typeof st.onPick === "function") guard("hub onPick", function () { st.onPick(p, st.handle); });
         });
@@ -361,7 +396,7 @@
 
     kit.onForget(function (slot) {
       var st = hubs[slot];
-      if (st) { st.live = false; st.shotEpoch++; delete hubs[slot]; U.hostRelease("gamekit:hub:" + slot); }
+      if (st) close(st, false);
     });
     kit.onReset(function () {
       for (var s in hubs) if (has(hubs, s)) close(hubs[s], false);

@@ -428,6 +428,7 @@ export type GameHudIntroSpec = GameHudHubSpecBase<GameHudIntro>;
 export interface GameHudIntro {
   isOpen(): boolean;
   kind(): "intro" | "spectate";
+  /** Repaint with changed fields; fields you leave out keep their value. */
   update(spec: GameHudIntroSpec): void;
   close(): void;
 }
@@ -479,6 +480,11 @@ export interface GameHudSpectateSpec extends GameHudHubSpecBase<GameHudSpectate>
 export interface GameHudSpectate {
   isOpen(): boolean;
   kind(): "intro" | "spectate";
+  /**
+   * Repaint with changed fields; fields you leave out keep their value. A refresh does not restart
+   * the shot timer, and after a follow it does not resume it; only a new `shotSeconds` or
+   * `shot()` / `nextShot()` does.
+   */
   update(spec: GameHudSpectateSpec): void;
   /** Follow a player. False when the engine refused the camera command. */
   follow(player: number | { readonly slot: number }, mode?: "eye" | "chase"): boolean;

@@ -183,3 +183,42 @@ test("a refused summary goes to chat as one line", () => {
   m.GameHud.summary(1, { title: "Draw", stats: [{ key: "Rounds", value: 12 }] });
   assert.deepEqual(m.chat.map((c) => c.msg), ["Draw {grey}Rounds {yellow}12"]);
 });
+
+const twoShots = [{ id: "a", kind: "follow", target: 1, label: "A" }, { id: "b", kind: "follow", target: 2, label: "B" }];
+
+test("a hub refresh neither restarts nor resumes the shot timer", () => {
+  const m = mount();
+  const h = m.GameHud.spectate(0, { title: "S", players, shots: twoShots, shotSeconds: 5 });
+  assert.equal(m.timers.length, 1);
+  h.update({ players: players.slice(0, 1) });
+  m.GameHud.spectate(0, { players });
+  assert.equal(m.timers.length, 1, "no new countdown on refresh");
+  assert.equal(m.text(0, "gk_hub_title"), "S", "omitted fields kept");
+  m.tick();
+  assert.equal(m.text(0, "gk_hub_shot_t"), "B", "the original countdown still advances");
+  m.click("gk_hub_p0", 0); // follow alice: the timer stops
+  m.timers.splice(0);
+  h.update({ footer: "x" });
+  assert.equal(m.timers.length, 0, "a refresh after a follow does not resume the slideshow");
+  h.nextShot();
+  assert.equal(m.timers.length, 1, "an explicit shot resumes it");
+});
+
+test("update switches cursor and Tab, and a vote over the hub hands Tab back", () => {
+  const m = mount();
+  const h = m.GameHud.spectate(0, { title: "S", players });
+  assert.equal(m.cursors["0|gk_hub"], true);
+  assert.equal(m.armed[0], undefined);
+  h.update({ cursor: false });
+  assert.equal(m.cursors["0|gk_hub"], undefined, "cursor released");
+  assert.ok(m.armed[0], "Tab armed");
+  const hubArm = m.armed[0];
+  m.GameHud.vote({ question: "Q", options: ["A", "B"], voters: [0] });
+  assert.notEqual(m.armed[0], hubArm, "the vote owns Tab while it runs");
+  m.say(0, "1");
+  assert.ok(m.armed[0], "Tab is armed again for the hub after voting");
+  m.armed[0].onActivate();
+  assert.equal(m.cursors["0|gk_hub"], true, "and it opens the hub's cursor");
+  h.update({ cursor: true });
+  assert.equal(m.armed[0], undefined, "Tab disarmed when the hub takes the cursor");
+});
