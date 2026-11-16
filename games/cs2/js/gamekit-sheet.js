@@ -319,7 +319,10 @@
     }
 
     /** Point the sheet at a section (by id) and optionally a list number to highlight. */
+    // Only an explicit section or highlight moves the sheet: a plain refresh keeps the player's
+    // page and side-tab scroll.
     function focus(st, sectionId, highlight) {
+      if (sectionId === undefined && highlight == null) return;
       if (sectionId !== undefined) {
         var at = sectionIndex(st, sectionId);
         if (at >= 0 && at !== st.section) { st.section = at; st.page = 0; }
@@ -333,20 +336,23 @@
       }
     }
 
+    // A spec field left out keeps its current value (see the drawer).
     function applySheetSpec(st, spec) {
-      st.title = str(spec.title);
-      st.right = str(spec.right);
-      st.footer = str(spec.footer);
-      st.sections = Array.isArray(spec.sections) ? spec.sections.map(function (s) {
-        s = s || {};
-        return {
-          id: s.id == null ? str(s.label) : s.id, label: str(s.label == null ? s.id : s.label), group: s.group,
-          meta: s.meta, heading: s.heading, kicker: s.kicker, body: s.body
-        };
-      }) : [];
-      st.onSelect = spec.onSelect;
-      st.onSection = spec.onSection;
-      st.onClose = spec.onClose;
+      if (spec.title !== undefined) st.title = str(spec.title);
+      if (spec.right !== undefined) st.right = str(spec.right);
+      if (spec.footer !== undefined) st.footer = str(spec.footer);
+      if (spec.sections !== undefined) {
+        st.sections = Array.isArray(spec.sections) ? spec.sections.map(function (s) {
+          s = s || {};
+          return {
+            id: s.id == null ? str(s.label) : s.id, label: str(s.label == null ? s.id : s.label), group: s.group,
+            meta: s.meta, heading: s.heading, kicker: s.kicker, body: s.body
+          };
+        }) : [];
+      }
+      if (spec.onSelect !== undefined) st.onSelect = spec.onSelect;
+      if (spec.onSection !== undefined) st.onSection = spec.onSection;
+      if (spec.onClose !== undefined) st.onClose = spec.onClose;
       if (st.section >= st.sections.length) { st.section = 0; st.page = 0; }
       focus(st, spec.section, spec.highlight);
     }
@@ -367,7 +373,7 @@
       var existing = sheets[slot];
       if (existing && existing.live) { applySheetSpec(existing, spec); repaintSheet(existing); return existing.handle; }
       if (U.hostClaim("gamekit:sheet:" + slot) < 0) return null;
-      var st = { slot: slot, live: true, section: 0, page: 0, highlight: -1, sideOffset: 0 };
+      var st = { slot: slot, live: true, section: 0, page: 0, highlight: -1, sideOffset: 0, sideFollow: true, title: "", right: "", footer: "", sections: [] };
       applySheetSpec(st, spec);
       sheets[slot] = st;
       kit.P();
@@ -604,8 +610,9 @@
       if (st && st.live) endPrompt(st, null, "closed");
     });
 
-    // Typed answers only for a player whose prompt went to chat.
-    kit.onChat(function (slot, text) {
+    // Typed answers only for a player whose prompt went to chat. It runs before the vote's
+    // handler: a player answering a prompt in chat means the prompt, not a vote option.
+    kit.onChat(true, function (slot, text) {
       var st = prompts[slot];
       if (!st || !st.live || !st.inChat) return undefined;
       var t = String(text).trim();
@@ -618,9 +625,9 @@
 
     kit.onForget(function (slot) {
       var sh = sheets[slot];
-      if (sh) { sh.live = false; delete sheets[slot]; U.hostRelease("gamekit:sheet:" + slot); }
+      if (sh) closeSheet(sh, false);
       var pr = prompts[slot];
-      if (pr) { pr.live = false; delete prompts[slot]; U.hostRelease("gamekit:prompt:" + slot); }
+      if (pr) endPrompt(pr, null, "cancelled");
     });
     kit.onReset(function () {
       var s;

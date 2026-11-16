@@ -498,7 +498,14 @@
       _kit: {
         P: P, ok: ok, setText: setText, setClass: setClass, show: show, hide: hide, setRaw: setRaw,
         cursor: cursor, swap: swap, route: route, HANDLED: HANDLED,
-        onChat: function (fn) { chatHandlers.push(fn); ensureChat(); },
+        // onChat(fn) runs after the vote's handler; onChat(true, fn) runs before it.
+        onChat: function (first, fn) {
+          if (typeof first === "function") { fn = first; first = false; }
+          if (first) chatHandlers.unshift(fn); else chatHandlers.push(fn);
+          ensureChat();
+        },
+        arm: armSlot,
+        disarm: disarmSlot,
         onForget: function (fn) { forgetHooks.push(fn); },
         onReset: function (fn) { resetHooks.push(fn); }
       },
