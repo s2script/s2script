@@ -5,6 +5,7 @@
 #include "khook_shutdown.h"
 #include "gamedata.h"
 #include "../third_party/json.hpp"
+#include <algorithm>
 #include <climits>
 
 // The engine interfaces we hook and call: ISource2Server / ISource2GameClients /
@@ -7507,7 +7508,20 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientCommand(ISource2GameClients* clie
     }
     // FFI is 1 iff a registered command matched (bool, not a HookResult int).
     if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
-        META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, slot.Get());
+        // Name the player the same way Activity.describe() does for admin logs: "Name<userid><steamid64><>"
+        // (BOT for bots). The handler has already run, so if it disconnected the caller the name is
+        // gone; fall back to the slot then rather than print an empty identity.
+        int s = slot.Get();
+        std::string who = s2_client_name(s) ? s2_client_name(s) : "";
+        who.erase(std::remove_if(who.begin(), who.end(), [](char c) {
+            return (unsigned char)c < 0x20 || c == '"' || c == '<' || c == '>'; }), who.end());
+        if (who.empty()) {
+            META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, s);
+        } else {
+            const bool bot = s >= 0 && s < kMaxClientSlots && s_clientFake[s];
+            META_CONPRINTF("[s2script] console command '%s' by \"%s<%d><%s><>\"\n", name, who.c_str(),
+                           s2_client_userid(s), bot ? "BOT" : s2_client_steamid(s));
+        }
         return S2_Supersede();   // ours → engine won't also handle it (no "Unknown command" server-side)
     }
     return S2_Ignore();         // not ours → the engine handles it normally
