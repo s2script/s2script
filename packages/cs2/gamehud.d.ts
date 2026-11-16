@@ -1,4 +1,4 @@
-// @s2script/cs2 — GameHud: the in-round game HUD (top rail, kill feed, status card, toast).
+// @s2script/cs2 — GameHud: the in-round game HUD (top rail, kill feed, status card, toast, pop-up vote, drawer).
 //
 // Paints `s2script_gamehud.xml` from the hudkit workshop addon. The layout spawns with
 // `observable: false`, so every paint is per player: each call takes an audience.
@@ -130,6 +130,93 @@ export interface GameHudToastSpec {
   readonly seconds?: number;
 }
 
+/** A vote option: plain text, or text with a tone. */
+export type GameHudVoteOption = GameHudText | { readonly label: GameHudText; readonly tone?: GameHudTone };
+
+export interface GameHudVoteResult {
+  /** Votes per option, in option order. */
+  readonly counts: ReadonlyArray<number>;
+  /** The option index with the most votes, or null for a tie or no votes. */
+  readonly winner: number | null;
+  /** Each voter's choice, keyed by player slot. */
+  readonly votes: Readonly<Record<number, number>>;
+}
+
+export interface GameHudVoteSpec {
+  /** The header, such as "Map vote". Default "Vote". */
+  readonly title?: GameHudText;
+  readonly question: GameHudText;
+  /** 2 to 8 options. Option 1 is typed as `1` in chat. */
+  readonly options: ReadonlyArray<GameHudVoteOption>;
+  /** Who may vote. Default everyone. */
+  readonly voters?: GameHudAudience;
+  /** Who sees the vote. Defaults to the voters; voters always see it. */
+  readonly viewers?: GameHudAudience;
+  /** Default 20. */
+  readonly seconds?: number;
+  /** A player voted or changed their vote. */
+  onVote?(slot: number, option: number): void;
+  /** The timer ran out or `end()` was called. Not called on `cancel()`. */
+  onEnd?(result: GameHudVoteResult): void;
+}
+
+export interface GameHudVote {
+  isOpen(): boolean;
+  counts(): number[];
+  /** Cast for a voter, as if they clicked. False when they cannot vote or the option is out of range. */
+  cast(player: number | { readonly slot: number }, option: number): boolean;
+  /** End now and report the result. */
+  end(): void;
+  /** End now without a result. */
+  cancel(): void;
+}
+
+export interface GameHudDrawerRow {
+  readonly title: GameHudText;
+  readonly sub?: GameHudText;
+  /** Right-aligned text, such as a price. */
+  readonly meta?: GameHudText;
+  /** A Panorama image path, sent as is. */
+  readonly image?: string;
+  readonly tone?: GameHudTone;
+  readonly selected?: boolean;
+  /** Greyed out and not clickable. */
+  readonly disabled?: boolean;
+  /** Your own data; handed back to `onSelect`. */
+  readonly [key: string]: unknown;
+}
+
+export interface GameHudDrawerTab {
+  readonly id: string;
+  readonly label: GameHudText;
+  /** Up to 8 rows. */
+  readonly rows: ReadonlyArray<GameHudDrawerRow>;
+}
+
+export interface GameHudDrawerSpec {
+  readonly title?: GameHudText;
+  /** Header text on the right, such as `"{yellow}3 credits"`. */
+  readonly right?: GameHudText;
+  readonly footer?: GameHudText;
+  /** Up to 5 tabs. Without tabs, `rows` are shown. */
+  readonly tabs?: ReadonlyArray<GameHudDrawerTab>;
+  readonly rows?: ReadonlyArray<GameHudDrawerRow>;
+  /** The tab id to open on. */
+  readonly tab?: string;
+  onSelect?(row: GameHudDrawerRow, drawer: GameHudDrawer): void;
+  onTab?(id: string, drawer: GameHudDrawer): void;
+  /** `fromPlayer` is true when the player pressed Close. */
+  onClose?(fromPlayer: boolean): void;
+}
+
+export interface GameHudDrawer {
+  isOpen(): boolean;
+  /** Repaint with a new spec. */
+  update(spec: GameHudDrawerSpec): void;
+  setTab(id: string): void;
+  close(): void;
+}
+
 export declare const GameHud: {
   readonly themes: ReadonlyArray<GameHudTheme>;
   readonly tones: ReadonlyArray<GameHudTone>;
@@ -146,4 +233,15 @@ export declare const GameHud: {
   toast(audience: GameHudAudience, spec: GameHudToastSpec): void;
   /** Set the accent theme for an audience. Shared: last write wins. */
   theme(audience: GameHudAudience, theme: GameHudTheme): void;
+  /**
+   * Pop up a vote. It does not take the cursor: voters type the option number in chat (the line
+   * is not shown), or press Tab to click. One vote runs at a time; null while another is open.
+   */
+  vote(spec: GameHudVoteSpec): GameHudVote | null;
+  /**
+   * Open a drawer for one player: tabs and clickable rows, with a Close button. It takes the
+   * cursor. Opening again for the same player repaints it. Null when another plugin holds that
+   * player's drawer.
+   */
+  drawer(player: number | { readonly slot: number }, spec: GameHudDrawerSpec): GameHudDrawer | null;
 };

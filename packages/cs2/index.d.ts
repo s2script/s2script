@@ -95,7 +95,8 @@ export { GameHud } from "./gamehud";
 export type {
   GameHudAudience, GameHudBar, GameHudFeed, GameHudFeedEntry, GameHudRail, GameHudRailSide,
   GameHudRailSpec, GameHudRegion, GameHudStatus, GameHudStatusSpec, GameHudText, GameHudTheme,
-  GameHudToastSpec, GameHudTone,
+  GameHudToastSpec, GameHudTone, GameHudVote, GameHudVoteOption, GameHudVoteResult, GameHudVoteSpec,
+  GameHudDrawer, GameHudDrawerRow, GameHudDrawerSpec, GameHudDrawerTab,
 } from "./gamehud";
 export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
 import type { CustomPlayerCamera } from "./camera";

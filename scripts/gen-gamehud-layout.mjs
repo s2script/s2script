@@ -179,11 +179,14 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
 
 // ---- layout 2: panels -------------------------------------------------------------------------
 const pn = layoutBuilder("panels");
-const head = (b, d, prefix) => {
+// A surface the player opens and holds the cursor for gets a close button: a captured cursor with
+// no way out is a trap.
+const head = (b, d, prefix, closeable) => {
   b.open(d, "Panel", null, "gk-hd");
   b.tick(d + 1);
   b.label(d + 1, `${prefix}_title`, "gk-hd-title");
   b.label(d + 1, `${prefix}_right`, "gk-hd-right");
+  if (closeable) b.button(d + 1, `${prefix}_close`, "gk-close", (dd) => b.label(dd, `${prefix}_close_t`, "gk-close-t"));
   b.close(d, "Panel");
 };
 const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, sheet, intro and spectate hub)"), (d) => {
@@ -211,7 +214,7 @@ const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, she
 
   b.raw(d, `<!-- Drawer list: tabs and rows with a small tile, opened by the player, click-only. -->`);
   b.open(d, "Panel", "gk_drawer", "gk-panel gk-drawer s2-hide");
-  head(b, d + 1, "gk_dr");
+  head(b, d + 1, "gk_dr", true);
   b.open(d + 1, "Panel", null, "gk-tabs");
   for (let i = 0; i < S.drawer.tabs; i++) {
     b.button(d + 2, `gk_dr_tab${i}`, "gk-tab s2-hide", (dd) => b.label(dd, `gk_dr_tab${i}_t`, "gk-tab-t"));
