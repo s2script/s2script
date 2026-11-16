@@ -375,7 +375,10 @@ export function OnPluginStart(): void {
   });
 
   hook.on("round_end", (e) => {
-    for (const p of Player.all()) if (p.pawnIsAlive) credits[p.slot] = (credits[p.slot] ?? 0) + 1;
+    for (const p of Player.all()) {
+      if (p.pawnIsAlive) credits[p.slot] = (credits[p.slot] ?? 0) + 1;
+      paintStatus(p.slot);
+    }
     if (rail) showSummary(e.getInt("winner"));
   });
 }
