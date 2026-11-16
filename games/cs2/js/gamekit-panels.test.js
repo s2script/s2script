@@ -277,3 +277,30 @@ test("disconnect and map start release votes and drawers", () => {
   assert.equal(m.claims["gamekit:drawer:1"], undefined);
   assert.equal(m.claims["gamekit:vote"], undefined);
 });
+
+test("a partial drawer update keeps rows and callbacks; a refused drawer is listed in chat once", () => {
+  const m = mount({ refuse: [2] });
+  const picked = [];
+  const d = m.GameHud.drawer(0, { title: "Shop", right: "1", rows: [{ title: "Radar", id: "radar" }], onSelect: (r) => picked.push(r.id) });
+  d.update({ right: "{yellow}2 credits" });
+  assert.equal(m.text(0, "gk_dr_right"), "2 credits");
+  assert.equal(m.text(0, "gk_dr_title"), "Shop");
+  assert.equal(m.text(0, "gk_dr_r0_t"), "Radar");
+  m.click("gk_dr_r0", 0);
+  assert.deepEqual(picked, ["radar"]);
+  const r = m.GameHud.drawer(2, { title: "Shop", rows: [{ title: "Radar" }] });
+  const n = m.chat.length;
+  assert.ok(n > 0);
+  r.update({ right: "x" });
+  r.setTab("none");
+  assert.equal(m.chat.length, n, "not repeated");
+});
+
+test("a disconnect closes the drawer through onClose", () => {
+  const m = mount();
+  let closed = null;
+  m.GameHud.drawer(1, { title: "A", onClose: (p) => { closed = p; } });
+  m.disconnect(1);
+  assert.equal(closed, false);
+  assert.equal(m.claims["gamekit:drawer:1"], undefined);
+});
