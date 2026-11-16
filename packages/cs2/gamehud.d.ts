@@ -317,8 +317,11 @@ export interface GameHudSheetSpec {
 
 export interface GameHudSheet {
   isOpen(): boolean;
-  /** Repaint with a new spec. The open section and page stay unless the spec names a section. */
-  update(spec: GameHudSheetSpec): void;
+  /**
+   * Repaint with changed fields; fields you leave out keep their value. The open section, page and
+   * side-tab scroll stay unless the spec names a section or a highlight.
+   */
+  update(spec: Partial<GameHudSheetSpec>): void;
   /** Open a section, optionally on the page of a list number, highlighted. */
   show(section?: string, highlight?: GameHudText): void;
   /** Go to a page (0-based). */

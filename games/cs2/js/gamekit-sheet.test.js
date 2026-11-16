@@ -228,3 +228,36 @@ test("disconnect and map start release sheets and prompts", () => {
   assert.equal(m.claims["gamekit:sheet:1"], undefined);
   assert.equal(m.claims["gamekit:prompt:1"], undefined);
 });
+
+test("a sheet refresh keeps the page, scroll and callbacks", () => {
+  const m = mount();
+  const ev = [];
+  const flat = Array.from({ length: 20 }, (_, i) => ({ id: `t${i}`, label: `T${i}`, body: { kind: "list", items: rules(14) } }));
+  const sh = m.GameHud.sheet(0, { title: "Flat", sections: flat, onSection: (id) => ev.push(id) });
+  m.click("gk_sh_s15", 0); // scroll down
+  const top = m.text(0, "gk_sh_s1_t");
+  assert.notEqual(top, "T1");
+  m.click("gk_sh_next", 0);
+  sh.update({ right: "refreshed" });
+  assert.equal(m.text(0, "gk_sh_right"), "refreshed");
+  assert.equal(m.text(0, "gk_sh_s1_t"), top, "side scroll kept");
+  assert.equal(m.text(0, "gk_sh_li0_n"), "7", "page kept");
+  assert.equal(m.text(0, "gk_sh_title"), "Flat");
+  m.click("gk_sh_s1", 0);
+  assert.equal(ev.length, 1, "callbacks kept");
+});
+
+test("a refused prompt's typed answer wins over a running vote, and disconnect ends sheets and prompts", () => {
+  const m = mount({ refuse: [2] });
+  const got = [];
+  m.GameHud.vote({ question: "Q", options: ["A", "B"], voters: [2] });
+  m.GameHud.prompt(2, { question: "Kick?", answers: ["Yes", "No"], onAnswer: (r) => got.push(r) });
+  assert.equal(m.say(2, "2"), 2);
+  assert.equal(got[0].index, 1);
+  let closed = null;
+  m.GameHud.sheet(0, { title: "S", sections: [{ id: "a", label: "A", body: { kind: "list", items: ["x"] } }], onClose: (p) => { closed = p; } });
+  m.GameHud.prompt(0, { question: "Q", answers: ["A"], onAnswer: (r) => got.push(r) });
+  m.disconnect(0);
+  assert.equal(closed, false);
+  assert.equal(got[1].reason, "cancelled");
+});
