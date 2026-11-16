@@ -99,7 +99,8 @@ export type {
   GameHudDrawer, GameHudDrawerRow, GameHudDrawerSpec, GameHudDrawerTab, GameHudPrompt, GameHudPromptAnswer,
   GameHudPromptResult, GameHudPromptSpec, GameHudSheet, GameHudSheetAction, GameHudSheetBody, GameHudSheetCard,
   GameHudSheetEvent, GameHudSheetListItem, GameHudSheetSection, GameHudSheetSpec, GameHudSheetTableRow,
-  GameHudSheetToggle,
+  GameHudSheetToggle, GameHudSummarySpec, GameHudSummaryStat, GameHudHubItem, GameHudHubCard, GameHudIntro,
+  GameHudIntroSpec, GameHudSpectate, GameHudSpectatePlayer, GameHudSpectateSpec, GameHudShot,
 } from "./gamehud";
 export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
 import type { CustomPlayerCamera } from "./camera";

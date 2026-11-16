@@ -1,6 +1,7 @@
-// @s2script/cs2 — GameHud: the in-round game HUD (top rail, kill feed, status card, toast, pop-up vote, drawer, sheet, prompt).
+// @s2script/cs2 — GameHud: the gamemode HUD kit. In-round pieces (top rail, kill feed, status card,
+// toast, round-end summary) and panels (pop-up vote, drawer, sheet, prompt, intro, spectate hub).
 //
-// Paints `s2script_gamehud.xml` from the hudkit workshop addon. The layout spawns with
+// Paints `s2script_gamehud.xml` and `s2script_gamepanels.xml` from the game-kit workshop addon. The layout spawns with
 // `observable: false`, so every paint is per player: each call takes an audience.
 
 /** Accent themes, named by colour. Any gamemode picks one. */
@@ -359,6 +360,131 @@ export interface GameHudPrompt {
   close(): void;
 }
 
+export interface GameHudSummaryStat {
+  readonly key: GameHudText;
+  readonly value: GameHudText;
+}
+
+export interface GameHudSummarySpec {
+  /** A small line above the title, such as "Round 4". */
+  readonly eyebrow?: GameHudText;
+  /** Such as `"{red}Traitors win"`. Its tone comes from `tone`, its leading tag, or the theme accent. */
+  readonly title: GameHudText;
+  readonly sub?: GameHudText;
+  readonly tone?: GameHudTone;
+  /** Up to 4 headline numbers. */
+  readonly stats?: ReadonlyArray<GameHudSummaryStat>;
+  /** Up to 4 columns and 5 rows. A row is a list of cells or `{ cells }`. */
+  readonly table?: {
+    readonly columns: ReadonlyArray<GameHudText>;
+    readonly rows: ReadonlyArray<ReadonlyArray<GameHudText> | { readonly cells: ReadonlyArray<GameHudText> }>;
+  };
+  /** Default 8. */
+  readonly seconds?: number;
+}
+
+export interface GameHudHubItem {
+  readonly id?: string;
+  readonly label: GameHudText;
+  /** Right-aligned text, such as "3 watching". */
+  readonly meta?: GameHudText;
+  readonly tone?: GameHudTone;
+  readonly selected?: boolean;
+  readonly disabled?: boolean;
+  readonly [key: string]: unknown;
+}
+
+export interface GameHudHubCard {
+  readonly heading?: GameHudText;
+  readonly name?: GameHudText;
+  readonly sub?: GameHudText;
+  /** Up to 6 key/value cells. */
+  readonly fields?: ReadonlyArray<{ readonly key: GameHudText; readonly value: GameHudText }>;
+}
+
+interface GameHudHubSpecBase<H> {
+  readonly eyebrow?: GameHudText;
+  readonly title?: GameHudText;
+  readonly sub?: GameHudText;
+  /** The menu header. Defaults to "Menu" on the intro and "Spectating" on the spectate hub. */
+  readonly listTitle?: GameHudText;
+  readonly listRight?: GameHudText;
+  /** Up to 8 menu rows. */
+  readonly items?: ReadonlyArray<GameHudHubItem | string>;
+  readonly footer?: GameHudText;
+  readonly card?: GameHudHubCard | null;
+  /** Show the Close button. Default true. */
+  readonly closeable?: boolean;
+  readonly closeLabel?: GameHudText;
+  onSelect?(item: GameHudHubItem, hub: H): void;
+  onClose?(fromPlayer: boolean): void;
+}
+
+export type GameHudIntroSpec = GameHudHubSpecBase<GameHudIntro>;
+
+export interface GameHudIntro {
+  isOpen(): boolean;
+  kind(): "intro" | "spectate";
+  update(spec: GameHudIntroSpec): void;
+  close(): void;
+}
+
+export interface GameHudSpectatePlayer {
+  readonly slot: number;
+  readonly name: GameHudText;
+  readonly sub?: GameHudText;
+  /** The card's edge. Defaults to the name's leading tag, then `grey`. */
+  readonly tone?: GameHudTone;
+  /** How a click follows them. Default `"eye"`. */
+  readonly mode?: "eye" | "chase";
+}
+
+/** A camera shot. Shots move the player's own observer camera, so they only apply while observing. */
+export type GameHudShot =
+  | {
+    readonly id?: string;
+    readonly kind: "follow";
+    readonly label?: GameHudText;
+    readonly where?: GameHudText;
+    readonly target: number;
+    /** Default `"eye"`. */
+    readonly mode?: "eye" | "chase";
+  }
+  | {
+    readonly id?: string;
+    readonly kind: "fixed";
+    readonly label?: GameHudText;
+    readonly where?: GameHudText;
+    readonly position: { readonly x: number; readonly y: number; readonly z: number };
+    readonly angles?: { readonly pitch: number; readonly yaw: number };
+  };
+
+export interface GameHudSpectateSpec extends GameHudHubSpecBase<GameHudSpectate> {
+  /** Up to 12 players in the picker. A click follows that player. */
+  readonly players?: ReadonlyArray<GameHudSpectatePlayer>;
+  readonly shots?: ReadonlyArray<GameHudShot>;
+  /** The shot to start on, by id or index. Default the first. */
+  readonly shot?: string | number;
+  /** Advance to the next shot every N seconds. Picking a player stops it. Default off. */
+  readonly shotSeconds?: number;
+  /** Take the cursor. Default true; with false, Tab hands it over. */
+  readonly cursor?: boolean;
+  onPick?(player: GameHudSpectatePlayer, hub: GameHudSpectate): void;
+  onShot?(shot: GameHudShot, hub: GameHudSpectate): void;
+}
+
+export interface GameHudSpectate {
+  isOpen(): boolean;
+  kind(): "intro" | "spectate";
+  update(spec: GameHudSpectateSpec): void;
+  /** Follow a player. False when the engine refused the camera command. */
+  follow(player: number | { readonly slot: number }, mode?: "eye" | "chase"): boolean;
+  /** Go to a shot by id or index. */
+  shot(which: string | number): boolean;
+  nextShot(): boolean;
+  close(): void;
+}
+
 export declare const GameHud: {
   readonly themes: ReadonlyArray<GameHudTheme>;
   readonly tones: ReadonlyArray<GameHudTone>;
@@ -373,6 +499,12 @@ export declare const GameHud: {
    * refuses it for a player, the toast goes to them in chat.
    */
   toast(audience: GameHudAudience, spec: GameHudToastSpec): void;
+  /**
+   * Show the round-end summary. Shared by every plugin: the newest replaces the one on screen. It
+   * does not take the cursor. If the HUD refuses it for a player, the title and stats go to chat.
+   */
+  summary(audience: GameHudAudience, spec: GameHudSummarySpec): void;
+  hideSummary(audience?: GameHudAudience): void;
   /** Set the accent theme for an audience. Shared: last write wins. */
   theme(audience: GameHudAudience, theme: GameHudTheme): void;
   /**
@@ -397,4 +529,15 @@ export declare const GameHud: {
    * and the player answers by typing the number. Null when another plugin holds that player's prompt.
    */
   prompt(player: number | { readonly slot: number }, spec: GameHudPromptSpec): GameHudPrompt | null;
+  /**
+   * Show the intro: the mode's brand, a menu and an optional profile card. It takes the cursor.
+   * The intro and the spectate hub share one place per player: opening one replaces the other.
+   * Null when another plugin holds that player's hub.
+   */
+  intro(player: number | { readonly slot: number }, spec: GameHudIntroSpec): GameHudIntro | null;
+  /**
+   * Show the spectate hub: a menu, a player picker and a camera shot list. Null when another
+   * plugin holds that player's hub.
+   */
+  spectate(player: number | { readonly slot: number }, spec: GameHudSpectateSpec): GameHudSpectate | null;
 };

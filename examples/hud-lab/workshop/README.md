@@ -183,11 +183,12 @@ meter and pool) and the runtime's copy of the same descriptor, `games/cs2/js/gam
 | `gk_feed` | hud | rows `gk_kf0`-`gk_kf5`: `_tag`, `_a`, `_wi` (icon src), `_w`, `_hs`, `_v`; each row is `width: fit-children` |
 | `gk_status` | hud | `gk_status_role`, `gk_status_hint`, bars `gk_bar0` / `gk_bar1` (`_lab`, `_fill` meter, `_val`) |
 | `gk_toast` | hud | `gk_toast_t`, `gk_toast_s` |
+| `gk_sum` | hud | round-end summary: `gk_sum_eye`, `gk_sum_t`, `gk_sum_s`, stats `gk_sum_kv0`-`3` (`_k`, `_v`), table `gk_sum_table` with `gk_sum_th0`-`3` and rows `gk_sum_tr0`-`4` (`_c0`-`3`) |
 | `gk_vote` | panels | title, timer meter, question, option buttons `gk_vo0`-`7` (`_n`, `_t`, `_c`, `_fill` meter), footer |
 | `gk_drawer` | panels | title, close button `gk_dr_close` (`_t`), tabs `gk_dr_tab0`-`4`, row buttons `gk_dr_r0`-`7` (`_img`, `_t`, `_s`, `_m`), footer |
 | `gk_prompt` | panels | title, close button `gk_pr_close` (`_t`), `gk_pr_q`, `gk_pr_why`, answer buttons `gk_pr_a0`-`3`, footer |
 | `gk_sheet` | panels | title, close, side slots `gk_sh_s0`-`15` (tab or `gk-grp` header), body heading and one of: list `gk_sh_li*`, paragraphs `gk_sh_p*`, toggles `gk_sh_tg*`, grid `gk_sh_g*`, table `gk_sh_th*` / `gk_sh_tr*` with row actions; pager |
-| `gk_hub` | panels | brand (`gk_hub_eye`, `_title`, `_sub`), item list `gk_hub_i0`-`7`, profile card `gk_hub_card` with `gk_hub_kv0`-`5`, player picker `gk_hub_p0`-`11`, shot label `gk_hub_shot` |
+| `gk_hub` | panels | brand (`gk_hub_eye`, `_title`, `_sub`), item list `gk_hub_i0`-`7` with close button `gk_hub_list_close` (`_t`), profile card `gk_hub_card` with `gk_hub_kv0`-`5`, player picker `gk_hub_p0`-`11`, shot label `gk_hub_shot` |
 
 State is classes only: `s2-hide`, meter steps `s2-w0`-`s2-w10` (10% each), `gk-sel`, `gk-on`,
 `gk-hl`, `gk-grp`, `gk-new`, `gk-fade`, `gk-mine`, `gk-off`, `s2-btn-disabled`. Colour is a tone

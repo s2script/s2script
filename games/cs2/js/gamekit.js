@@ -38,6 +38,7 @@
   var BARS = SPEC.status.bars;
   var FEED_SECONDS = 6;
   var TOAST_SECONDS = 3;
+  var SUMMARY_SECONDS = 8;
   var STATE = { mine: "gk-mine", off: "gk-off" };
 
   function log(msg) { if (globalThis.console) console.log("[s2script/gamehud] " + msg); }
@@ -225,12 +226,14 @@
       delete applied[slot];
       delete feeds[slot];
       toastEpoch[slot] = (toastEpoch[slot] || 0) + 1;
+      sumEpoch[slot] = (sumEpoch[slot] || 0) + 1;
     }
 
     function resetForMap() {
       applied = {};
       feeds = {};
       for (var s in toastEpoch) if (Object.prototype.hasOwnProperty.call(toastEpoch, s)) toastEpoch[s]++;
+      for (var t in sumEpoch) if (Object.prototype.hasOwnProperty.call(sumEpoch, t)) sumEpoch[t]++;
     }
 
     // ── regions ────────────────────────────────────────────────────────────────────────────
@@ -480,6 +483,82 @@
       }
     }
 
+    // ── round-end summary (shared) ─────────────────────────────────────────────────────────
+    // Passive like the toast: the newest summary replaces the one on screen. Stats are big
+    // key/value cells; the table is a few short rows (MVPs, top scores). Refused: one chat line
+    // with the title and stats.
+    var SUM = SPEC.summary || { stats: 4, cols: 4, rows: 5 };
+    var sumEpoch = {};
+    function summary(audience, spec) {
+      spec = spec || {};
+      if (spec.title == null) throw new Error("GameHud.summary: spec.title is required");
+      var seconds = spec.seconds > 0 ? Number(spec.seconds) : SUMMARY_SECONDS;
+      var tone = pickTone(spec.tone, spec.title, "accent");
+      var stats = Array.isArray(spec.stats) ? spec.stats.slice(0, SUM.stats) : [];
+      var table = spec.table && typeof spec.table === "object" ? spec.table : null;
+      var cols = table && Array.isArray(table.columns) ? table.columns.slice(0, SUM.cols) : [];
+      var rows = table && Array.isArray(table.rows) ? table.rows.slice(0, SUM.rows) : [];
+      var slots = slotsFor(audience);
+      for (var i = 0; i < slots.length; i++) {
+        var s = slots[i];
+        var first = null;
+        var note = function (err) { if (!ok(err) && first === null) first = err; };
+        note(exclusive(s, "gk_sum", "edge", GK.classes.edge, "gk-e-" + tone));
+        note(exclusive(s, "gk_sum_t", "text", GK.classes.text, "gk-t-" + tone));
+        note(setText(s, "gk_sum_eye", spec.eyebrow == null ? "" : spec.eyebrow));
+        note(setClass(s, "gk_sum_eye", HIDE, spec.eyebrow == null || spec.eyebrow === ""));
+        note(setText(s, "gk_sum_t", spec.title));
+        note(setText(s, "gk_sum_s", spec.sub == null ? "" : spec.sub));
+        note(setClass(s, "gk_sum_s", HIDE, spec.sub == null || spec.sub === ""));
+        var k;
+        for (k = 0; k < SUM.stats; k++) {
+          var cell = "gk_sum_kv" + k;
+          var st = stats[k];
+          if (!st) { note(hide(s, cell)); continue; }
+          note(setText(s, cell + "_k", st.key));
+          note(setText(s, cell + "_v", st.value));
+          note(show(s, cell));
+        }
+        note(setClass(s, "gk_sum_table", HIDE, rows.length === 0));
+        if (rows.length > 0) {
+          var c;
+          for (c = 0; c < SUM.cols; c++) {
+            note(setText(s, "gk_sum_th" + c, c < cols.length ? cols[c] : ""));
+            note(setClass(s, "gk_sum_th" + c, HIDE, c >= cols.length));
+          }
+          for (k = 0; k < SUM.rows; k++) {
+            var r = "gk_sum_tr" + k;
+            var cells = rows[k] && Array.isArray(rows[k].cells) ? rows[k].cells : (Array.isArray(rows[k]) ? rows[k] : null);
+            if (!cells) { note(hide(s, r)); continue; }
+            for (c = 0; c < SUM.cols; c++) {
+              note(setText(s, r + "_c" + c, c < cells.length ? cells[c] : ""));
+              note(setClass(s, r + "_c" + c, HIDE, c >= cols.length));
+            }
+            note(show(s, r));
+          }
+        }
+        note(show(s, "gk_sum"));
+        if (!ok(first)) {
+          var line = String(spec.title);
+          for (k = 0; k < stats.length; k++) line += " {grey}" + plainText(stats[k].key) + " {yellow}" + plainText(stats[k].value);
+          fallback(s, first, line);
+          continue;
+        }
+        var epoch = sumEpoch[s] = (sumEpoch[s] || 0) + 1;
+        (function (slot, mine) {
+          afterSeconds(seconds, function () { if (sumEpoch[slot] === mine) hide(slot, "gk_sum"); });
+        })(s, epoch);
+      }
+    }
+
+    function hideSummary(audience) {
+      var slots = slotsFor(audience);
+      for (var i = 0; i < slots.length; i++) {
+        sumEpoch[slots[i]] = (sumEpoch[slots[i]] || 0) + 1;
+        hide(slots[i], "gk_sum");
+      }
+    }
+
     // ── theme (shared) ─────────────────────────────────────────────────────────────────────
     function theme(audience, name) {
       if (!isTheme(name)) throw new Error('GameHud.theme: unknown theme "' + name + '"');
@@ -492,6 +571,8 @@
       status: status,
       feed: feed,
       toast: toast,
+      summary: summary,
+      hideSummary: hideSummary,
       theme: theme,
       _forgetSlot: forgetSlot,
       _resetForMap: resetForMap,
@@ -537,6 +618,8 @@
       status: function () { return kitOrThrow("status").status(); },
       feed: function () { return kitOrThrow("feed").feed(); },
       toast: function (audience, spec) { return kitOrThrow("toast").toast(audience, spec); },
+      summary: function (audience, spec) { return kitOrThrow("summary").summary(audience, spec); },
+      hideSummary: function (audience) { return kitOrThrow("hideSummary").hideSummary(audience); },
       theme: function (audience, name) { return kitOrThrow("theme").theme(audience, name); }
     });
   }
