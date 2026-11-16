@@ -131,6 +131,68 @@
 				<Label id="gk_toast_t" class="gk-toast-t" text="{s:gk_toast_t}" />
 				<Label id="gk_toast_s" class="gk-toast-s" text="{s:gk_toast_s}" />
 			</Panel>
+			<!-- Round-end summary: who won, why, a few headline stats and a short table. Passive: no cursor. -->
+			<Panel id="gk_sum" class="gk-panel gk-sum gk-e-accent s2-hide">
+				<Label id="gk_sum_eye" class="gk-eyebrow gk-t-accent" text="{s:gk_sum_eye}" />
+				<Label id="gk_sum_t" class="gk-sum-t gk-t-accent" text="{s:gk_sum_t}" />
+				<Label id="gk_sum_s" class="gk-sum-s" text="{s:gk_sum_s}" />
+				<Panel class="gk-kv gk-sum-kv">
+					<Panel id="gk_sum_kv0" class="gk-kv-cell s2-hide">
+						<Label id="gk_sum_kv0_k" class="gk-kv-k" text="{s:gk_sum_kv0_k}" />
+						<Label id="gk_sum_kv0_v" class="gk-kv-v" text="{s:gk_sum_kv0_v}" />
+					</Panel>
+					<Panel id="gk_sum_kv1" class="gk-kv-cell s2-hide">
+						<Label id="gk_sum_kv1_k" class="gk-kv-k" text="{s:gk_sum_kv1_k}" />
+						<Label id="gk_sum_kv1_v" class="gk-kv-v" text="{s:gk_sum_kv1_v}" />
+					</Panel>
+					<Panel id="gk_sum_kv2" class="gk-kv-cell s2-hide">
+						<Label id="gk_sum_kv2_k" class="gk-kv-k" text="{s:gk_sum_kv2_k}" />
+						<Label id="gk_sum_kv2_v" class="gk-kv-v" text="{s:gk_sum_kv2_v}" />
+					</Panel>
+					<Panel id="gk_sum_kv3" class="gk-kv-cell s2-hide">
+						<Label id="gk_sum_kv3_k" class="gk-kv-k" text="{s:gk_sum_kv3_k}" />
+						<Label id="gk_sum_kv3_v" class="gk-kv-v" text="{s:gk_sum_kv3_v}" />
+					</Panel>
+				</Panel>
+				<Panel id="gk_sum_table" class="gk-sum-table s2-hide">
+					<Panel class="gk-tr gk-th">
+						<Label id="gk_sum_th0" class="gk-td gk-col0 s2-hide" text="{s:gk_sum_th0}" />
+						<Label id="gk_sum_th1" class="gk-td gk-col1 s2-hide" text="{s:gk_sum_th1}" />
+						<Label id="gk_sum_th2" class="gk-td gk-col2 s2-hide" text="{s:gk_sum_th2}" />
+						<Label id="gk_sum_th3" class="gk-td gk-col3 s2-hide" text="{s:gk_sum_th3}" />
+					</Panel>
+					<Panel id="gk_sum_tr0" class="gk-tr s2-hide">
+						<Label id="gk_sum_tr0_c0" class="gk-td gk-col0 s2-hide" text="{s:gk_sum_tr0_c0}" />
+						<Label id="gk_sum_tr0_c1" class="gk-td gk-col1 s2-hide" text="{s:gk_sum_tr0_c1}" />
+						<Label id="gk_sum_tr0_c2" class="gk-td gk-col2 s2-hide" text="{s:gk_sum_tr0_c2}" />
+						<Label id="gk_sum_tr0_c3" class="gk-td gk-col3 s2-hide" text="{s:gk_sum_tr0_c3}" />
+					</Panel>
+					<Panel id="gk_sum_tr1" class="gk-tr s2-hide">
+						<Label id="gk_sum_tr1_c0" class="gk-td gk-col0 s2-hide" text="{s:gk_sum_tr1_c0}" />
+						<Label id="gk_sum_tr1_c1" class="gk-td gk-col1 s2-hide" text="{s:gk_sum_tr1_c1}" />
+						<Label id="gk_sum_tr1_c2" class="gk-td gk-col2 s2-hide" text="{s:gk_sum_tr1_c2}" />
+						<Label id="gk_sum_tr1_c3" class="gk-td gk-col3 s2-hide" text="{s:gk_sum_tr1_c3}" />
+					</Panel>
+					<Panel id="gk_sum_tr2" class="gk-tr s2-hide">
+						<Label id="gk_sum_tr2_c0" class="gk-td gk-col0 s2-hide" text="{s:gk_sum_tr2_c0}" />
+						<Label id="gk_sum_tr2_c1" class="gk-td gk-col1 s2-hide" text="{s:gk_sum_tr2_c1}" />
+						<Label id="gk_sum_tr2_c2" class="gk-td gk-col2 s2-hide" text="{s:gk_sum_tr2_c2}" />
+						<Label id="gk_sum_tr2_c3" class="gk-td gk-col3 s2-hide" text="{s:gk_sum_tr2_c3}" />
+					</Panel>
+					<Panel id="gk_sum_tr3" class="gk-tr s2-hide">
+						<Label id="gk_sum_tr3_c0" class="gk-td gk-col0 s2-hide" text="{s:gk_sum_tr3_c0}" />
+						<Label id="gk_sum_tr3_c1" class="gk-td gk-col1 s2-hide" text="{s:gk_sum_tr3_c1}" />
+						<Label id="gk_sum_tr3_c2" class="gk-td gk-col2 s2-hide" text="{s:gk_sum_tr3_c2}" />
+						<Label id="gk_sum_tr3_c3" class="gk-td gk-col3 s2-hide" text="{s:gk_sum_tr3_c3}" />
+					</Panel>
+					<Panel id="gk_sum_tr4" class="gk-tr s2-hide">
+						<Label id="gk_sum_tr4_c0" class="gk-td gk-col0 s2-hide" text="{s:gk_sum_tr4_c0}" />
+						<Label id="gk_sum_tr4_c1" class="gk-td gk-col1 s2-hide" text="{s:gk_sum_tr4_c1}" />
+						<Label id="gk_sum_tr4_c2" class="gk-td gk-col2 s2-hide" text="{s:gk_sum_tr4_c2}" />
+						<Label id="gk_sum_tr4_c3" class="gk-td gk-col3 s2-hide" text="{s:gk_sum_tr4_c3}" />
+					</Panel>
+				</Panel>
+			</Panel>
 		</Panel>
 	</Panel>
 </root>

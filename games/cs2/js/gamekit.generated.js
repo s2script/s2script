@@ -70,6 +70,11 @@
         "items": 8,
         "card": 6,
         "picker": 12
+      },
+      "summary": {
+        "stats": 4,
+        "cols": 4,
+        "rows": 5
       }
     },
     "classes": {
@@ -233,6 +238,83 @@
               "gk_kf5_v"
             ]
           }
+        ],
+        "summaryStats": [
+          {
+            "id": "gk_sum_kv0",
+            "vars": [
+              "gk_sum_kv0_k",
+              "gk_sum_kv0_v"
+            ]
+          },
+          {
+            "id": "gk_sum_kv1",
+            "vars": [
+              "gk_sum_kv1_k",
+              "gk_sum_kv1_v"
+            ]
+          },
+          {
+            "id": "gk_sum_kv2",
+            "vars": [
+              "gk_sum_kv2_k",
+              "gk_sum_kv2_v"
+            ]
+          },
+          {
+            "id": "gk_sum_kv3",
+            "vars": [
+              "gk_sum_kv3_k",
+              "gk_sum_kv3_v"
+            ]
+          }
+        ],
+        "summaryRows": [
+          {
+            "id": "gk_sum_tr0",
+            "vars": [
+              "gk_sum_tr0_c0",
+              "gk_sum_tr0_c1",
+              "gk_sum_tr0_c2",
+              "gk_sum_tr0_c3"
+            ]
+          },
+          {
+            "id": "gk_sum_tr1",
+            "vars": [
+              "gk_sum_tr1_c0",
+              "gk_sum_tr1_c1",
+              "gk_sum_tr1_c2",
+              "gk_sum_tr1_c3"
+            ]
+          },
+          {
+            "id": "gk_sum_tr2",
+            "vars": [
+              "gk_sum_tr2_c0",
+              "gk_sum_tr2_c1",
+              "gk_sum_tr2_c2",
+              "gk_sum_tr2_c3"
+            ]
+          },
+          {
+            "id": "gk_sum_tr3",
+            "vars": [
+              "gk_sum_tr3_c0",
+              "gk_sum_tr3_c1",
+              "gk_sum_tr3_c2",
+              "gk_sum_tr3_c3"
+            ]
+          },
+          {
+            "id": "gk_sum_tr4",
+            "vars": [
+              "gk_sum_tr4_c0",
+              "gk_sum_tr4_c1",
+              "gk_sum_tr4_c2",
+              "gk_sum_tr4_c3"
+            ]
+          }
         ]
       }
     },
@@ -323,6 +405,7 @@
         "gk_sh_tr7_x1",
         "gk_sh_prev",
         "gk_sh_next",
+        "gk_hub_list_close",
         "gk_hub_i0",
         "gk_hub_i1",
         "gk_hub_i2",

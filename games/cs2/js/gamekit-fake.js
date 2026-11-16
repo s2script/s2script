@@ -20,6 +20,7 @@ function mount(opts = {}) {
   const armed = {};
   const disabled = {};
   const chatSubs = [];
+  const commands = [];
   const refuse = new Set(opts.refuse || []);
   const slots = opts.slots || [0, 1, 2];
   let disconnect = null;
@@ -66,6 +67,7 @@ function mount(opts = {}) {
     Clients: {
       all: () => slots.map((slot) => ({ slot, signonState: 6 })),
       onDisconnect: (fn) => { disconnect = fn; return 1; },
+      fromSlot: (slot) => (slots.includes(slot) ? { slot, fakeCommand: (cmd) => { commands.push({ slot, cmd }); return true; } } : null),
     },
   };
   globalThis.__s2pkg_server = { Server: { onMapStart: (fn) => { mapStart = fn; return 2; } } };
@@ -87,7 +89,7 @@ function mount(opts = {}) {
   globalThis.__s2pkg_game_ctx.ui((thunk) => thunk(), (call) => () => call());
   const GameHud = globalThis.__s2pkg_cs2.GameHud;
   return {
-    GameHud, meters, chat, timers, claims, cursors, clicks, armed, disabled,
+    GameHud, meters, chat, timers, claims, cursors, clicks, armed, disabled, commands,
     hidden: (slot, id) => panel(slot, id).classes.has("s2-hide"),
     has: (slot, id, cls) => panel(slot, id).classes.has(cls),
     text: (slot, id) => panel(slot, id).text,

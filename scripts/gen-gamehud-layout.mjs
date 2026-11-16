@@ -59,6 +59,7 @@ export const SPEC = {
   prompt: { answers: 4 },
   sheet: { side: 16, list: 8, paragraphs: 4, toggles: 8, grid: 9, tableCols: 6, tableRows: 8, rowActions: 2, dots: 10 },
   hub: { items: 8, card: 6, picker: 12 },
+  summary: { stats: 4, cols: 4, rows: 5 },
 };
 const S = SPEC;
 
@@ -174,6 +175,36 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
   b.open(d, "Panel", "gk_toast", "gk-toast s2-hide");
   b.label(d + 1, "gk_toast_t", "gk-toast-t");
   b.label(d + 1, "gk_toast_s", "gk-toast-s");
+  b.close(d, "Panel");
+
+  b.raw(d, `<!-- Round-end summary: who won, why, a few headline stats and a short table. Passive: no cursor. -->`);
+  b.open(d, "Panel", "gk_sum", "gk-panel gk-sum gk-e-accent s2-hide");
+  b.label(d + 1, "gk_sum_eye", "gk-eyebrow gk-t-accent");
+  b.label(d + 1, "gk_sum_t", "gk-sum-t gk-t-accent");
+  b.label(d + 1, "gk_sum_s", "gk-sum-s");
+  b.open(d + 1, "Panel", null, "gk-kv gk-sum-kv");
+  for (let i = 0; i < S.summary.stats; i++) {
+    const r = `gk_sum_kv${i}`;
+    b.open(d + 2, "Panel", r, "gk-kv-cell s2-hide");
+    b.label(d + 3, `${r}_k`, "gk-kv-k");
+    b.label(d + 3, `${r}_v`, "gk-kv-v");
+    b.close(d + 2, "Panel");
+    b.pool("summaryStats", { id: r, vars: [`${r}_k`, `${r}_v`] });
+  }
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", "gk_sum_table", "gk-sum-table s2-hide");
+  b.open(d + 2, "Panel", null, "gk-tr gk-th");
+  for (let c = 0; c < S.summary.cols; c++) b.label(d + 3, `gk_sum_th${c}`, `gk-td gk-col${c} s2-hide`);
+  b.close(d + 2, "Panel");
+  for (let i = 0; i < S.summary.rows; i++) {
+    const r = `gk_sum_tr${i}`;
+    b.open(d + 2, "Panel", r, "gk-tr s2-hide");
+    const vars = [];
+    for (let c = 0; c < S.summary.cols; c++) vars.push(b.label(d + 3, `${r}_c${c}`, `gk-td gk-col${c} s2-hide`));
+    b.close(d + 2, "Panel");
+    b.pool("summaryRows", { id: r, vars });
+  }
+  b.close(d + 1, "Panel");
   b.close(d, "Panel");
 });
 
@@ -353,7 +384,7 @@ const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, she
   b.label(d + 2, "gk_hub_sub", "gk-brand-sub");
   b.close(d + 1, "Panel");
   b.open(d + 1, "Panel", "gk_hub_list", "gk-panel gk-hub-list");
-  head(b, d + 2, "gk_hub_list");
+  head(b, d + 2, "gk_hub_list", true);
   for (let i = 0; i < S.hub.items; i++) {
     const r = `gk_hub_i${i}`;
     b.button(d + 2, r, "gk-row gk-hub-row s2-hide", (dd) => { b.label(dd, `${r}_t`, "gk-hub-t"); b.label(dd, `${r}_m`, "gk-hub-m"); });
@@ -437,6 +468,7 @@ for (const [tone, hex] of Object.entries(S.tones)) {
   css.push(`.gk-side.gk-e-${tone} { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
   css.push(`.gk-side.gk-e-${tone} .gk-score { color: ${hex}; }`);
   css.push(`.gk-side.gk-e-${tone} .gk-pip { background-color: ${hex}; }`);
+  css.push(`.gk-sum.gk-e-${tone} { border-left: 0px solid ${hex}; border-top: 3px solid ${hex}; }`);
   css.push(`.gk-pcard.gk-e-${tone} { border-left: 0px solid ${hex}; border-top: 3px solid ${hex}; }`);
   css.push(`.gk-toast.gk-e-${tone} { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
 }
@@ -446,6 +478,7 @@ for (const [theme, hex] of Object.entries(S.themes)) {
   css.push(`.gk-theme-${theme} .gk-side.gk-e-accent .gk-pip { background-color: ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-toast.gk-e-accent { border-left: 0px solid ${hex}; border-bottom: 3px solid ${hex}; }`);
   css.push(`.gk-theme-${theme} .gk-pcard.gk-e-accent { border-left: 0px solid ${hex}; border-top: 3px solid ${hex}; }`);
+  css.push(`.gk-theme-${theme} .gk-sum.gk-e-accent { border-left: 0px solid ${hex}; border-top: 3px solid ${hex}; }`);
 }
 const cssOut = readFileSync(BASE_CSS, "utf8").trimEnd() + "\n\n" + css.join("\n") + "\n";
 

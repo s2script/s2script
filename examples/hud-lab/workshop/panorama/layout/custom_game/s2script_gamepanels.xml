@@ -630,6 +630,9 @@
 						<Panel class="gk-tick gk-acc-bg" />
 						<Label id="gk_hub_list_title" class="gk-hd-title" text="{s:gk_hub_list_title}" />
 						<Label id="gk_hub_list_right" class="gk-hd-right" text="{s:gk_hub_list_right}" />
+						<Button id="gk_hub_list_close" class="gk-close">
+							<Label id="gk_hub_list_close_t" class="gk-close-t" text="{s:gk_hub_list_close_t}" />
+						</Button>
 					</Panel>
 					<Button id="gk_hub_i0" class="gk-row gk-hub-row s2-hide">
 						<Label id="gk_hub_i0_t" class="gk-hub-t" text="{s:gk_hub_i0_t}" />
