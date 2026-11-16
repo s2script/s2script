@@ -1,4 +1,4 @@
-// @s2script/cs2 — GameHud: the in-round game HUD (top rail, kill feed, status card, toast, pop-up vote, drawer).
+// @s2script/cs2 — GameHud: the in-round game HUD (top rail, kill feed, status card, toast, pop-up vote, drawer, sheet, prompt).
 //
 // Paints `s2script_gamehud.xml` from the hudkit workshop addon. The layout spawns with
 // `observable: false`, so every paint is per player: each call takes an audience.
@@ -217,6 +217,151 @@ export interface GameHudDrawer {
   close(): void;
 }
 
+/** A numbered list item. Its number is `n`, else its place in the whole section (1-based). */
+export type GameHudSheetListItem = GameHudText | { readonly text: GameHudText; readonly n?: GameHudText };
+
+export interface GameHudSheetToggle {
+  readonly id?: string;
+  readonly label: GameHudText;
+  readonly on?: boolean;
+  /** Text on the right. Defaults to "On" or "Off". */
+  readonly value?: GameHudText;
+  readonly disabled?: boolean;
+  readonly [key: string]: unknown;
+}
+
+export interface GameHudSheetCard {
+  readonly id?: string;
+  readonly title: GameHudText;
+  readonly price?: GameHudText;
+  readonly desc?: GameHudText;
+  readonly selected?: boolean;
+  readonly disabled?: boolean;
+  readonly [key: string]: unknown;
+}
+
+export interface GameHudSheetAction {
+  readonly id?: string;
+  readonly label: GameHudText;
+  readonly tone?: GameHudTone;
+  readonly disabled?: boolean;
+}
+
+export interface GameHudSheetTableRow {
+  readonly id?: string;
+  /** Up to 6 cells, one per column. */
+  readonly cells: ReadonlyArray<GameHudText>;
+  /** Up to 2 buttons at the end of the row. */
+  readonly actions?: ReadonlyArray<GameHudSheetAction>;
+  readonly [key: string]: unknown;
+}
+
+/** A section's body. Each kind pages itself. */
+export type GameHudSheetBody =
+  /** Numbered rows, `perPage` at a time (default 6, at most 8). */
+  | { readonly kind: "list"; readonly items: ReadonlyArray<GameHudSheetListItem>; readonly perPage?: number }
+  /** Paragraphs, 4 per page. */
+  | { readonly kind: "text"; readonly paragraphs: ReadonlyArray<GameHudText> }
+  /** Clickable switches, 8 per page. A click reports the wanted state; repaint with `update`. */
+  | { readonly kind: "toggles"; readonly items: ReadonlyArray<GameHudSheetToggle> }
+  /** Clickable cards, 9 per page. */
+  | { readonly kind: "grid"; readonly items: ReadonlyArray<GameHudSheetCard> }
+  /** Columns and rows with row buttons, 8 rows per page. */
+  | { readonly kind: "table"; readonly columns: ReadonlyArray<GameHudText>; readonly rows: ReadonlyArray<GameHudSheetTableRow> };
+
+export interface GameHudSheetSection {
+  readonly id: string;
+  /** The side tab text. */
+  readonly label: GameHudText;
+  /** Consecutive sections with the same group sit under one header. */
+  readonly group?: GameHudText;
+  /** Small text on the side tab, such as a count. */
+  readonly meta?: GameHudText;
+  /** The body heading. Defaults to the label. */
+  readonly heading?: GameHudText;
+  /** The line under the heading. Defaults to "Page 2 of 3" when the body has pages. */
+  readonly kicker?: GameHudText;
+  readonly body: GameHudSheetBody;
+}
+
+export interface GameHudSheetEvent {
+  readonly section: string;
+  readonly kind: "toggle" | "item" | "action";
+  /** The item's index in the whole section. */
+  readonly index: number;
+  readonly item: GameHudSheetToggle | GameHudSheetCard | GameHudSheetTableRow;
+  /** For a toggle: the state the player asked for. */
+  readonly on?: boolean;
+  /** For a table button: its id (or label). */
+  readonly action?: string;
+}
+
+export interface GameHudSheetSpec {
+  readonly title?: GameHudText;
+  readonly right?: GameHudText;
+  readonly footer?: GameHudText;
+  /**
+   * Side tabs that do not fit (16 slots) collapse to group headers except the open section's
+   * group, and past that scroll.
+   */
+  readonly sections: ReadonlyArray<GameHudSheetSection>;
+  /** The section id to open on. */
+  readonly section?: string;
+  /** A list number in that section to open on and highlight, such as rule 3. */
+  readonly highlight?: GameHudText;
+  onSelect?(event: GameHudSheetEvent, sheet: GameHudSheet): void;
+  onSection?(id: string, sheet: GameHudSheet): void;
+  onClose?(fromPlayer: boolean): void;
+}
+
+export interface GameHudSheet {
+  isOpen(): boolean;
+  /**
+   * Repaint with changed fields; fields you leave out keep their value. The open section, page and
+   * side-tab scroll stay unless the spec names a section or a highlight.
+   */
+  update(spec: Partial<GameHudSheetSpec>): void;
+  /** Open a section, optionally on the page of a list number, highlighted. */
+  show(section?: string, highlight?: GameHudText): void;
+  /** Go to a page (0-based). */
+  page(n: number): void;
+  close(): void;
+}
+
+export interface GameHudPromptAnswer {
+  readonly id?: string;
+  readonly label: GameHudText;
+  readonly tone?: GameHudTone;
+  readonly disabled?: boolean;
+}
+
+export interface GameHudPromptResult {
+  /** The answer's index, or null when no answer was picked. */
+  readonly index: number | null;
+  /** The answer's id (or its text). */
+  readonly id: unknown;
+  readonly reason: "answer" | "closed" | "timeout" | "replaced" | "cancelled";
+}
+
+export interface GameHudPromptSpec {
+  readonly title?: GameHudText;
+  readonly question: GameHudText;
+  /** A line of context under the question. */
+  readonly why?: GameHudText;
+  /** 1 to 4 answers. */
+  readonly answers: ReadonlyArray<GameHudText | GameHudPromptAnswer>;
+  readonly footer?: GameHudText;
+  /** Close with reason "timeout" after this many seconds. No timer by default. */
+  readonly seconds?: number;
+  onAnswer?(result: GameHudPromptResult): void;
+}
+
+export interface GameHudPrompt {
+  isOpen(): boolean;
+  /** Close with reason "cancelled". */
+  close(): void;
+}
+
 export declare const GameHud: {
   readonly themes: ReadonlyArray<GameHudTheme>;
   readonly tones: ReadonlyArray<GameHudTone>;
@@ -244,4 +389,15 @@ export declare const GameHud: {
    * player's drawer.
    */
   drawer(player: number | { readonly slot: number }, spec: GameHudDrawerSpec): GameHudDrawer | null;
+  /**
+   * Open a sheet for one player: side tabs, a paged body and a Close button. It takes the cursor.
+   * Opening again for the same player repaints it. Null when another plugin holds that player's sheet.
+   */
+  sheet(player: number | { readonly slot: number }, spec: GameHudSheetSpec): GameHudSheet | null;
+  /**
+   * Ask one player a question with clickable answers. It takes the cursor and has a Close button.
+   * A new prompt replaces this plugin's open one. If the HUD refuses it, the question goes to chat
+   * and the player answers by typing the number. Null when another plugin holds that player's prompt.
+   */
+  prompt(player: number | { readonly slot: number }, spec: GameHudPromptSpec): GameHudPrompt | null;
 };

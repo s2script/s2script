@@ -266,6 +266,7 @@
         "gk_dr_r5",
         "gk_dr_r6",
         "gk_dr_r7",
+        "gk_pr_close",
         "gk_pr_a0",
         "gk_pr_a1",
         "gk_pr_a2",

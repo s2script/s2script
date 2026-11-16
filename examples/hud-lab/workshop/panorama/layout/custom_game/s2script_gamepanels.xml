@@ -207,6 +207,9 @@
 					<Panel class="gk-tick gk-acc-bg" />
 					<Label id="gk_pr_title" class="gk-hd-title" text="{s:gk_pr_title}" />
 					<Label id="gk_pr_right" class="gk-hd-right" text="{s:gk_pr_right}" />
+					<Button id="gk_pr_close" class="gk-close">
+						<Label id="gk_pr_close_t" class="gk-close-t" text="{s:gk_pr_close_t}" />
+					</Button>
 				</Panel>
 				<Label id="gk_pr_q" class="gk-prompt-q" text="{s:gk_pr_q}" />
 				<Label id="gk_pr_why" class="gk-prompt-why" text="{s:gk_pr_why}" />
