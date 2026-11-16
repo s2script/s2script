@@ -108,11 +108,19 @@ Without it a fast second event yanks the first off screen mid-life — the class
 line, column, property and value. The compiler checks nothing. **Load once after every CSS change** —
 that dialog is the entire validation channel in this pipeline.
 
-**Layouts have an attribute allowlist.** A `custom_hud_layout` file is validated at load, and one
-attribute outside the allowlist rejects the whole file: `[custom_hud] Layout contains disallowed
-attribute scaling for panel type 'Image'`, then `Layout xml did not pass CustomHud validation`.
-`id`, `class`, `text` and `src` are known to load; `scaling` on `Image` is not allowed. The compiler
-accepts all of them, so `scripts/gen-gamehud-layout.mjs` refuses any other attribute.
+**Layouts have a per-tag attribute whitelist.** A `custom_hud_layout` file is validated at load,
+and one attribute outside the list rejects the whole file: `[custom_hud] Layout contains
+disallowed attribute scaling for panel type 'Image'`, then `Layout xml did not pass CustomHud
+validation`. The compiler accepts anything, so `scripts/gen-gamehud-layout.mjs` enforces the list:
+
+| Tag | Attributes |
+| --- | --- |
+| `Panel` | `id`, `class`, `hittest` |
+| `Label` | `id`, `class`, `hittest`, `text` |
+| `Image` | `id`, `class`, `hittest`, `src`, `texturewidth`, `textureheight` |
+| `Button` | `id`, `class` |
+
+No other panel type is allowed, and `<include>` may only reference a `.vcss`.
 
 ## Things that turn out not to work
 

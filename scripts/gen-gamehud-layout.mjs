@@ -521,16 +521,24 @@ const jsOut = `// @s2script/cs2 — game-kit layout descriptors.
 `;
 
 // ---- CustomHud attribute allowlist ------------------------------------------------------------
-// The client validates a custom_hud layout at load and rejects the WHOLE file for one attribute it
-// does not allow ("Layout contains disallowed attribute scaling for panel type 'Image'"), and the
-// compiler never says. Keep to the attributes a published layout has been seen to load with.
-const ALLOWED_ATTRS = new Set(["id", "class", "text", "src"]);
+// The client validates a custom_hud layout at load against a per-tag attribute whitelist and
+// rejects the WHOLE file for one miss ("Layout contains disallowed attribute scaling for panel
+// type 'Image'"); the compiler never says. This is that whitelist, so a miss fails here instead.
+const ALLOWED = {
+  root: [], styles: [], include: ["src"],
+  Panel: ["id", "class", "hittest"],
+  Label: ["id", "class", "hittest", "text"],
+  Image: ["id", "class", "hittest", "src", "texturewidth", "textureheight"],
+  Button: ["id", "class"],
+};
 for (const [name, xml] of [["s2script_gamehud.xml", hudXml], ["s2script_gamepanels.xml", panelsXml]]) {
   const body = xml.replace(/<!--[\s\S]*?-->/g, "");
   for (const tag of body.matchAll(/<([A-Za-z]+)\b([^>]*)>/g)) {
+    const allowed = ALLOWED[tag[1]];
+    if (!allowed) { console.error(`${name}: <${tag[1]}> is not a custom hud panel type`); process.exit(1); }
     for (const [, attr] of tag[2].matchAll(/([A-Za-z_:-]+)\s*=/g)) {
-      if (!ALLOWED_ATTRS.has(attr)) {
-        console.error(`${name}: <${tag[1]}> has attribute '${attr}', which CustomHud validation may reject`);
+      if (!allowed.includes(attr)) {
+        console.error(`${name}: <${tag[1]}> has attribute '${attr}', which CustomHud validation rejects`);
         process.exit(1);
       }
     }
