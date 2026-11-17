@@ -1,0 +1,266 @@
+name: cs2-update
+
+# Update-day watcher. Every 5 minutes (GitHub's minimum; scheduled runs can start late under
+# load) it reads CS2's public depot manifest from Steam; when it
+# differs from tools/gamedata-offline/baseline.json (the build the shipped gamedata was last
+# checked against) it downloads the new server modules, runs the offline checks
+# (tools/gamedata-offline/update-day.sh: signatures, vtable pins, tracked index alignment, every
+# vtable's slot count, schema regen + diff) and files ONE issue per build, labelled `cs2-update`.
+#
+# Right after filing the issue, the job POSTs to a Claude Code scheduled task's API trigger
+# (secrets CLAUDE_FIRE_URL + CLAUDE_FIRE_TOKEN). That starts a cloud session which fixes what the
+# report flags, regenerates the schema, bumps baseline.json and opens a DRAFT PR. Nothing merges
+# or tags on its own. Without the secrets the issue is the hand-off.
+#
+# The PR that bumps baseline.json is what stops the issue being refiled; an existing issue for
+# the build (open or closed) also stops it, so a run never files twice while the PR is open.
+#
+# repository_dispatch (type cs2-update-poll) lets an external poller wake this sooner than cron.
+#
+# The previous build's modules come from this workflow's own cache (saved when that build was
+# new). If the cache expired, the baseline manifest is downloaded instead; if that fails too the
+# run still checks signatures and pins, just without the old-vs-new diffs.
+#
+# Steam's binaries never leave the runner: they live only in the Actions cache. The uploaded
+# artifact holds the report and the regenerated schema catalog, which are our own data.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  repository_dispatch:
+    types: [cs2-update-poll]
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: 'Depot 2347773 manifest gid to check (default: current public)'
+        required: false
+      buildid:
+        description: 'Build id of that manifest (required with manifest)'
+        required: false
+      force:
+        description: 'File the issue even if one exists for this build'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: cs2-update
+  cancel-in-progress: false
+
+env:
+  DEPOT: '2347773'
+  DEPOTDOWNLOADER_VERSION: '3.4.0'
+  DEPOTDOWNLOADER_SHA256: a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Poll Steam for the public build
+        id: poll
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_MANIFEST: ${{ inputs.manifest }}
+          INPUT_BUILDID: ${{ inputs.buildid }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          info=$(curl -fsS --retry 4 --retry-delay 15 https://api.steamcmd.net/v1/info/730)
+          read -r buildid manifest updated < <(python3 -I -c '
+          import json, sys
+          d = json.loads(sys.stdin.read())["data"]["730"]["depots"]
+          print(d["branches"]["public"]["buildid"], d[sys.argv[1]]["manifests"]["public"]["gid"],
+                d["branches"]["public"]["timeupdated"])' "$DEPOT" <<<"$info")
+          if [ -n "$INPUT_MANIFEST" ] && [ "$INPUT_MANIFEST" != "$manifest" ]; then
+            # A hand-picked manifest is not the public one, so its build id must come with it:
+            # the issue, the Claude prompt and the baseline bump all pair the two.
+            if [ -z "$INPUT_BUILDID" ]; then
+              echo "::error::manifest $INPUT_MANIFEST is not the public manifest; pass its buildid too."
+              exit 1
+            fi
+            manifest=$INPUT_MANIFEST
+            buildid=$INPUT_BUILDID
+          fi
+          base_manifest=$(python3 -I -c 'import json; print(json.load(open("tools/gamedata-offline/baseline.json"))["manifest"])')
+          base_build=$(python3 -I -c 'import json; print(json.load(open("tools/gamedata-offline/baseline.json"))["buildid"])')
+          echo "public build $buildid manifest $manifest (updated $updated); baseline build $base_build manifest $base_manifest"
+          {
+            echo "buildid=$buildid"
+            echo "manifest=$manifest"
+            echo "updated=$updated"
+            echo "base_manifest=$base_manifest"
+            echo "base_build=$base_build"
+          } >> "$GITHUB_OUTPUT"
+          run=true
+          if [ "$manifest" = "$base_manifest" ]; then
+            echo "Baseline is current."
+            run=false
+          elif [ "$INPUT_FORCE" != "true" ]; then
+            existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label cs2-update --state all \
+              --search "\"manifest $manifest\" in:body" --json number --jq '.[0].number // empty')
+            if [ -n "$existing" ]; then
+              echo "Issue #$existing already covers manifest $manifest."
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the baseline build's modules
+        if: steps.poll.outputs.run == 'true'
+        id: oldcache
+        uses: actions/cache/restore@v4
+        with:
+          path: depot/cur
+          key: cs2-depot-${{ env.DEPOT }}-${{ steps.poll.outputs.base_manifest }}
+
+      - uses: actions/setup-python@v5
+        if: steps.poll.outputs.run == 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Set up DepotDownloader and Python deps
+        if: steps.poll.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dd"
+          curl -fsSL --retry 4 -o "$RUNNER_TEMP/dd/dd.zip" \
+            "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-x64.zip"
+          echo "$DEPOTDOWNLOADER_SHA256  $RUNNER_TEMP/dd/dd.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/dd/dd.zip" -d "$RUNNER_TEMP/dd"
+          chmod +x "$RUNNER_TEMP/dd/DepotDownloader"
+          echo "DEPOTDOWNLOADER=$RUNNER_TEMP/dd/DepotDownloader" >> "$GITHUB_ENV"
+          python -m pip install pyelftools==0.33 capstone==5.0.9
+
+      - name: Fetch the baseline build
+        if: steps.poll.outputs.run == 'true'
+        id: old
+        run: |
+          set -uo pipefail
+          if [ -d depot/cur ]; then
+            mv depot/cur depot/old
+            echo "from=cache" >> "$GITHUB_OUTPUT"
+          elif tools/gamedata-offline/fetch-depot.sh "${{ steps.poll.outputs.base_manifest }}" depot/old; then
+            echo "from=steam" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not get the baseline build's modules; running without old-vs-new diffs."
+            rm -rf depot/old
+            echo "from=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch the new build
+        if: steps.poll.outputs.run == 'true'
+        run: tools/gamedata-offline/fetch-depot.sh "${{ steps.poll.outputs.manifest }}" depot/cur
+
+      - name: Cache the new build's modules for the next update
+        if: steps.poll.outputs.run == 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: depot/cur
+          key: cs2-depot-${{ env.DEPOT }}-${{ steps.poll.outputs.manifest }}
+
+      - name: Run the update-day checks
+        if: steps.poll.outputs.run == 'true'
+        id: check
+        run: |
+          # Actions runs bash with -e; turn it off so exit 1 (needs attention) is recorded, not fatal.
+          set +e -uo pipefail
+          old=()
+          if [ -d depot/old ]; then old=(--old depot/old); fi
+          tools/gamedata-offline/update-day.sh --new depot/cur "${old[@]}" --out report
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          cat report/check.log
+          [ "$code" -le 1 ]
+
+      - name: Upload the report
+        # Not when the new build failed to download: no issue, so the next poll retries.
+        if: always() && steps.poll.outputs.run == 'true' && steps.check.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs2-update-${{ steps.poll.outputs.buildid }}
+          path: report/
+          retention-days: 90
+
+      - name: File the issue
+        id: issue
+        # Not when the new build failed to download: no issue, so the next poll retries.
+        if: always() && steps.poll.outputs.run == 'true' && steps.check.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDID: ${{ steps.poll.outputs.buildid }}
+          MANIFEST: ${{ steps.poll.outputs.manifest }}
+          UPDATED: ${{ steps.poll.outputs.updated }}
+          BASE_BUILD: ${{ steps.poll.outputs.base_build }}
+          BASE_MANIFEST: ${{ steps.poll.outputs.base_manifest }}
+          OLD_FROM: ${{ steps.old.outputs.from }}
+          CODE: ${{ steps.check.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          case "${CODE:-2}" in
+            0) verdict='clean: no signature, pin or tracked vtable change'; tag='clean' ;;
+            1) verdict='needs attention'; tag='needs attention' ;;
+            *) verdict='the checker failed, see the run log'; tag='checker failed' ;;
+          esac
+          when=$(date -u -d "@$UPDATED" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "$UPDATED")
+          {
+            echo "CS2 public build **$BUILDID** (depot $DEPOT manifest $MANIFEST, updated $when)."
+            echo "Compared with the baseline build $BASE_BUILD (manifest $BASE_MANIFEST, modules from: ${OLD_FROM:-none})."
+            echo
+            echo "**Verdict: $verdict.** [Run log and full report]($RUN_URL) (artifact \`cs2-update-$BUILDID\`, with the regenerated schema catalog)."
+            echo
+            echo "To close this out: fix whatever the report flags, regenerate the schema catalog"
+            echo "(\`tools/gamedata-offline/schema.py\`, then \`gen-schema\` / \`gen-nav\`), and bump"
+            echo "\`tools/gamedata-offline/baseline.json\` to build $BUILDID / manifest $MANIFEST in the same PR."
+            echo
+            if [ -f report/report.md ]; then cat report/report.md; fi
+          } > issue.md
+          # Issue bodies cap at 65536 characters; the artifact has the rest.
+          if [ "$(wc -c < issue.md)" -gt 60000 ]; then
+            head -c 60000 issue.md > issue.trunc
+            printf '\n\n_Truncated; the full report is in the run artifact._\n' >> issue.trunc
+            mv issue.trunc issue.md
+          fi
+          gh label create cs2-update --repo "$GITHUB_REPOSITORY" --color B60205 \
+            --description 'A new CS2 build, found by the cs2-update workflow' 2>/dev/null || true
+          url=$(gh issue create --repo "$GITHUB_REPOSITORY" --label cs2-update \
+            --title "CS2 update: build $BUILDID ($tag)" --body-file issue.md)
+          echo "$url"
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+
+      # Wake the update-day Claude scheduled task through its API trigger (a webhook). The run is a
+      # normal Claude Code cloud session on the owner's account (subscription usage, visible in the
+      # Claude app); it re-downloads the modules itself, fixes what the issue reports and opens the
+      # draft PR. Without the two secrets the issue is the hand-off.
+      - name: Wake Claude
+        if: steps.issue.outputs.number != '' && steps.check.outputs.code != '' && steps.check.outputs.code != '2'
+        env:
+          FIRE_URL: ${{ secrets.CLAUDE_FIRE_URL }}
+          FIRE_TOKEN: ${{ secrets.CLAUDE_FIRE_TOKEN }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+          BUILDID: ${{ steps.poll.outputs.buildid }}
+          MANIFEST: ${{ steps.poll.outputs.manifest }}
+          BASE_BUILD: ${{ steps.poll.outputs.base_build }}
+          BASE_MANIFEST: ${{ steps.poll.outputs.base_manifest }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FIRE_URL" ] || [ -z "$FIRE_TOKEN" ]; then
+            echo "::notice::CLAUDE_FIRE_URL / CLAUDE_FIRE_TOKEN not set; the issue is the hand-off."
+            exit 0
+          fi
+          text=$(printf 'repo=%s issue=%s buildid=%s manifest=%s base_buildid=%s base_manifest=%s run=%s' \
+            "$GITHUB_REPOSITORY" "$ISSUE" "$BUILDID" "$MANIFEST" "$BASE_BUILD" "$BASE_MANIFEST" "$RUN_URL")
+          body=$(python3 -I -c 'import json, sys; print(json.dumps({"text": sys.argv[1]}))' "$text")
+          curl -fsS --retry 3 --retry-delay 10 -X POST "$FIRE_URL" \
+            -H "Authorization: Bearer $FIRE_TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d "$body" | python3 -I -c 'import json, sys; print("Claude session:", json.load(sys.stdin).get("claude_code_session_url"))'

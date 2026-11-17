@@ -23,6 +23,13 @@ It reports three things:
   normalised fingerprint of each slot's first instructions, so an inserted virtual shows up as
   `MOVE Iface_Fn: Class[19] -> 20`.
 
+With `--old --all-vtables` it also diffs the slot count of **every** RTTI vtable in every module
+(old vs new), with the classes s2script names listed first. That catches a class s2script calls
+through a compiled s2sdk header but has no pin for, which is how the Nov 11 INetworkMessages
+break showed up. `--markdown <file>` writes the summary used in the update issue, and `--strict`
+exits 1 when something needs a look: a newly failing signature, a pin mismatch, a moved index, or
+a size change in a tracked class.
+
 It reads the files and never runs them. It does not check schema fields (those resolve by name at
 runtime) or the few non-schema struct offsets (`CMoveData_*`, `GameEntitySystem`,
 `CheckTransmitInfo_clientEntityIndex`, `CServerSideClient_m_nClientSlot`), which still need the
@@ -50,3 +57,22 @@ change. About 40 fieldless classes (`*_API` script shims, Pulse function librari
 static constructors instead and have no record on disk; those are kept from the previous catalog
 while their name is still in a module. It reports any field whose type it could not decode
 (written as `{"kind":"unknown"}`); there should be none.
+
+## Update day, automated (`update-day.sh`, `fetch-depot.sh`, `baseline.json`)
+
+`.github/workflows/cs2-update.yml` polls Steam every 5 minutes. When depot 2347773's public
+manifest differs from `baseline.json`, it fetches both builds and runs the checks, then files a
+`cs2-update` issue with the report. It then POSTs to a Claude Code scheduled task's API trigger
+(secrets `CLAUDE_FIRE_URL` and `CLAUDE_FIRE_TOKEN`), which starts a cloud session that
+re-downloads the modules, fixes what the report flags and opens a draft PR. The PR that fixes a
+build bumps `baseline.json`, and that bump is what stops the watcher. The same steps by hand:
+
+```bash
+tools/gamedata-offline/fetch-depot.sh <new manifest> /tmp/new    # needs DepotDownloader
+tools/gamedata-offline/fetch-depot.sh <baseline manifest> /tmp/old
+tools/gamedata-offline/update-day.sh --new /tmp/new --old /tmp/old --out /tmp/report
+# exit 0 = nothing to fix (regenerate the schema anyway), 1 = see /tmp/report/report.md
+```
+
+Run the workflow by hand (Actions → cs2-update → Run workflow) with `manifest` and `buildid` to check a
+specific build, or with `force` to file the issue again.
