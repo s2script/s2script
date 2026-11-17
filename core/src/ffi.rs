@@ -759,7 +759,7 @@ pub extern "C" fn s2script_core_dispatch_input(
 }
 
 /// UserMessage-interception: shim → core on a bitmap-hit PostEventAbstract. `name` = the intercepted
-/// message's `GetUnscopedName()` (the canonical dispatch key), `id` = its `m_MessageId`. Runs the
+/// message's `GetName()` (the canonical dispatch key), `id` = its `m_MessageId`. Runs the
 /// matching `UserMessages.onPre` subscribers SYNCHRONOUSLY over the shim's current (block-scoped)
 /// intercepted message and returns the collapsed `HookResult` (0..3); >= Handled(2) tells the shim to
 /// MRES_SUPERCEDE the send. `catch_unwind`-wrapped and FAIL-OPEN (→ 0 Continue on a panic or invalid

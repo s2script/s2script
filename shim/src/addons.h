@@ -27,7 +27,7 @@
 #include "khook_binding.h"
 
 class IFileSystem;
-class INetworkMessageInternal;
+struct NetMessageInfo_t;
 
 // The engine facts this module needs, gathered by s2script_mm.cpp from gamedata at boot. A null
 // pointer or a negative offset turns off the part that needs it.
@@ -36,7 +36,7 @@ struct S2AddonsEngine {
     void* hostStateRequestFn = nullptr;              // CHostStateMgr::SetPendingHostStateRequest
     void* replyConnectionFn = nullptr;               // CNetworkGameServerBase::ReplyConnection
     s2resolve::VirtualSlotResolution sendNetMessage; // CServerSideClient::SendNetMessage
-    INetworkMessageInternal* signonInfo = nullptr;   // the CNETMsg_SignonState record
+    NetMessageInfo_t* signonInfo = nullptr;   // the CNETMsg_SignonState record
     int reqLevelNameOffset = -1;                     // CHostStateRequest::m_LevelName (CUtlString)
     int reqAddonsOffset = -1;                        // CHostStateRequest::m_Addons (CUtlString)
     int reqKeyValuesOffset = -1;                     // CHostStateRequest::m_pKV (KeyValues*)

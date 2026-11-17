@@ -51,9 +51,9 @@ void CCommand::Reset() {
     m_nArgv0Size = 0;
     m_ArgSBuffer.Base()[0] = '\0';
     m_Args.RemoveAll();
-    m_unk101 = false;
+    m_bSequenceMarker = false;
     m_flInputTime = NAN;   // "not from an input event", as Valve's Reset sets it
-    m_unk201 = 0;
+    m_nSDLTimestamp = 0;
 }
 
 CCommand::CCommand() {
