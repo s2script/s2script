@@ -21163,7 +21163,7 @@
       },
       {
         "name": "m_bSpawnDyingParticles",
-        "offset": 13739,
+        "offset": 13738,
         "type": {
           "kind": "atomic",
           "name": "bool"
@@ -38945,6 +38945,14 @@
           "kind": "atomic",
           "name": "float32"
         }
+      },
+      {
+        "name": "m_bFrostEnabled",
+        "offset": 1976,
+        "type": {
+          "kind": "atomic",
+          "name": "bool"
+        }
       }
     ]
   },
@@ -43022,6 +43030,14 @@
       {
         "name": "m_flPlantingBlendTimeSeconds",
         "offset": 36,
+        "type": {
+          "kind": "atomic",
+          "name": "float32"
+        }
+      },
+      {
+        "name": "m_flTransitionBlendTimeSeconds",
+        "offset": 40,
         "type": {
           "kind": "atomic",
           "name": "float32"
@@ -100237,6 +100253,14 @@
       {
         "name": "m_nTickCount",
         "offset": 0,
+        "type": {
+          "kind": "atomic",
+          "name": "int32"
+        }
+      },
+      {
+        "name": "m_nTotalTicks",
+        "offset": 4,
         "type": {
           "kind": "atomic",
           "name": "int32"

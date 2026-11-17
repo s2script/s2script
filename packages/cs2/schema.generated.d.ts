@@ -3175,6 +3175,7 @@ export interface CMapInfo extends CPointEntity {
   envPuddleRippleDirection: number | null;
   envWetnessCoverage: number | null;
   envWetnessDryingAmount: number | null;
+  frostEnabled: boolean | null;
 }
 
 export interface CMarkupVolume extends CBaseModelEntity {
