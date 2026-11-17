@@ -51,7 +51,6 @@
 #include <ctime>
 #include <engine2/inetworkgameserver.h>
 #include <engine2/inetworkserverservice.h>
-#include <engine2/networkgameserverbase.h>
 
 PLUGIN_GLOBALVARS();
 
@@ -3056,7 +3055,9 @@ static void PrepareRun(const char* run_id,const std::string& suite) {
 static void PrintRuntime() {
     const auto modules = s2khook::runtime::CollectModules();
     const int build = g_engine2 ? g_engine2->GetBuildVersion() : 0;
-    INetworkGameServer* game = g_network_server ? g_network_server->GetIGameServer() : nullptr;
+    // CNetworkGameServerBase's first base is INetworkGameServer (same pointer); see S2_GameServer.
+    INetworkGameServer* game = g_network_server
+        ? reinterpret_cast<INetworkGameServer*>(g_network_server->GetIGameServer()) : nullptr;
     const char* map = game ? game->GetMapName() : nullptr;
     bool ready = build > 0 && map && map[0];
     std::string paths = "{";

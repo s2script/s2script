@@ -1,6 +1,7 @@
 #pragma once
 #include <ISmmPlugin.h>
 #include "khook_map.h"
+#include <engine2/isource2server.h>   // ClientPutInServerType_t (an enum without a fixed type, so no forward decl)
 
 // ISource2Server is forward-declared here; full definition (engine2/isource2server.h) is
 // included only in s2script_mm.cpp where the KHook machinery lives.
@@ -79,7 +80,7 @@ public:
     KHook::Return<void> Hook_OnClientConnected(ISource2GameClients*, CPlayerSlot slot, const char* name,
                                                unsigned long long xuid, const char* netid, const char* addr, bool fake);
     KHook::Return<void> Hook_ClientPutInServer(ISource2GameClients*, CPlayerSlot slot, const char* name,
-                                               int type, unsigned long long xuid);
+                                               ClientPutInServerType_t type, unsigned long long xuid);
     KHook::Return<void> Hook_ClientActive(ISource2GameClients*, CPlayerSlot slot, bool bLoadGame,
                                           const char* name, unsigned long long xuid);
     KHook::Return<void> Hook_ClientFullyConnect(ISource2GameClients*, CPlayerSlot slot);

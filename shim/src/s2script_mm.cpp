@@ -52,7 +52,6 @@
 // GetMapName / GetGlobals()->curtime (typed vtable calls; the compiler derives the index).
 #include <engine2/inetworkgameserver.h>
 #include <engine2/inetworkserverservice.h>
-#include <engine2/networkgameserverbase.h>   // CNetworkGameServerBase IS-A INetworkGameServer
 
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
@@ -133,7 +132,7 @@ struct InterfaceHooks {
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const CCommand&> clientCommand;
     S2CheckedVirtual<ICvar, void, ConCommandRef, const CCommandContext&, const CCommand&> dispatchConCommand;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, uint64, const char*, const char*, bool> onClientConnected;
-    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, int, uint64> clientPutInServer;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, ClientPutInServerType_t, uint64> clientPutInServer;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, bool, const char*, uint64> clientActive;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot> clientFullyConnect;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*> clientDisconnect;
@@ -1287,10 +1286,13 @@ static const int kMaxClientSlots = 64;
 static int s_trackedSignon[kMaxClientSlots] = {0};
 
 // INetworkGameServer via the TYPED virtual (replaces the NetworkServerService.gameServer offset).
-// CNetworkGameServerBase (the GetIGameServer return type) IS-A INetworkGameServer.
+// CNetworkGameServerBase (the GetIGameServer return type) has INetworkGameServer as its FIRST base,
+// so the pointer is the same. Its header (networkgameserverbase.h) is not included: it pulls in
+// generated protobuf headers (networkbasetypes.pb.h) this build doesn't generate.
 static INetworkGameServer* S2_GameServer() {
     if (!s_pNetworkServerService) return nullptr;
-    return static_cast<INetworkServerService*>(s_pNetworkServerService)->GetIGameServer();
+    return reinterpret_cast<INetworkGameServer*>(
+        static_cast<INetworkServerService*>(s_pNetworkServerService)->GetIGameServer());
 }
 
 static int s2_client_signon(int slot) {
@@ -7543,7 +7545,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_OnClientConnected(ISource2GameClients* 
     S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
     return S2_Ignore();
 }
-KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* clients, CPlayerSlot slot, const char*, int, unsigned long long xuid) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* clients, CPlayerSlot slot, const char*, ClientPutInServerType_t, unsigned long long xuid) {
     auto obs = g_hk.clientPutInServer.Observe(clients);
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
