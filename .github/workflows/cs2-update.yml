@@ -34,6 +34,9 @@ on:
       manifest:
         description: 'Depot 2347773 manifest gid to check (default: current public)'
         required: false
+      buildid:
+        description: 'Build id of that manifest (required with manifest)'
+        required: false
       force:
         description: 'File the issue even if one exists for this build'
         type: boolean
@@ -66,6 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_MANIFEST: ${{ inputs.manifest }}
+          INPUT_BUILDID: ${{ inputs.buildid }}
           INPUT_FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
@@ -75,7 +79,16 @@ jobs:
           d = json.loads(sys.stdin.read())["data"]["730"]["depots"]
           print(d["branches"]["public"]["buildid"], d[sys.argv[1]]["manifests"]["public"]["gid"],
                 d["branches"]["public"]["timeupdated"])' "$DEPOT" <<<"$info")
-          if [ -n "$INPUT_MANIFEST" ]; then manifest=$INPUT_MANIFEST; fi
+          if [ -n "$INPUT_MANIFEST" ] && [ "$INPUT_MANIFEST" != "$manifest" ]; then
+            # A hand-picked manifest is not the public one, so its build id must come with it:
+            # the issue, the Claude prompt and the baseline bump all pair the two.
+            if [ -z "$INPUT_BUILDID" ]; then
+              echo "::error::manifest $INPUT_MANIFEST is not the public manifest; pass its buildid too."
+              exit 1
+            fi
+            manifest=$INPUT_MANIFEST
+            buildid=$INPUT_BUILDID
+          fi
           base_manifest=$(python3 -I -c 'import json; print(json.load(open("tools/gamedata-offline/baseline.json"))["manifest"])')
           base_build=$(python3 -I -c 'import json; print(json.load(open("tools/gamedata-offline/baseline.json"))["buildid"])')
           echo "public build $buildid manifest $manifest (updated $updated); baseline build $base_build manifest $base_manifest"
@@ -158,9 +171,10 @@ jobs:
         if: steps.poll.outputs.run == 'true'
         id: check
         run: |
-          set -uo pipefail
+          # Actions runs bash with -e; turn it off so exit 1 (needs attention) is recorded, not fatal.
+          set +e -uo pipefail
           old=()
-          [ -d depot/old ] && old=(--old depot/old)
+          if [ -d depot/old ]; then old=(--old depot/old); fi
           tools/gamedata-offline/update-day.sh --new depot/cur "${old[@]}" --out report
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"

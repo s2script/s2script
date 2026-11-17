@@ -73,5 +73,5 @@ tools/gamedata-offline/update-day.sh --new /tmp/new --old /tmp/old --out /tmp/re
 # exit 0 = nothing to fix (regenerate the schema anyway), 1 = see /tmp/report/report.md
 ```
 
-Run the workflow by hand (Actions → cs2-update → Run workflow) with `manifest` to check a
+Run the workflow by hand (Actions → cs2-update → Run workflow) with `manifest` and `buildid` to check a
 specific build, or with `force` to file the issue again.
