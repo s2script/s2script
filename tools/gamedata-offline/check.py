@@ -23,6 +23,11 @@ from jsonc import strip_jsonc_comments  # noqa: E402
 
 PLAT = 'linuxsteamrt64'
 R_RELATIVE, R_64, R_GLOB_DAT = 8, 1, 6
+CLASS_TI_VTABLES = {
+    '_ZTVN10__cxxabiv117__class_type_infoE',
+    '_ZTVN10__cxxabiv120__si_class_type_infoE',
+    '_ZTVN10__cxxabiv121__vmi_class_type_infoE',
+}
 
 
 class Image:
@@ -39,6 +44,7 @@ class Image:
             self.segs.append((s['p_vaddr'], buf, bool(s['p_flags'] & 1)))
         self.sections = {sec.name: (sec['sh_addr'], sec['sh_size']) for sec in elf.iter_sections() if sec['sh_addr']}
         self.extfuncs = set()  # addresses of slots holding a symbol reloc to a FUNC (e.g. __cxa_pure_virtual)
+        self.typeinfos = set()  # addresses of class typeinfo objects (their vptr is a reloc to a __cxxabiv1 vtable)
         for sec in elf.iter_sections():
             if not isinstance(sec, RelocationSection):
                 continue
@@ -49,6 +55,8 @@ class Image:
                     self.w64(r['r_offset'], r['r_addend'])
                 elif t in (R_64, R_GLOB_DAT):
                     sym = symtab.get_symbol(r['r_info_sym'])
+                    if t == R_64 and sym.name in CLASS_TI_VTABLES:
+                        self.typeinfos.add(r['r_offset'])
                     if sym['st_shndx'] != 'SHN_UNDEF':
                         self.w64(r['r_offset'], sym['st_value'] + r['r_addend'])
                     else:
@@ -164,6 +172,37 @@ class Image:
                     return cache[key]
                 p = sb.find(pat, p + 1)
         return None
+
+    def all_vtables(self):
+        """Every RTTI vtable in the module: {(class name, offset_to_top): slot count}.
+
+        A vtable is an 8-aligned qword in .data.rel.ro that points at a class typeinfo, preceded by
+        a non-positive offset_to_top and followed by at least one function slot. Same-named
+        template instantiations from different modules never meet, since this is per module.
+        """
+        names = {}
+        for ti in self.typeinfos:
+            np = self.r64(ti + 8)
+            raw = self.read(np, 256) if np else None
+            if raw:
+                names[ti] = raw.split(b'\0')[0].decode('latin-1')
+        out = {}
+        for sname in ('.data.rel.ro', '.data.rel.ro.local'):
+            sa, sb = self.sec_bytes(sname)
+            if sb is None:
+                continue
+            for p in range(8, len(sb) - 8, 8):
+                ti = struct.unpack_from('<q', sb, p)[0]
+                if ti not in names:
+                    continue
+                ott = struct.unpack_from('<q', sb, p - 8)[0]
+                if not -0x1000000 <= ott <= 0:
+                    continue
+                n = len(self.slots(sa + p + 8))
+                if n:
+                    key = (names[ti], ott)
+                    out[key] = max(n, out.get(key, 0))
+        return out
 
     def slots(self, vt):
         out = []
@@ -313,18 +352,168 @@ EXTRA_INDEX = {
 }
 
 
+class Missing:
+    """Stand-in for a module that is not in the directory: nothing resolves in it."""
+
+    def find(self, pattern):
+        return []
+
+    def vtable(self, cls, offset_to_top=0):
+        return None
+
+    def slots(self, vt):
+        return []
+
+    def all_vtables(self):
+        return {}
+
+
+def tracked_classes(gd):
+    """Class names s2script names somewhere (pins, bare indices, vtable calls, validators)."""
+    out = {c for _, _, c, _ in PINS} | {c for _, c, _ in EXTRA_INDEX.values()}
+    for d in gd.values():
+        for c in d.get('calls', {}).values():
+            t = c.get('target', {})
+            if t.get('kind') == 'vtable':
+                out.add(t['class'])
+        for s in d.get('signatures', {}).values():
+            vm = ((s.get(PLAT) or {}).get('validate') or {}).get('vtable-member')
+            if vm:
+                out.add(vm)
+    return out
+
+
+def demangle_name(n):
+    """'16CNetworkMessages' -> 'CNetworkMessages'; nested/template names are left mangled."""
+    i = 0
+    while i < len(n) and n[i].isdigit():
+        i += 1
+    if i and int(n[:i]) == len(n) - i:
+        return n[i:]
+    return n
+
+
+VTABLE_MODULES = ['libserver.so', 'libengine2.so', 'libtier0.so', 'libnetworksystem.so',
+                  'libmatchmaking.so', 'libsoundsystem.so', 'libfilesystem_stdio.so']
+
+
+def vtable_diff(old_dir, new_dir, tracked):
+    """Per module: every vtable whose slot count changed, plus vtables that appeared or vanished."""
+    out = []
+    for mod in VTABLE_MODULES:
+        op, np_ = pathlib.Path(old_dir) / mod, pathlib.Path(new_dir) / mod
+        if not (op.exists() and np_.exists()):
+            continue
+        o, n = Image(str(op)).all_vtables(), Image(str(np_)).all_vtables()
+        for key in sorted(set(o) | set(n)):
+            if o.get(key) == n.get(key):
+                continue
+            name = demangle_name(key[0])
+            out.append({'module': mod, 'class': name, 'offset_to_top': key[1], 'old': o.get(key),
+                        'new': n.get(key), 'tracked': name in tracked})
+    return out
+
+
+def short(name, n=70):
+    return name if len(name) <= n else name[:n - 1] + '…'
+
+
+def markdown(report, a):
+    L = []
+    sigs = report['signatures']
+    broke = [x for x in sigs if not x['ok'] and x.get('old_ok', True)]
+    still = [x for x in sigs if not x['ok'] and not x.get('old_ok', True)]
+    pins = [x for x in report['pins'] if not x['ok']]
+    moved = [x for x in report['indices'] if index_moved(x)]
+    rebodied = [x for x in report['indices'] if x['new'] is None and not index_moved(x)]
+    vt = report.get('vtables', [])
+    vt_tracked = [x for x in vt if x['tracked']]
+    L.append('### Summary\n')
+    L.append(f"- Signatures: {len(sigs) - len(broke) - len(still)} ok, **{len(broke)} newly failing**, {len(still)} already failing")
+    L.append(f"- Vtable pins: {len(report['pins']) - len(pins)} ok, **{len(pins)} mismatched**")
+    if a.old:
+        L.append(f"- Tracked vtable indices: {len(report['indices']) - len(moved) - len(rebodied)} unchanged, "
+                 f"**{len(moved)} moved**, {len(rebodied)} recompiled in place (same table size, new body)")
+    if a.all_vtables:
+        L.append(f"- All-vtable diff: {len(vt)} vtables changed, **{len(vt_tracked)} of them in classes s2script names**")
+    L.append('')
+    if broke or still:
+        L.append('### Failing signatures\n')
+        L.append('| | Owner | Name | Reason |\n|---|---|---|---|')
+        for x in broke + still:
+            L.append(f"| {'NEW' if x in broke else 'old'} | {x['owner']} | `{x['name']}` | {x['reason']} |")
+        L.append('')
+    if pins:
+        L.append('### Vtable pin mismatches\n')
+        L.append('| Pin | Class | Pin value | New build | Old build |\n|---|---|---|---|---|')
+        for x in pins:
+            L.append(f"| `{x['key']}` | {x['class']} | {x['pin']} | {x['live']} | {x['old'] if x['old'] is not None else '?'} |")
+        L.append('')
+    if moved or rebodied:
+        L.append('### Tracked vtable indices that changed\n')
+        L.append('| | Key | Class | Old index | New index | Slots |\n|---|---|---|---|---|---|')
+        for x in moved + rebodied:
+            new = x['new'] if x['new'] is not None else 'not found'
+            L.append(f"| {'MOVED' if x in moved else 'new body?'} | `{x['key']}` | {x['class']} | {x['old']} | {new} | {x['old_slots']} -> {x['new_slots']} |")
+        L.append('')
+    if vt:
+        L.append('### Vtable slot counts that changed\n')
+        L.append('Classes s2script names come first. Message classes that all changed the same way are grouped.\n')
+        L.append('| Module | Class | Old | New |\n|---|---|---|---|')
+        rest = []
+        for x in vt:
+            (L if x['tracked'] else rest).append(
+                f"| {x['module']} | **{x['class']}**{'' if not x['offset_to_top'] else ' (secondary ' + str(x['offset_to_top']) + ')'} | {x['old'] or '—'} | {x['new'] or '—'} |"
+                if x['tracked'] else x)
+        groups = {}
+        for x in rest:
+            groups.setdefault((x['module'], x['old'], x['new']), []).append(x)
+        for (mod, o, n), xs in sorted(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1]))):
+            names = [short(x['class']) + ('' if not x['offset_to_top'] else f" ({x['offset_to_top']})") for x in xs]
+            shown = ', '.join(f'`{c}`' for c in names[:3]) + (f' and {len(names) - 3} more' if len(names) > 3 else '')
+            L.append(f"| {mod} | {shown} | {o or '—'} | {n or '—'} |")
+        L.append('')
+    return '\n'.join(L)
+
+
+def index_moved(x):
+    """A tracked index needs a look when it maps to another slot, or vanished from a table whose
+    size changed. A vanished fingerprint in a same-size table is a recompiled body at the same
+    index (CheckTransmit, PostEventAbstract on Nov 11), shown but not flagged."""
+    if x['new'] is None:
+        return x['old_slots'] != x['new_slots']
+    return x['new'] != x['old']
+
+
+def needs_attention(report):
+    return (any(not x['ok'] and x.get('old_ok', True) for x in report['signatures'])
+            or any(not x['ok'] for x in report['pins'])
+            or any(index_moved(x) for x in report['indices'])
+            or any(x['tracked'] for x in report.get('vtables', [])))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bin', required=True)
     ap.add_argument('--old')
-    ap.add_argument('--json')
+    ap.add_argument('--json', help='write the full report as JSON')
+    ap.add_argument('--markdown', help='write a Markdown summary (for an issue or PR body)')
+    ap.add_argument('--all-vtables', action='store_true',
+                    help='with --old: diff the slot count of every RTTI vtable in every module')
+    ap.add_argument('--strict', action='store_true',
+                    help='exit 1 when anything needs attention (see the summary)')
     a = ap.parse_args()
     gd = load_gamedata()
     imgs, old = {}, {}
 
     def img(d, cache, mod):
         if mod not in cache:
-            cache[mod] = Image(str(pathlib.Path(d) / mod))
+            p = pathlib.Path(d) / mod
+            if p.exists():
+                cache[mod] = Image(str(p))
+            else:
+                print(f'  (missing module {p})', file=sys.stderr)
+                cache[mod] = Missing()
         return cache[mod]
 
     report = {'signatures': [], 'pins': [], 'indices': []}
@@ -392,8 +581,20 @@ def main():
             note = '' if uniq else ' (fingerprint not unique in table)'
             report['indices'].append({'key': k, 'class': cls, 'old': i, 'new': new, 'old_slots': len(osl), 'new_slots': len(nsl)})
             print(f"  {status} {k}: {cls}[{i}] -> {new}  ({len(osl)} -> {len(nsl)} slots){note}")
+    if a.old and a.all_vtables:
+        print('== all-vtable slot counts (old -> new)')
+        report['vtables'] = vtable_diff(a.old, a.bin, tracked_classes(gd))
+        for x in report['vtables']:
+            if x['tracked']:
+                print(f"  {'TRACKED' if x['tracked'] else '       '} {x['module']} {x['class']} ({x['offset_to_top']}): {x['old']} -> {x['new']}")
+        print(f"  {len(report['vtables'])} vtables changed, {sum(x['tracked'] for x in report['vtables'])} tracked")
+    report['needs_attention'] = needs_attention(report)
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(report, indent=1))
+    if a.markdown:
+        pathlib.Path(a.markdown).write_text(markdown(report, a))
+    if a.strict and report['needs_attention']:
+        sys.exit(1)
 
 
 if __name__ == '__main__':
