@@ -151,7 +151,12 @@ fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path, receip
     }
     remember_meta(manifest);
     start_load(manifest, &prepared.js, cfg, receipt);
-    crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
+    // Watch every plugin that declares config, not only one that registered `config.onChange`:
+    // the getters read the re-materialized values, so a plugin that reads `config.getInt(..)` when
+    // it needs the value sees an edit too.
+    if crate::v8host::store_config_decls(&manifest.id, manifest.config.clone()) && !manifest.config.is_empty() {
+        watch_config_for(&manifest.id);
+    }
     WATCH_STATE.with(|w| { w.borrow_mut().insert(path.to_path_buf(), WatchedPlugin {
         mtime: stamp_time(prepared.stamp), id: manifest.id.clone(),
     }); });
@@ -3145,6 +3150,81 @@ mod tests {
         shutdown_worker();
         crate::v8host::shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Config hot reload end to end: an edit to configs/<id>.json reaches a plugin's config getters
+    /// and its `config.onChange` handlers while the server runs frames, also after a map change on
+    /// an empty (hibernating) server. A plugin that only reads `config.getX` (no `onChange`) is
+    /// watched too.
+    #[test]
+    fn a_config_edit_reaches_getters_and_on_change() {
+        extern "C" fn resolver(id: *const c_char) -> *const c_char {
+            let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_bytes();
+            if id == b"@hot/getter" { b"/tmp/s2s-hot-config-getter.json\0".as_ptr().cast() }
+            else { b"/tmp/s2s-hot-config-handler.json\0".as_ptr().cast() }
+        }
+        crate::v8host::init(boot_logger).unwrap();
+        let getter_cfg = PathBuf::from("/tmp/s2s-hot-config-getter.json");
+        let handler_cfg = PathBuf::from("/tmp/s2s-hot-config-handler.json");
+        std::fs::write(&getter_cfg, br#"{"greeting":"A"}"#).unwrap();
+        std::fs::write(&handler_cfg, br#"{"greeting":"A"}"#).unwrap();
+        let dir = std::env::temp_dir().join(format!("s2s-hot-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = |id: &str| format!(
+            r#"{{"id":"{id}","version":"1.0.0","apiVersion":"3.x","config":{{"greeting":{{"type":"string","default":"A"}}}}}}"#
+        );
+        std::fs::write(dir.join("_hot_getter.s2sp"), make_test_s2sp(&manifest("@hot/getter"),
+            r#"const { config } = require("@s2script/config");
+               globalThis.read = () => config.getString("greeting");
+               module.exports.OnPluginStart = () => {};"#,
+        )).unwrap();
+        std::fs::write(dir.join("_hot_handler.s2sp"), make_test_s2sp(&manifest("@hot/handler"),
+            r#"const { config } = require("@s2script/config");
+               globalThis.seen = [];
+               module.exports.OnPluginStart = () => { config.onChange(c => seen.push(c.greeting)); };"#,
+        )).unwrap();
+        assert!(set_config_path_resolver(CONFIG_PATH_RESOLVER_ABI_V1, Some(resolver)));
+        let path = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+        crate::ffi::s2script_core_set_plugins_dir(path.as_ptr());
+        crate::ffi::s2script_core_boot_load();
+        let read = || crate::v8host::frame_tests::eval_in_context_string("@hot/getter", "read()");
+        let seen = || crate::v8host::frame_tests::eval_in_context_string("@hot/handler", "JSON.stringify(seen)");
+        // About two scan periods of frames, a millisecond apart so the worker can answer.
+        let frames = || for _ in 0..(POLL_THROTTLE as usize * 3) {
+            note_frame();
+            poll_plugins();
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        frames();
+        assert_eq!(read(), "A");
+        assert_eq!(seen(), "[]", "an unchanged file fires nothing");
+
+        std::fs::write(&getter_cfg, br#"{"greeting":"B"}"#).unwrap();
+        std::fs::write(&handler_cfg, br#"{"greeting":"B"}"#).unwrap();
+        frames();
+        let (after_edit, seen_edit) = (read(), seen());
+
+        // A map change on an empty server (no frame for a while), then a player joins.
+        LAST_FRAME.with(|f| f.set(None));
+        crate::ffi::s2script_core_boot_load();
+        std::fs::write(&getter_cfg, br#"{"greeting":"C"}"#).unwrap();
+        std::fs::write(&handler_cfg, br#"{"greeting":"C"}"#).unwrap();
+        frames();
+        let (after_map, seen_map) = (read(), seen());
+
+        crate::v8host::unload_plugin("@hot/getter");
+        crate::v8host::unload_plugin("@hot/handler");
+        shutdown_worker();
+        crate::v8host::shutdown();
+        assert!(set_config_path_resolver(CONFIG_PATH_RESOLVER_ABI_V1, None));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&getter_cfg);
+        let _ = std::fs::remove_file(&handler_cfg);
+        assert_eq!(after_edit, "B", "a getter-only plugin sees the edit");
+        assert_eq!(seen_edit, r#"["B"]"#);
+        assert_eq!(after_map, "C", "still watched after a hibernating map change");
+        assert_eq!(seen_map, r#"["B","C"]"#);
     }
 
     /// `sm plugins update` on an empty server: the server hibernates and runs no frame, so the new

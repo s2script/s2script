@@ -314,12 +314,14 @@ pub(crate) fn materialize_for_load_snapshot(
 
 /// Store config decls on a plugin's `PluginInstance` (called from the loader right after
 /// `load_plugin_js` so `re_materialize_config` can re-run without needing the manifest).
-pub(crate) fn store_config_decls(id: &str, decls: std::collections::HashMap<String, crate::config::ConfigEntry>) {
+/// Returns whether the plugin is loaded (false: its load already failed and tore it down).
+pub(crate) fn store_config_decls(id: &str, decls: std::collections::HashMap<String, crate::config::ConfigEntry>) -> bool {
     PLUGINS.with(|p| {
-        if let Some(pi) = p.borrow_mut().get_mut(id) {
-            pi.config_decls = decls;
-        }
-    });
+        let mut plugins = p.borrow_mut();
+        let Some(pi) = plugins.get_mut(id) else { return false };
+        pi.config_decls = decls;
+        true
+    })
 }
 
 /// Read the current content of the plugin's config override file via the `config_read` op.
