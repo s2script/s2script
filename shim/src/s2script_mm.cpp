@@ -5,6 +5,7 @@
 #include "khook_shutdown.h"
 #include "gamedata.h"
 #include "../third_party/json.hpp"
+#include <algorithm>
 #include <climits>
 
 // The engine interfaces we hook and call: ISource2Server / ISource2GameClients /
@@ -1306,9 +1307,29 @@ static int s2_client_userid(int slot) {
     if (!s2_client_valid(slot) || !s_engineCallsOk) return -1;
     return S2Engine_GetPlayerUserId(slot);  // real engine user-id for an occupied slot
 }
+// The player's CURRENT in-game name: the controller's m_iszPlayerName (CBasePlayerController, the
+// Source 2 base class, located by name through the schema system). That is the field a rename
+// writes (player.setName, or any plugin that renames players after they join) and the one the
+// scoreboard shows; the userinfo "name" convar keeps the name the client connected with. The
+// userinfo name is the fallback while the controller doesn't exist yet or the field is missing.
+static const char* S2_ControllerName(int slot) {
+    static int s_off = -1;
+    if (s_off < 0) s_off = s2_schema_offset("CBasePlayerController", "m_iszPlayerName");
+    if (s_off < 0) return nullptr;
+    // The player controller for slot N is entity index N+1 on every Source 2 game.
+    void* ctrl = s2_ent_by_index(slot + 1);
+    if (!ctrl) return nullptr;
+    static char s_buf[128];
+    const char* field = reinterpret_cast<const char*>(ctrl) + s_off;
+    size_t n = strnlen(field, sizeof s_buf - 1);   // char[128] inline; never trust a terminator
+    std::memcpy(s_buf, field, n);
+    s_buf[n] = 0;
+    return n ? s_buf : nullptr;
+}
 static const char* s2_client_name(int slot) {
     if (!s2_client_valid(slot)) return nullptr;
-    return S2Engine_GetClientConVarValue(slot, "name");  // userinfo name; core copies
+    if (const char* live = S2_ControllerName(slot)) return live;   // core copies
+    return S2Engine_GetClientConVarValue(slot, "name");           // userinfo name; core copies
 }
 static int s2_client_find_by_userid(int id) {
     if (id < 0) return -1;
@@ -2032,6 +2053,20 @@ static const char* s2_client_steamid(int slot) {
     if (xuid == 0 && !s_clientFake[slot]) xuid = S2_ControllerSteamId(slot);
     s_steamidBuf = std::to_string(xuid);
     return s_steamidBuf.c_str();
+}
+
+// Who a server-log line is about, in the same form Activity.describe() uses for admin logs:
+// "Name<userid><steamid64><>" (BOT for bots). Falls back to slot=N when the slot has no name, e.g.
+// a command handler already disconnected the caller before the line is printed.
+static std::string S2_ClientLogLabel(int slot) {
+    const char* raw = s2_client_name(slot);
+    std::string name = raw ? raw : "";
+    name.erase(std::remove_if(name.begin(), name.end(), [](char c) {
+        return (unsigned char)c < 0x20 || c == '"' || c == '<' || c == '>'; }), name.end());
+    if (name.empty()) return "slot=" + std::to_string(slot);
+    const bool bot = slot >= 0 && slot < kMaxClientSlots && s_clientFake[slot];
+    return "\"" + name + "<" + std::to_string(s2_client_userid(slot)) + "><" +
+           (bot ? std::string("BOT") : std::string(s2_client_steamid(slot))) + "><>\"";
 }
 
 // ---------------------------------------------------------------------------
@@ -7509,7 +7544,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientCommand(ISource2GameClients* clie
     }
     // FFI is 1 iff a registered command matched (bool, not a HookResult int).
     if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
-        META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, slot.Get());
+        META_CONPRINTF("[s2script] console command '%s' by %s\n", name, S2_ClientLogLabel(slot.Get()).c_str());
         return S2_Supersede();   // ours → engine won't also handle it (no "Unknown command" server-side)
     }
     return S2_Ignore();         // not ours → the engine handles it normally
