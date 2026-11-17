@@ -136,7 +136,7 @@
 					</Button>
 				</Panel>
 				<Button id="gk_dr_r0" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r0_img" class="gk-thumb" src="{s:gk_dr_r0_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r0_img" class="gk-thumb" src="{s:gk_dr_r0_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r0_t" class="gk-row-t" text="{s:gk_dr_r0_t}" />
 						<Label id="gk_dr_r0_s" class="gk-row-sub" text="{s:gk_dr_r0_s}" />
@@ -144,7 +144,7 @@
 					<Label id="gk_dr_r0_m" class="gk-row-meta" text="{s:gk_dr_r0_m}" />
 				</Button>
 				<Button id="gk_dr_r1" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r1_img" class="gk-thumb" src="{s:gk_dr_r1_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r1_img" class="gk-thumb" src="{s:gk_dr_r1_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r1_t" class="gk-row-t" text="{s:gk_dr_r1_t}" />
 						<Label id="gk_dr_r1_s" class="gk-row-sub" text="{s:gk_dr_r1_s}" />
@@ -152,7 +152,7 @@
 					<Label id="gk_dr_r1_m" class="gk-row-meta" text="{s:gk_dr_r1_m}" />
 				</Button>
 				<Button id="gk_dr_r2" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r2_img" class="gk-thumb" src="{s:gk_dr_r2_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r2_img" class="gk-thumb" src="{s:gk_dr_r2_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r2_t" class="gk-row-t" text="{s:gk_dr_r2_t}" />
 						<Label id="gk_dr_r2_s" class="gk-row-sub" text="{s:gk_dr_r2_s}" />
@@ -160,7 +160,7 @@
 					<Label id="gk_dr_r2_m" class="gk-row-meta" text="{s:gk_dr_r2_m}" />
 				</Button>
 				<Button id="gk_dr_r3" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r3_img" class="gk-thumb" src="{s:gk_dr_r3_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r3_img" class="gk-thumb" src="{s:gk_dr_r3_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r3_t" class="gk-row-t" text="{s:gk_dr_r3_t}" />
 						<Label id="gk_dr_r3_s" class="gk-row-sub" text="{s:gk_dr_r3_s}" />
@@ -168,7 +168,7 @@
 					<Label id="gk_dr_r3_m" class="gk-row-meta" text="{s:gk_dr_r3_m}" />
 				</Button>
 				<Button id="gk_dr_r4" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r4_img" class="gk-thumb" src="{s:gk_dr_r4_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r4_img" class="gk-thumb" src="{s:gk_dr_r4_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r4_t" class="gk-row-t" text="{s:gk_dr_r4_t}" />
 						<Label id="gk_dr_r4_s" class="gk-row-sub" text="{s:gk_dr_r4_s}" />
@@ -176,7 +176,7 @@
 					<Label id="gk_dr_r4_m" class="gk-row-meta" text="{s:gk_dr_r4_m}" />
 				</Button>
 				<Button id="gk_dr_r5" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r5_img" class="gk-thumb" src="{s:gk_dr_r5_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r5_img" class="gk-thumb" src="{s:gk_dr_r5_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r5_t" class="gk-row-t" text="{s:gk_dr_r5_t}" />
 						<Label id="gk_dr_r5_s" class="gk-row-sub" text="{s:gk_dr_r5_s}" />
@@ -184,7 +184,7 @@
 					<Label id="gk_dr_r5_m" class="gk-row-meta" text="{s:gk_dr_r5_m}" />
 				</Button>
 				<Button id="gk_dr_r6" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r6_img" class="gk-thumb" src="{s:gk_dr_r6_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r6_img" class="gk-thumb" src="{s:gk_dr_r6_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r6_t" class="gk-row-t" text="{s:gk_dr_r6_t}" />
 						<Label id="gk_dr_r6_s" class="gk-row-sub" text="{s:gk_dr_r6_s}" />
@@ -192,7 +192,7 @@
 					<Label id="gk_dr_r6_m" class="gk-row-meta" text="{s:gk_dr_r6_m}" />
 				</Button>
 				<Button id="gk_dr_r7" class="gk-row gk-dr-row s2-hide">
-					<Image id="gk_dr_r7_img" class="gk-thumb" src="{s:gk_dr_r7_img}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_dr_r7_img" class="gk-thumb" src="{s:gk_dr_r7_img}" />
 					<Panel class="gk-dr-text">
 						<Label id="gk_dr_r7_t" class="gk-row-t" text="{s:gk_dr_r7_t}" />
 						<Label id="gk_dr_r7_s" class="gk-row-sub" text="{s:gk_dr_r7_s}" />

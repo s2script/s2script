@@ -75,7 +75,7 @@ function layoutBuilder(name) {
     close: (d, tag) => st.lines.push(`${T(d)}</${tag}>`),
     panel: (d, id, cls) => st.lines.push(`${T(d)}<Panel${id ? ` id="${reg(id)}"` : ""} class="${cls}" />`),
     label: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Label id="${id}" class="${cls}" text="{s:${id}}" />`); return id; },
-    image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" scaling="stretch-to-fit-preserve-aspect" />`); return id; },
+    image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" />`); return id; },
     button: (d, id, cls, kids) => { b.open(d, "Button", id, cls); st.buttons.push(id); kids(d + 1); b.close(d, "Button"); },
     meter: (d, meterName, fillId, trackCls, fillCls) => {
       b.open(d, "Panel", null, trackCls);
@@ -519,6 +519,31 @@ const jsOut = `// @s2script/cs2 — game-kit layout descriptors.
   globalThis.__s2pkg_gamekit_layout = Object.freeze(${JSON.stringify(descriptor, null, 2).replace(/\n/g, "\n  ")});
 })();
 `;
+
+// ---- CustomHud attribute allowlist ------------------------------------------------------------
+// The client validates a custom_hud layout at load against a per-tag attribute whitelist and
+// rejects the WHOLE file for one miss ("Layout contains disallowed attribute scaling for panel
+// type 'Image'"); the compiler never says. This is that whitelist, so a miss fails here instead.
+const ALLOWED = {
+  root: [], styles: [], include: ["src"],
+  Panel: ["id", "class", "hittest"],
+  Label: ["id", "class", "hittest", "text"],
+  Image: ["id", "class", "hittest", "src", "texturewidth", "textureheight"],
+  Button: ["id", "class"],
+};
+for (const [name, xml] of [["s2script_gamehud.xml", hudXml], ["s2script_gamepanels.xml", panelsXml]]) {
+  const body = xml.replace(/<!--[\s\S]*?-->/g, "");
+  for (const tag of body.matchAll(/<([A-Za-z]+)\b([^>]*)>/g)) {
+    const allowed = ALLOWED[tag[1]];
+    if (!allowed) { console.error(`${name}: <${tag[1]}> is not a custom hud panel type`); process.exit(1); }
+    for (const [, attr] of tag[2].matchAll(/([A-Za-z_:-]+)\s*=/g)) {
+      if (!allowed.includes(attr)) {
+        console.error(`${name}: <${tag[1]}> has attribute '${attr}', which CustomHud validation rejects`);
+        process.exit(1);
+      }
+    }
+  }
+}
 
 // ---- write / check ----------------------------------------------------------------------------
 const outputs = [
