@@ -1093,7 +1093,7 @@ static KHook::Return<void> Hook_R6CheckTransmit(ISource2GameEntities* ents, CChe
                                                 const Entity2Networkable_t**, const uint16*, int);
 static KHook::Return<void> Hook_R6PostEvent(IGameEventSystem* sys, CSplitScreenSlot slot, bool localOnly,
                                             int nClientCount, const uint64* clients,
-                                            INetworkMessageInternal* pEvent, const CNetMessage* pData,
+                                            NetMessageInfo_t* pEvent, const CNetMessage* pData,
                                             unsigned long nSize, NetChannelBufType_t bufType);
 
 static S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkTouchPre(&Hook_R6TouchPre, nullptr);
@@ -1121,10 +1121,10 @@ static S2CheckedVirtual<ISource2GameEntities, void, CCheckTransmitInfo**, int, C
     g_hkTransmit(&ISource2GameEntities::CheckTransmit, nullptr, &Hook_R6CheckTransmit);
 
 using PostEvent8Mfp = void (IGameEventSystem::*)(CSplitScreenSlot, bool, int, const uint64*,
-                                                 INetworkMessageInternal*, const CNetMessage*, unsigned long,
+                                                 NetMessageInfo_t*, const CNetMessage*, unsigned long,
                                                  NetChannelBufType_t);
 static S2CheckedVirtual<IGameEventSystem, void, CSplitScreenSlot, bool, int, const uint64*,
-                        INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t>
+                        NetMessageInfo_t*, const CNetMessage*, unsigned long, NetChannelBufType_t>
     g_hkPostEvent(static_cast<PostEvent8Mfp>(&IGameEventSystem::PostEventAbstract), nullptr, &Hook_R6PostEvent);
 
 static CEntityInstance* g_nat_a = nullptr;
@@ -2003,7 +2003,7 @@ KHook::Return<void> Hook_R6CheckTransmit(ISource2GameEntities* ents, CCheckTrans
 }
 
 KHook::Return<void> Hook_R6PostEvent(IGameEventSystem* sys, CSplitScreenSlot, bool, int nClientCount,
-                                     const uint64* clients, INetworkMessageInternal* pEvent, const CNetMessage*,
+                                     const uint64* clients, NetMessageInfo_t* pEvent, const CNetMessage*,
                                      unsigned long, NetChannelBufType_t) {
     auto obs = g_hkPostEvent.Observe(sys);
     if (!obs) {
@@ -2012,7 +2012,7 @@ KHook::Return<void> Hook_R6PostEvent(IGameEventSystem* sys, CSplitScreenSlot, bo
     if (!pEvent) {
         return S2_Ignore();
     }
-    const char* ln = pEvent->GetUnscopedName();
+    const char* ln = pEvent->GetName();
     if (!ln || std::strncmp(ln, "CMsgSource1LegacyGameEvent", 26) != 0 || ln[26] == 'L') {
         return S2_Ignore();
     }

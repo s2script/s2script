@@ -52,7 +52,7 @@ template <int NUM_BITS> class CBitVec;
 // (== signed char, platform.h:273), stated so this forward decl matches the later full definition.
 struct CSplitScreenSlot;
 class IGameEventSystem;
-class INetworkMessageInternal;
+struct NetMessageInfo_t;
 class CNetMessage;
 class ISource2ServerConfig;
 enum NetChannelBufType_t : signed char;
@@ -97,7 +97,7 @@ public:
                                            const Entity2Networkable_t** pNetworkables,
                                            const unsigned short* pEntityIndices, int nEntityIndices);
     KHook::Return<void> Hook_PostEvent(IGameEventSystem*, CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
-                                       const unsigned long long* clients, INetworkMessageInternal* pEvent,
+                                       const unsigned long long* clients, NetMessageInfo_t* pEvent,
                                        const CNetMessage* pData, unsigned long nSize, NetChannelBufType_t bufType);
 
     // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot
