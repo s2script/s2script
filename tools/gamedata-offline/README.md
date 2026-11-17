@@ -76,3 +76,27 @@ tools/gamedata-offline/update-day.sh --new /tmp/new --old /tmp/old --out /tmp/re
 
 Run the workflow by hand (Actions → cs2-update → Run workflow) with `manifest` and `buildid` to check a
 specific build, or with `force` to file the issue again.
+
+## Gamedata regeneration and the s2sdk check (gdgen)
+
+[gdgen](https://github.com/s2script/s2-gamedatagen) does the update-day fixes this checker only
+reports. `update-day.sh` runs it when `$GDGEN` points at the binary (or `gdgen` is on PATH) and an
+old build is given:
+
+```bash
+git clone https://github.com/s2script/s2-gamedatagen && cargo build --release --manifest-path s2-gamedatagen/Cargo.toml
+GDGEN=$PWD/s2-gamedatagen/target/release/gdgen tools/gamedata-offline/update-day.sh --new /tmp/new --old /tmp/old --out /tmp/report
+git apply /tmp/report/gamedata.patch     # then fix only what /tmp/report/regen.md still lists
+```
+
+- Broken signatures are re-derived from the old build's match (same function found by body,
+  strings, vtable slots, callers, callees and neighbours; new pattern grown until the shim's
+  resolver accepts it uniquely). Validators are recomputed.
+- Moved vtable indices (hook slots, bare indices, `calls` vtable targets) are followed.
+- Pins follow the new build only when the s2sdk header still matches it, laid out with clang
+  from `third_party/hl2sdk` (needs the submodule and `clang++`). A header that a new build made
+  stale is reported with the slot index, the method beside it, and how far the s2sdk fork branch
+  is behind upstream.
+
+`targets.jsonc` is the one list of what to check, shared by both tools: a new pin, bare index or
+gamedata file goes there.

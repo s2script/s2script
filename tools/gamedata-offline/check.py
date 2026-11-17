@@ -311,45 +311,25 @@ def fingerprint(img, fn):
     return hashlib.sha1('\n'.join(toks).encode()).hexdigest()[:12]
 
 
+def load_targets():
+    """tools/gamedata-offline/targets.jsonc: the gamedata files, pins and bare indices (shared
+    with gdgen, github.com/s2script/s2-gamedatagen)."""
+    return json.loads(strip_jsonc_comments((pathlib.Path(__file__).parent / 'targets.jsonc').read_text()))
+
+
+TARGETS = load_targets()
+
+
 def load_gamedata():
-    files = {
-        'core': ROOT / 'gamedata/core/game.cs2.jsonc',
-        'sdkhooks': ROOT / 'gamedata/sdkhooks/game.cs2.jsonc',
-        'cs2': ROOT / 'games/cs2/gamedata/game.cs2.jsonc',
-    }
-    return {k: json.loads(strip_jsonc_comments(p.read_text())) for k, p in files.items()}
+    return {k: json.loads(strip_jsonc_comments((ROOT / p).read_text())) for k, p in TARGETS['gamedata'].items()}
 
 
 # Interface pins: (pin key, module, class, offset_to_top). See the comment block above the pins in
 # gamedata/core/game.cs2.jsonc.
-PINS = [
-    ('ISource2Server_vtableSize', 'libserver.so', 'CSource2Server', 0),
-    ('ISource2ServerConfig_vtableSize', 'libserver.so', 'CCSGameConfiguration', -8),
-    ('ISource2GameClients_vtableSize', 'libserver.so', 'CSource2GameClients', 0),
-    ('ISource2GameEntities_vtableSize', 'libserver.so', 'CSource2GameEntities', 0),
-    ('IGameEventManager2_vtableSize', 'libserver.so', 'CGameEventManager', 0),
-    ('IGameEventSystem_vtableSize', 'libengine2.so', 'CGameEventSystem', 0),
-    ('INetworkServerService_vtableSize', 'libengine2.so', 'CNetworkServerService', 0),
-    ('ICvar_vtableSize', 'libtier0.so', 'CCvar', 0),
-    ('IVEngineServer2_vtableSize', 'libengine2.so', 'CEngineServer', 0),
-    ('INetChannelInfo_vtableSize', 'libnetworksystem.so', 'CNetChan', 0),
-    ('INetworkMessages_vtableSize', 'libnetworksystem.so', 'CNetworkMessages', 0),
-    ('ISoundEventManager_vtableSize', 'libsoundsystem.so', 'CSoundOpSystem', -8),
-    ('INetworkStringTableContainer_vtableSize', 'libengine2.so', 'CNetworkStringTableContainer', 0),
-    ('INetworkStringTable_vtableSize', 'libengine2.so', 'CNetworkStringTable', 0),
-    ('IEntityResourceManifestBuilder_vtableSize', 'libserver.so', 'CGameEntitySystem', 0),
-    ('IFileSystem_vtableSize', 'libfilesystem_stdio.so', 'CFileSystem_Stdio', 0),
-]
+PINS = [(p['key'], p['module'], p['class'], p.get('offsetToTop', 0)) for p in TARGETS['pins']]
 PIN_CLASS = {k.removesuffix('_vtableSize'): (m, c, o) for k, m, c, o in PINS}
 # Bare vtable indices that are not behind an interface pin.
-EXTRA_INDEX = {
-    'CNavPhysicsInterface_TraceShape': ('libserver.so', 'CNavPhysicsInterface', 0),
-    'CBaseEntity_Teleport': ('libserver.so', 'CBaseEntity', 0),
-    'CGameRulesGameSystem_OnPrecacheResource': ('libserver.so', 'CGameRulesGameSystem', 0),
-    'CServerSideClient_ProcessRespondCvarValue': ('libengine2.so', 'CServerSideClient', 0),
-    'CServerSideClient_SendNetMessage': ('libengine2.so', 'CServerSideClient', 0),
-    'CCSPlayer_ItemServices_RemoveWeapons': ('libserver.so', 'CCSPlayer_ItemServices', 0),
-}
+EXTRA_INDEX = {k: (v['module'], v['class'], v.get('offsetToTop', 0)) for k, v in TARGETS['indices'].items()}
 
 
 class Missing:
