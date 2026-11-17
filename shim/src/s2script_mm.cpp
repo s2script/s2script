@@ -1305,9 +1305,29 @@ static int s2_client_userid(int slot) {
     if (!s2_client_valid(slot) || !s_engineCallsOk) return -1;
     return S2Engine_GetPlayerUserId(slot);  // real engine user-id for an occupied slot
 }
+// The player's CURRENT in-game name: the controller's m_iszPlayerName (CBasePlayerController, the
+// Source 2 base class, located by name through the schema system). That is the field a rename
+// writes (player.setName, or any plugin that renames players after they join) and the one the
+// scoreboard shows; the userinfo "name" convar keeps the name the client connected with. The
+// userinfo name is the fallback while the controller doesn't exist yet or the field is missing.
+static const char* S2_ControllerName(int slot) {
+    static int s_off = -1;
+    if (s_off < 0) s_off = s2_schema_offset("CBasePlayerController", "m_iszPlayerName");
+    if (s_off < 0) return nullptr;
+    // The player controller for slot N is entity index N+1 on every Source 2 game.
+    void* ctrl = s2_ent_by_index(slot + 1);
+    if (!ctrl) return nullptr;
+    static char s_buf[128];
+    const char* field = reinterpret_cast<const char*>(ctrl) + s_off;
+    size_t n = strnlen(field, sizeof s_buf - 1);   // char[128] inline; never trust a terminator
+    std::memcpy(s_buf, field, n);
+    s_buf[n] = 0;
+    return n ? s_buf : nullptr;
+}
 static const char* s2_client_name(int slot) {
     if (!s2_client_valid(slot)) return nullptr;
-    return S2Engine_GetClientConVarValue(slot, "name");  // userinfo name; core copies
+    if (const char* live = S2_ControllerName(slot)) return live;   // core copies
+    return S2Engine_GetClientConVarValue(slot, "name");           // userinfo name; core copies
 }
 static int s2_client_find_by_userid(int id) {
     if (id < 0) return -1;
