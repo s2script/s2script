@@ -7,11 +7,10 @@ name: cs2-update
 # (tools/gamedata-offline/update-day.sh: signatures, vtable pins, tracked index alignment, every
 # vtable's slot count, schema regen + diff) and files ONE issue per build, labelled `cs2-update`.
 #
-# Right after filing the issue, the same job starts Claude (anthropics/claude-code-action) on the
-# modules it just downloaded. Claude fixes what the report flags, regenerates the schema, bumps
-# baseline.json and opens a DRAFT PR through the Claude GitHub App, so CI runs on it. Nothing
-# merges or tags on its own. Needs the CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY) secret;
-# without one the fix step is skipped and the issue is the hand-off.
+# Right after filing the issue, the job POSTs to a Claude Code scheduled task's API trigger
+# (secrets CLAUDE_FIRE_URL + CLAUDE_FIRE_TOKEN). That starts a cloud session which fixes what the
+# report flags, regenerates the schema, bumps baseline.json and opens a DRAFT PR. Nothing merges
+# or tags on its own. Without the secrets the issue is the hand-off.
 #
 # The PR that bumps baseline.json is what stops the issue being refiled; an existing issue for
 # the build (open or closed) also stops it, so a run never files twice while the PR is open.
@@ -43,10 +42,8 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
   issues: write
-  pull-requests: write
-  id-token: write
 
 concurrency:
   group: cs2-update
@@ -237,59 +234,33 @@ jobs:
           echo "$url"
           echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
 
-      - name: Check for a Claude credential
-        id: cred
+      # Wake the update-day Claude scheduled task through its API trigger (a webhook). The run is a
+      # normal Claude Code cloud session on the owner's account (subscription usage, visible in the
+      # Claude app); it re-downloads the modules itself, fixes what the issue reports and opens the
+      # draft PR. Without the two secrets the issue is the hand-off.
+      - name: Wake Claude
         if: steps.issue.outputs.number != '' && steps.check.outputs.code != '' && steps.check.outputs.code != '2'
         env:
-          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          APIKEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FIRE_URL: ${{ secrets.CLAUDE_FIRE_URL }}
+          FIRE_TOKEN: ${{ secrets.CLAUDE_FIRE_TOKEN }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+          BUILDID: ${{ steps.poll.outputs.buildid }}
+          MANIFEST: ${{ steps.poll.outputs.manifest }}
+          BASE_BUILD: ${{ steps.poll.outputs.base_build }}
+          BASE_MANIFEST: ${{ steps.poll.outputs.base_manifest }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ -n "$OAUTH" ] || [ -n "$APIKEY" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
-          else echo "::notice::No CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY secret; the issue is the hand-off."; fi
-
-      - name: Fix it (Claude)
-        if: steps.cred.outputs.ok == 'true'
-        timeout-minutes: 30
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: >-
-            --max-turns 120
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash"
-          prompt: |
-            A new CS2 build is out and the cs2-update workflow filed issue #${{ steps.issue.outputs.number }}
-            in ${{ github.repository }} with the offline check report. Your job is the update-day fix PR.
-
-            Inputs on disk:
-            - depot/cur: the new build's modules (build ${{ steps.poll.outputs.buildid }}, manifest ${{ steps.poll.outputs.manifest }})
-            - depot/old: the baseline build's modules (${{ steps.poll.outputs.base_build }}), if present
-            - report/: report.md, check.json, check.log, the regenerated schema-catalog.json / schema-enums.json
-            - Tools: tools/gamedata-offline/{check.py,schema.py,schema_diff.py,update-day.sh} and their README.
-              pyelftools and capstone are installed; run Python with `python3 -I`.
-
-            Read CLAUDE.md and docs/re-strategy.md first. Then:
-            1. For each newly failing signature, re-derive it against depot/cur (disassemble the old
-               function in depot/old, find the same function in the new build, write a new pattern and
-               validators). For each mismatched pin or moved index, confirm the new slot index by
-               disassembly, not just the slot count. Edit gamedata only; layout is data.
-            2. A tracked class whose vtable size changed while its pin still passes (the all-vtable
-               table) is how the Nov 11 INetworkMessages crash showed up: check whether s2script
-               calls into it with a compiled s2sdk header and say so in the PR if a header change in
-               s2script/s2sdk is needed (you cannot push there).
-            3. Copy report/schema-catalog.json and schema-enums.json into games/cs2/gamedata/, then run
-               `npm ci` and `node packages/sdk/dist/cli.js gen-schema && node packages/sdk/dist/cli.js gen-nav`
-               (build the sdk first with `npm run build -w packages/sdk` if dist is missing).
-            4. Re-run tools/gamedata-offline/update-day.sh --new depot/cur --old depot/old --out /tmp/recheck
-               until it exits 0, or explain what is left.
-            5. Bump tools/gamedata-offline/baseline.json to buildid ${{ steps.poll.outputs.buildid }},
-               manifest ${{ steps.poll.outputs.manifest }}, checked = today (UTC).
-            6. Commit on a new branch `gamedata/cs2-${{ steps.poll.outputs.buildid }}`, push it, and open a
-               DRAFT PR with `gh pr create --draft` whose body has a **Why** section, the per-item fixes,
-               what is still unverified (nothing here is live-tested), and "Closes #${{ steps.issue.outputs.number }}".
-               Then `gh pr edit --add-assignee GabeHirakawa`.
-
-            Rules: never push to main, never tag, never merge. Gamedata-only fixes need no changeset.
-            Do not add any "Generated with Claude Code" line or footer anywhere (commits, PR body, comments).
-            If you cannot fix something, leave it failing in gamedata (it degrades by name) and list it.
-            Finish with a comment on issue #${{ steps.issue.outputs.number }} linking the PR.
+          set -euo pipefail
+          if [ -z "$FIRE_URL" ] || [ -z "$FIRE_TOKEN" ]; then
+            echo "::notice::CLAUDE_FIRE_URL / CLAUDE_FIRE_TOKEN not set; the issue is the hand-off."
+            exit 0
+          fi
+          text=$(printf 'repo=%s issue=%s buildid=%s manifest=%s base_buildid=%s base_manifest=%s run=%s' \
+            "$GITHUB_REPOSITORY" "$ISSUE" "$BUILDID" "$MANIFEST" "$BASE_BUILD" "$BASE_MANIFEST" "$RUN_URL")
+          body=$(python3 -I -c 'import json, sys; print(json.dumps({"text": sys.argv[1]}))' "$text")
+          curl -fsS --retry 3 --retry-delay 10 -X POST "$FIRE_URL" \
+            -H "Authorization: Bearer $FIRE_TOKEN" \
+            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            -d "$body" | python3 -I -c 'import json, sys; print("Claude session:", json.load(sys.stdin).get("claude_code_session_url"))'

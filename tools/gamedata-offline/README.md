@@ -62,8 +62,9 @@ while their name is still in a module. It reports any field whose type it could 
 
 `.github/workflows/cs2-update.yml` polls Steam every 5 minutes. When depot 2347773's public
 manifest differs from `baseline.json`, it fetches both builds and runs the checks, then files a
-`cs2-update` issue with the report. It then starts Claude on the same files to open a draft fix
-PR, if the `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` secret is set. The PR that fixes a
+`cs2-update` issue with the report. It then POSTs to a Claude Code scheduled task's API trigger
+(secrets `CLAUDE_FIRE_URL` and `CLAUDE_FIRE_TOKEN`), which starts a cloud session that
+re-downloads the modules, fixes what the report flags and opens a draft PR. The PR that fixes a
 build bumps `baseline.json`, and that bump is what stops the watcher. The same steps by hand:
 
 ```bash
