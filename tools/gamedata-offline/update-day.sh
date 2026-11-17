@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # The update-day checks in one run: signatures, vtable pins, tracked index alignment, the
-# every-vtable slot diff, and the offline schema regen with its diff. Writes a Markdown report.
+# every-vtable slot diff, the offline schema regen with its diff, and (with gdgen) the gamedata
+# regeneration plus the s2sdk check. Writes a Markdown report.
 #
 #   tools/gamedata-offline/update-day.sh --new <dir> [--old <dir>] --out <dir>
 #
 # <dir>s are flat module directories (fetch-depot.sh makes them). Without --old only signatures,
 # pins and the schema regen run. Exit 0 = nothing for s2script to fix (the schema may still have
 # changed: regenerate it), 1 = something needs a look, 2 = the checker itself failed.
+#
+# gdgen (github.com/s2script/s2-gamedatagen) runs when $GDGEN names its binary or `gdgen` is on
+# PATH. It writes <out>/gamedata.patch (git apply it) and <out>/regen.md, which lists only what it
+# could not regenerate. The s2sdk check inside it needs clang++ and the third_party/hl2sdk submodule.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -44,6 +49,24 @@ else
     "$schema" "$(tail -20 "$out/schema.log")" > "$out/schema.md"
 fi
 
+gdgen=${GDGEN:-$(command -v gdgen || true)}
+regen=-1
+if [ -n "$gdgen" ] && [ -n "$old" ]; then
+  if [ ! -d "$root/third_party/hl2sdk/public" ]; then
+    git -C "$root" submodule update --init --depth 1 third_party/hl2sdk > "$out/submodule.log" 2>&1 || true
+  fi
+  "$gdgen" regen --repo "$root" --old "$old" --new "$new" --out "$out" --strict > /dev/null 2> "$out/regen.log"
+  regen=$?
+  if [ "$regen" -gt 1 ]; then
+    printf '### Gamedata regeneration (gdgen)\n\ngdgen failed (exit %s):\n\n```\n%s\n```\n' \
+      "$regen" "$(tail -20 "$out/regen.log")" > "$out/regen.md"
+  fi
+elif [ -z "$gdgen" ]; then
+  printf '### Gamedata regeneration (gdgen)\n\nNot run: gdgen is not installed (set GDGEN).\n' > "$out/regen.md"
+else
+  printf '### Gamedata regeneration (gdgen)\n\nNot run: no old build to regenerate from.\n' > "$out/regen.md"
+fi
+
 python3 -I - "$new" > "$out/modules.md" <<'PY'
 import hashlib, pathlib, sys
 from elftools.elf.elffile import ELFFile
@@ -59,6 +82,8 @@ for p in sorted(pathlib.Path(sys.argv[1]).glob('*.so')):
 PY
 
 {
+  cat "$out/regen.md"
+  echo
   cat "$out/check.md"
   echo
   cat "$out/schema.md"
@@ -67,4 +92,6 @@ PY
 } > "$out/report.md"
 
 [ "$schema" -eq 0 ] || exit 1
+# gdgen leaving something unresolved (or failing) needs a look even when check.py is clean.
+[ "$regen" -ge 1 ] && exit 1
 exit "$check"

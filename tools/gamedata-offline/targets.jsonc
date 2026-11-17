@@ -1,0 +1,68 @@
+// What the update-day tools check and regenerate. Read by check.py and by gdgen
+// (github.com/s2script/s2-gamedatagen), so the two never disagree about which vtable backs which
+// pin. Layout facts stay in the gamedata files; this only names where to look.
+{
+  "platform": "linuxsteamrt64",
+  // owner -> gamedata file whose signatures / offsets / calls are checked
+  "gamedata": {
+    "core": "gamedata/core/game.cs2.jsonc",
+    "sdkhooks": "gamedata/sdkhooks/game.cs2.jsonc",
+    "cs2": "games/cs2/gamedata/game.cs2.jsonc"
+  },
+  // Interface pins: `<Iface>_vtableSize` is the slot count of the implementing class's vtable (see
+  // the comment block above the pins in gamedata/core/game.cs2.jsonc). Every offsets key that
+  // starts with `<Iface>_` is a hook slot on that vtable. `header` is the s2sdk class the shim's
+  // compiled calls go through; the s2sdk check lays it out with clang and compares.
+  "pins": [
+    { "key": "ISource2Server_vtableSize", "module": "libserver.so", "class": "CSource2Server", "header": "ISource2Server" },
+    { "key": "ISource2ServerConfig_vtableSize", "module": "libserver.so", "class": "CCSGameConfiguration", "offsetToTop": -8, "header": "ISource2ServerConfig" },
+    { "key": "ISource2GameClients_vtableSize", "module": "libserver.so", "class": "CSource2GameClients", "header": "ISource2GameClients" },
+    { "key": "ISource2GameEntities_vtableSize", "module": "libserver.so", "class": "CSource2GameEntities", "header": "ISource2GameEntities" },
+    { "key": "IGameEventManager2_vtableSize", "module": "libserver.so", "class": "CGameEventManager", "header": "IGameEventManager2" },
+    { "key": "IGameEventSystem_vtableSize", "module": "libengine2.so", "class": "CGameEventSystem", "header": "IGameEventSystem" },
+    { "key": "INetworkServerService_vtableSize", "module": "libengine2.so", "class": "CNetworkServerService", "header": "INetworkServerService" },
+    { "key": "ICvar_vtableSize", "module": "libtier0.so", "class": "CCvar", "header": "ICvar" },
+    { "key": "IVEngineServer2_vtableSize", "module": "libengine2.so", "class": "CEngineServer", "header": "IVEngineServer2" },
+    { "key": "INetChannelInfo_vtableSize", "module": "libnetworksystem.so", "class": "CNetChan", "header": "INetChannel" },
+    { "key": "INetworkMessages_vtableSize", "module": "libnetworksystem.so", "class": "CNetworkMessages", "header": "INetworkMessages" },
+    { "key": "ISoundEventManager_vtableSize", "module": "libsoundsystem.so", "class": "CSoundOpSystem", "offsetToTop": -8 },
+    { "key": "INetworkStringTableContainer_vtableSize", "module": "libengine2.so", "class": "CNetworkStringTableContainer", "header": "INetworkStringTableContainer" },
+    { "key": "INetworkStringTable_vtableSize", "module": "libengine2.so", "class": "CNetworkStringTable", "header": "INetworkStringTable" },
+    { "key": "IEntityResourceManifestBuilder_vtableSize", "module": "libserver.so", "class": "CGameEntitySystem", "header": "IEntityResourceManifestBuilder" },
+    { "key": "IFileSystem_vtableSize", "module": "libfilesystem_stdio.so", "class": "CFileSystem_Stdio", "header": "IFileSystem" }
+  ],
+  // Bare vtable indices that are not behind an interface pin (offsets key -> the vtable).
+  "indices": {
+    "CNavPhysicsInterface_TraceShape": { "module": "libserver.so", "class": "CNavPhysicsInterface" },
+    "CBaseEntity_Teleport": { "module": "libserver.so", "class": "CBaseEntity" },
+    "CGameRulesGameSystem_OnPrecacheResource": { "module": "libserver.so", "class": "CGameRulesGameSystem" },
+    "CServerSideClient_ProcessRespondCvarValue": { "module": "libengine2.so", "class": "CServerSideClient" },
+    "CServerSideClient_SendNetMessage": { "module": "libengine2.so", "class": "CServerSideClient" },
+    "CCSPlayer_ItemServices_RemoveWeapons": { "module": "libserver.so", "class": "CCSPlayer_ItemServices" }
+  },
+  // The s2sdk check: the headers to lay out, built the way shim/CMakeLists.txt builds the shim.
+  "sdk": {
+    "path": "third_party/hl2sdk",
+    "fork": "https://github.com/s2script/s2sdk",
+    "forkBranch": "s2script-cs2",
+    "upstream": "https://github.com/alliedmodders/s2sdk",
+    "upstreamBranch": "cs2",
+    "headers": [
+      "engine2/isource2server.h",
+      "engine2/isource2serverconfig.h",
+      "igameevents.h",
+      "engine2/igameeventsystem.h",
+      "engine2/inetworkserverservice.h",
+      "tier0/icvar.h",
+      "engine2/ivengineserver2.h",
+      "networksystem/inetchannel.h",
+      "networksystem/inetworkmessages.h",
+      "networkstringtabledefs.h",
+      "entity2/entitysystem.h",
+      "filesystem/ifilesystem.h"
+    ],
+    "includes": ["shim/src/sdk_stubs"],
+    "sdkIncludes": ["public", "public/engine2", "public/mathlib", "public/tier0", "public/entity2", "game/shared", "common", "thirdparty/protobuf-3.21.8/src"],
+    "defines": ["LINUX", "_LINUX", "POSIX", "COMPILER_GCC", "PLATFORM_64BITS", "_GLIBCXX_USE_CXX11_ABI=0", "stricmp=strcasecmp", "strnicmp=strncasecmp", "_stricmp=strcasecmp", "_vsnprintf=vsnprintf"]
+  }
+}

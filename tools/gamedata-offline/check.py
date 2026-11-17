@@ -311,45 +311,165 @@ def fingerprint(img, fn):
     return hashlib.sha1('\n'.join(toks).encode()).hexdigest()[:12]
 
 
+def load_targets():
+    """tools/gamedata-offline/targets.jsonc: the gamedata files, pins and bare indices (shared
+    with gdgen, github.com/s2script/s2-gamedatagen)."""
+    return json.loads(strip_jsonc_comments((pathlib.Path(__file__).parent / 'targets.jsonc').read_text()))
+
+
+TARGETS = load_targets()
+
+
 def load_gamedata():
-    files = {
-        'core': ROOT / 'gamedata/core/game.cs2.jsonc',
-        'sdkhooks': ROOT / 'gamedata/sdkhooks/game.cs2.jsonc',
-        'cs2': ROOT / 'games/cs2/gamedata/game.cs2.jsonc',
-    }
-    return {k: json.loads(strip_jsonc_comments(p.read_text())) for k, p in files.items()}
+    return {k: json.loads(strip_jsonc_comments((ROOT / p).read_text())) for k, p in TARGETS['gamedata'].items()}
 
 
 # Interface pins: (pin key, module, class, offset_to_top). See the comment block above the pins in
 # gamedata/core/game.cs2.jsonc.
-PINS = [
-    ('ISource2Server_vtableSize', 'libserver.so', 'CSource2Server', 0),
-    ('ISource2ServerConfig_vtableSize', 'libserver.so', 'CCSGameConfiguration', -8),
-    ('ISource2GameClients_vtableSize', 'libserver.so', 'CSource2GameClients', 0),
-    ('ISource2GameEntities_vtableSize', 'libserver.so', 'CSource2GameEntities', 0),
-    ('IGameEventManager2_vtableSize', 'libserver.so', 'CGameEventManager', 0),
-    ('IGameEventSystem_vtableSize', 'libengine2.so', 'CGameEventSystem', 0),
-    ('INetworkServerService_vtableSize', 'libengine2.so', 'CNetworkServerService', 0),
-    ('ICvar_vtableSize', 'libtier0.so', 'CCvar', 0),
-    ('IVEngineServer2_vtableSize', 'libengine2.so', 'CEngineServer', 0),
-    ('INetChannelInfo_vtableSize', 'libnetworksystem.so', 'CNetChan', 0),
-    ('INetworkMessages_vtableSize', 'libnetworksystem.so', 'CNetworkMessages', 0),
-    ('ISoundEventManager_vtableSize', 'libsoundsystem.so', 'CSoundOpSystem', -8),
-    ('INetworkStringTableContainer_vtableSize', 'libengine2.so', 'CNetworkStringTableContainer', 0),
-    ('INetworkStringTable_vtableSize', 'libengine2.so', 'CNetworkStringTable', 0),
-    ('IEntityResourceManifestBuilder_vtableSize', 'libserver.so', 'CGameEntitySystem', 0),
-    ('IFileSystem_vtableSize', 'libfilesystem_stdio.so', 'CFileSystem_Stdio', 0),
-]
+PINS = [(p['key'], p['module'], p['class'], p.get('offsetToTop', 0)) for p in TARGETS['pins']]
 PIN_CLASS = {k.removesuffix('_vtableSize'): (m, c, o) for k, m, c, o in PINS}
 # Bare vtable indices that are not behind an interface pin.
-EXTRA_INDEX = {
-    'CNavPhysicsInterface_TraceShape': ('libserver.so', 'CNavPhysicsInterface', 0),
-    'CBaseEntity_Teleport': ('libserver.so', 'CBaseEntity', 0),
-    'CGameRulesGameSystem_OnPrecacheResource': ('libserver.so', 'CGameRulesGameSystem', 0),
-    'CServerSideClient_ProcessRespondCvarValue': ('libengine2.so', 'CServerSideClient', 0),
-    'CServerSideClient_SendNetMessage': ('libengine2.so', 'CServerSideClient', 0),
-    'CCSPlayer_ItemServices_RemoveWeapons': ('libserver.so', 'CCSPlayer_ItemServices', 0),
-}
+EXTRA_INDEX = {k: (v['module'], v['class'], v.get('offsetToTop', 0)) for k, v in TARGETS['indices'].items()}
+
+
+class Missing:
+    """Stand-in for a module that is not in the directory: nothing resolves in it."""
+
+    def find(self, pattern):
+        return []
+
+    def vtable(self, cls, offset_to_top=0):
+        return None
+
+    def slots(self, vt):
+        return []
+
+    def all_vtables(self):
+        return {}
+
+
+def tracked_classes(gd):
+    """Class names s2script names somewhere (pins, bare indices, vtable calls, validators)."""
+    out = {c for _, _, c, _ in PINS} | {c for _, c, _ in EXTRA_INDEX.values()}
+    for d in gd.values():
+        for c in d.get('calls', {}).values():
+            t = c.get('target', {})
+            if t.get('kind') == 'vtable':
+                out.add(t['class'])
+        for s in d.get('signatures', {}).values():
+            vm = ((s.get(PLAT) or {}).get('validate') or {}).get('vtable-member')
+            if vm:
+                out.add(vm)
+    return out
+
+
+def demangle_name(n):
+    """'16CNetworkMessages' -> 'CNetworkMessages'; nested/template names are left mangled."""
+    i = 0
+    while i < len(n) and n[i].isdigit():
+        i += 1
+    if i and int(n[:i]) == len(n) - i:
+        return n[i:]
+    return n
+
+
+VTABLE_MODULES = ['libserver.so', 'libengine2.so', 'libtier0.so', 'libnetworksystem.so',
+                  'libmatchmaking.so', 'libsoundsystem.so', 'libfilesystem_stdio.so']
+
+
+def vtable_diff(old_dir, new_dir, tracked):
+    """Per module: every vtable whose slot count changed, plus vtables that appeared or vanished."""
+    out = []
+    for mod in VTABLE_MODULES:
+        op, np_ = pathlib.Path(old_dir) / mod, pathlib.Path(new_dir) / mod
+        if not (op.exists() and np_.exists()):
+            continue
+        o, n = Image(str(op)).all_vtables(), Image(str(np_)).all_vtables()
+        for key in sorted(set(o) | set(n)):
+            if o.get(key) == n.get(key):
+                continue
+            name = demangle_name(key[0])
+            out.append({'module': mod, 'class': name, 'offset_to_top': key[1], 'old': o.get(key),
+                        'new': n.get(key), 'tracked': name in tracked})
+    return out
+
+
+def short(name, n=70):
+    return name if len(name) <= n else name[:n - 1] + '…'
+
+
+def markdown(report, a):
+    L = []
+    sigs = report['signatures']
+    broke = [x for x in sigs if not x['ok'] and x.get('old_ok', True)]
+    still = [x for x in sigs if not x['ok'] and not x.get('old_ok', True)]
+    pins = [x for x in report['pins'] if not x['ok']]
+    moved = [x for x in report['indices'] if index_moved(x)]
+    rebodied = [x for x in report['indices'] if x['new'] is None and not index_moved(x)]
+    vt = report.get('vtables', [])
+    vt_tracked = [x for x in vt if x['tracked']]
+    L.append('### Summary\n')
+    L.append(f"- Signatures: {len(sigs) - len(broke) - len(still)} ok, **{len(broke)} newly failing**, {len(still)} already failing")
+    L.append(f"- Vtable pins: {len(report['pins']) - len(pins)} ok, **{len(pins)} mismatched**")
+    if a.old:
+        L.append(f"- Tracked vtable indices: {len(report['indices']) - len(moved) - len(rebodied)} unchanged, "
+                 f"**{len(moved)} moved**, {len(rebodied)} recompiled in place (same table size, new body)")
+    if a.all_vtables:
+        L.append(f"- All-vtable diff: {len(vt)} vtables changed, **{len(vt_tracked)} of them in classes s2script names**")
+    L.append('')
+    if broke or still:
+        L.append('### Failing signatures\n')
+        L.append('| | Owner | Name | Reason |\n|---|---|---|---|')
+        for x in broke + still:
+            L.append(f"| {'NEW' if x in broke else 'old'} | {x['owner']} | `{x['name']}` | {x['reason']} |")
+        L.append('')
+    if pins:
+        L.append('### Vtable pin mismatches\n')
+        L.append('| Pin | Class | Pin value | New build | Old build |\n|---|---|---|---|---|')
+        for x in pins:
+            L.append(f"| `{x['key']}` | {x['class']} | {x['pin']} | {x['live']} | {x['old'] if x['old'] is not None else '?'} |")
+        L.append('')
+    if moved or rebodied:
+        L.append('### Tracked vtable indices that changed\n')
+        L.append('| | Key | Class | Old index | New index | Slots |\n|---|---|---|---|---|---|')
+        for x in moved + rebodied:
+            new = x['new'] if x['new'] is not None else 'not found'
+            L.append(f"| {'MOVED' if x in moved else 'new body?'} | `{x['key']}` | {x['class']} | {x['old']} | {new} | {x['old_slots']} -> {x['new_slots']} |")
+        L.append('')
+    if vt:
+        L.append('### Vtable slot counts that changed\n')
+        L.append('Classes s2script names come first. Message classes that all changed the same way are grouped.\n')
+        L.append('| Module | Class | Old | New |\n|---|---|---|---|')
+        rest = []
+        for x in vt:
+            (L if x['tracked'] else rest).append(
+                f"| {x['module']} | **{x['class']}**{'' if not x['offset_to_top'] else ' (secondary ' + str(x['offset_to_top']) + ')'} | {x['old'] or '—'} | {x['new'] or '—'} |"
+                if x['tracked'] else x)
+        groups = {}
+        for x in rest:
+            groups.setdefault((x['module'], x['old'], x['new']), []).append(x)
+        for (mod, o, n), xs in sorted(groups.items(), key=lambda kv: (kv[0][0], -len(kv[1]))):
+            names = [short(x['class']) + ('' if not x['offset_to_top'] else f" ({x['offset_to_top']})") for x in xs]
+            shown = ', '.join(f'`{c}`' for c in names[:3]) + (f' and {len(names) - 3} more' if len(names) > 3 else '')
+            L.append(f"| {mod} | {shown} | {o or '—'} | {n or '—'} |")
+        L.append('')
+    return '\n'.join(L)
+
+
+def index_moved(x):
+    """A tracked index needs a look when it maps to another slot, or vanished from a table whose
+    size changed. A vanished fingerprint in a same-size table is a recompiled body at the same
+    index (CheckTransmit, PostEventAbstract on Nov 11), shown but not flagged."""
+    if x['new'] is None:
+        return x['old_slots'] != x['new_slots']
+    return x['new'] != x['old']
+
+
+def needs_attention(report):
+    return (any(not x['ok'] and x.get('old_ok', True) for x in report['signatures'])
+            or any(not x['ok'] for x in report['pins'])
+            or any(index_moved(x) for x in report['indices'])
+            or any(x['tracked'] for x in report.get('vtables', [])))
 
 
 class Missing:

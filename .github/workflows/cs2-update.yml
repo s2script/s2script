@@ -15,7 +15,14 @@ name: cs2-update
 # The PR that bumps baseline.json is what stops the issue being refiled; an existing issue for
 # the build (open or closed) also stops it, so a run never files twice while the PR is open.
 #
-# repository_dispatch (type cs2-update-poll) lets an external poller wake this sooner than cron.
+# repository_dispatch (type cs2-update-poll) is how the always-on Steam watcher
+# (s2script/s2-gamedatagen watcher/) wakes this within seconds of a new build; its client_payload
+# carries the build id and manifest straight from Steam's PICS feed, ahead of api.steamcmd.net.
+# The cron stays as the backup.
+#
+# gdgen (s2script/s2-gamedatagen) regenerates the gamedata from the previous build and checks
+# s2sdk against the new one; its patch goes in the report and the issue, so the Claude session
+# applies it and only works on what gdgen listed as unresolved.
 #
 # The previous build's modules come from this workflow's own cache (saved when that build was
 # new). If the cache expired, the baseline manifest is downloaded instead; if that fails too the
@@ -51,6 +58,11 @@ concurrency:
 
 env:
   DEPOT: '2347773'
+  # gdgen's source. The repo is private: GAMEDATAGEN_TOKEN (a fine-grained token with Contents: read
+  # on s2script/s2-gamedatagen) lets this job check it out. Without it gdgen is skipped and the
+  # report says so.
+  GDGEN_REPO: s2script/s2-gamedatagen
+  GDGEN_REF: main
   DEPOTDOWNLOADER_VERSION: '3.4.0'
   DEPOTDOWNLOADER_SHA256: a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53
 
@@ -65,17 +77,28 @@ jobs:
         id: poll
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_MANIFEST: ${{ inputs.manifest }}
-          INPUT_BUILDID: ${{ inputs.buildid }}
+          INPUT_MANIFEST: ${{ inputs.manifest || github.event.client_payload.manifest }}
+          INPUT_BUILDID: ${{ inputs.buildid || github.event.client_payload.buildid }}
+          INPUT_UPDATED: ${{ github.event.client_payload.timeupdated }}
           INPUT_FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          info=$(curl -fsS --retry 4 --retry-delay 15 https://api.steamcmd.net/v1/info/730)
-          read -r buildid manifest updated < <(python3 -I -c '
+          if info=$(curl -fsS --retry 4 --retry-delay 15 https://api.steamcmd.net/v1/info/730); then
+            read -r buildid manifest updated < <(python3 -I -c '
           import json, sys
           d = json.loads(sys.stdin.read())["data"]["730"]["depots"]
           print(d["branches"]["public"]["buildid"], d[sys.argv[1]]["manifests"]["public"]["gid"],
                 d["branches"]["public"]["timeupdated"])' "$DEPOT" <<<"$info")
+          elif [ -n "$INPUT_MANIFEST" ] && [ -n "$INPUT_BUILDID" ]; then
+            # The Steam watcher read the build from PICS itself; api.steamcmd.net is only a cache.
+            echo "::warning::api.steamcmd.net unreachable; using the build from the dispatch payload."
+            buildid=$INPUT_BUILDID
+            manifest=$INPUT_MANIFEST
+            updated=${INPUT_UPDATED:-$(date +%s)}
+          else
+            echo "::error::api.steamcmd.net unreachable."
+            exit 1
+          fi
           if [ -n "$INPUT_MANIFEST" ] && [ "$INPUT_MANIFEST" != "$manifest" ]; then
             # A hand-picked manifest is not the public one, so its build id must come with it:
             # the issue, the Claude prompt and the baseline bump all pair the two.
@@ -85,6 +108,7 @@ jobs:
             fi
             manifest=$INPUT_MANIFEST
             buildid=$INPUT_BUILDID
+            updated=${INPUT_UPDATED:-$updated}
           fi
           base_manifest=$(python3 -I -c 'import json; print(json.load(open("tools/gamedata-offline/baseline.json"))["manifest"])')
           base_build=$(python3 -I -c 'import json; print(json.load(open("tools/gamedata-offline/baseline.json"))["buildid"])')
@@ -135,6 +159,27 @@ jobs:
           chmod +x "$RUNNER_TEMP/dd/DepotDownloader"
           echo "DEPOTDOWNLOADER=$RUNNER_TEMP/dd/DepotDownloader" >> "$GITHUB_ENV"
           python -m pip install pyelftools==0.33 capstone==5.0.9
+
+      - name: Check out gdgen
+        if: steps.poll.outputs.run == 'true'
+        id: gdgen_src
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GDGEN_REPO }}
+          ref: ${{ env.GDGEN_REF }}
+          token: ${{ secrets.GAMEDATAGEN_TOKEN || github.token }}
+          path: .gdgen
+
+      - name: Build gdgen
+        if: steps.poll.outputs.run == 'true' && steps.gdgen_src.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --manifest-path .gdgen/Cargo.toml
+          echo "GDGEN=$PWD/.gdgen/target/release/gdgen" >> "$GITHUB_ENV"
+          # The s2sdk check lays the headers out with clang (preinstalled on ubuntu-24.04).
+          git submodule update --init --depth 1 third_party/hl2sdk
 
       - name: Fetch the baseline build
         if: steps.poll.outputs.run == 'true'
@@ -215,10 +260,25 @@ jobs:
             echo
             echo "**Verdict: $verdict.** [Run log and full report]($RUN_URL) (artifact \`cs2-update-$BUILDID\`, with the regenerated schema catalog)."
             echo
+            if [ -s report/gamedata.patch ]; then
+              echo "gdgen regenerated part of the gamedata: \`git apply\` the patch below first (it is also \`gamedata.patch\` in the artifact),"
+              echo "then fix only what the report still lists."
+              echo
+            fi
             echo "To close this out: fix whatever the report flags, regenerate the schema catalog"
             echo "(\`tools/gamedata-offline/schema.py\`, then \`gen-schema\` / \`gen-nav\`), and bump"
             echo "\`tools/gamedata-offline/baseline.json\` to build $BUILDID / manifest $MANIFEST in the same PR."
             echo
+            if [ -s report/gamedata.patch ] && [ "$(wc -c < report/gamedata.patch)" -lt 30000 ]; then
+              echo
+              echo '<details><summary>gamedata.patch (gdgen)</summary>'
+              echo
+              echo '```diff'
+              cat report/gamedata.patch
+              echo '```'
+              echo '</details>'
+              echo
+            fi
             if [ -f report/report.md ]; then cat report/report.md; fi
           } > issue.md
           # Issue bodies cap at 65536 characters; the artifact has the rest.
