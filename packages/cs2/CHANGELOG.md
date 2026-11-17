@@ -1,5 +1,11 @@
 # @s2script/cs2
 
+## 0.29.1
+
+### Patch Changes
+
+- bebc1d2: Schema for CS2 build 26738309: adds `CMapInfo.frostEnabled`.
+
 ## 0.29.0
 
 ### Minor Changes
