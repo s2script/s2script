@@ -1,6 +1,7 @@
 #pragma once
 #include <ISmmPlugin.h>
 #include "khook_map.h"
+#include <engine2/isource2server.h>   // ClientPutInServerType_t (an enum without a fixed type, so no forward decl)
 
 // ISource2Server is forward-declared here; full definition (engine2/isource2server.h) is
 // included only in s2script_mm.cpp where the KHook machinery lives.
@@ -52,7 +53,7 @@ template <int NUM_BITS> class CBitVec;
 // (== signed char, platform.h:273), stated so this forward decl matches the later full definition.
 struct CSplitScreenSlot;
 class IGameEventSystem;
-class INetworkMessageInternal;
+struct NetMessageInfo_t;
 class CNetMessage;
 class ISource2ServerConfig;
 enum NetChannelBufType_t : signed char;
@@ -79,7 +80,7 @@ public:
     KHook::Return<void> Hook_OnClientConnected(ISource2GameClients*, CPlayerSlot slot, const char* name,
                                                unsigned long long xuid, const char* netid, const char* addr, bool fake);
     KHook::Return<void> Hook_ClientPutInServer(ISource2GameClients*, CPlayerSlot slot, const char* name,
-                                               int type, unsigned long long xuid);
+                                               ClientPutInServerType_t type, unsigned long long xuid);
     KHook::Return<void> Hook_ClientActive(ISource2GameClients*, CPlayerSlot slot, bool bLoadGame,
                                           const char* name, unsigned long long xuid);
     KHook::Return<void> Hook_ClientFullyConnect(ISource2GameClients*, CPlayerSlot slot);
@@ -97,7 +98,7 @@ public:
                                            const Entity2Networkable_t** pNetworkables,
                                            const unsigned short* pEntityIndices, int nEntityIndices);
     KHook::Return<void> Hook_PostEvent(IGameEventSystem*, CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
-                                       const unsigned long long* clients, INetworkMessageInternal* pEvent,
+                                       const unsigned long long* clients, NetMessageInfo_t* pEvent,
                                        const CNetMessage* pData, unsigned long nSize, NetChannelBufType_t bufType);
 
     // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot

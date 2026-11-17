@@ -247,7 +247,7 @@ typedef struct S2UsercmdSnapshot {
  * dispatch_hook: a shim paired with an older core skips the post phase instead of failing dlopen. */
 void s2script_core_dispatch_usercmd_post(const S2UsercmdSnapshot* snapshot) __attribute__((weak));
 /* Shim -> core: called by the PostEventAbstract PRE hook on a bitmap-hit outbound user message
- * (usermsg-hook slice). name = the message's canonical GetUnscopedName() (the dispatch key), id =
+ * (usermsg-hook slice). name = the message's canonical GetName() (the dispatch key), id =
  * its m_MessageId. The shim sets the block-scoped current-message statics BEFORE this call and nulls
  * them after — the JS UserMessages.onPre subscribers read the live message via the usermsg_hook_read_*
  * / recipients / debug ops during this call. Returns the collapsed HookResult (0 Continue .. 3 Stop);

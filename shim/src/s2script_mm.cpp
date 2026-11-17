@@ -52,7 +52,6 @@
 // GetMapName / GetGlobals()->curtime (typed vtable calls; the compiler derives the index).
 #include <engine2/inetworkgameserver.h>
 #include <engine2/inetworkserverservice.h>
-#include <engine2/networkgameserverbase.h>   // CNetworkGameServerBase IS-A INetworkGameServer
 
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
@@ -129,11 +128,11 @@ struct InterfaceHooks {
     S2CheckedVirtual<ISource2Server, void, bool, bool, bool> gameFrame;
     S2CheckedVirtual<IGameEventManager2, bool, IGameEvent*, bool> fireEvent;
     S2CheckedVirtual<IGameEventSystem, void, CSplitScreenSlot, bool, int, const uint64*,
-                   INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t> postEvent;
+                   NetMessageInfo_t*, const CNetMessage*, unsigned long, NetChannelBufType_t> postEvent;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const CCommand&> clientCommand;
     S2CheckedVirtual<ICvar, void, ConCommandRef, const CCommandContext&, const CCommand&> dispatchConCommand;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, uint64, const char*, const char*, bool> onClientConnected;
-    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, int, uint64> clientPutInServer;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, ClientPutInServerType_t, uint64> clientPutInServer;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, bool, const char*, uint64> clientActive;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot> clientFullyConnect;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*> clientDisconnect;
@@ -1287,10 +1286,13 @@ static const int kMaxClientSlots = 64;
 static int s_trackedSignon[kMaxClientSlots] = {0};
 
 // INetworkGameServer via the TYPED virtual (replaces the NetworkServerService.gameServer offset).
-// CNetworkGameServerBase (the GetIGameServer return type) IS-A INetworkGameServer.
+// CNetworkGameServerBase (the GetIGameServer return type) has INetworkGameServer as its FIRST base,
+// so the pointer is the same. Its header (networkgameserverbase.h) is not included: it pulls in
+// generated protobuf headers (networkbasetypes.pb.h) this build doesn't generate.
 static INetworkGameServer* S2_GameServer() {
     if (!s_pNetworkServerService) return nullptr;
-    return static_cast<INetworkServerService*>(s_pNetworkServerService)->GetIGameServer();
+    return reinterpret_cast<INetworkGameServer*>(
+        static_cast<INetworkServerService*>(s_pNetworkServerService)->GetIGameServer());
 }
 
 static int s2_client_signon(int slot) {
@@ -1557,7 +1559,7 @@ static void s2_client_print(int slot, const char* msg) {
     }
     // Skip bots / clients with no netchannel — a print to a fake client can crash (SM's fake-client skip).
     if (!S2Engine_GetPlayerNetInfo(slot)) return;
-    INetworkMessageInternal* pInfo = s_pNetworkMessages->FindNetworkMessagePartial("SayText2");
+    NetMessageInfo_t* pInfo = s_pNetworkMessages->FindNetworkMessagePartial("SayText2");
     if (!pInfo) {
         static bool s_warnedNoMsg = false;
         if (!s_warnedNoMsg) { s_warnedNoMsg = true;
@@ -1598,14 +1600,14 @@ static void s2_client_print(int slot, const char* msg) {
 // is unconfirmed (no DeallocateMessage seen), so we do NOT free it — a double-free is worse
 // than a bounded per-send leak. create() also drops (does not free) any prior unsent message.
 // ---------------------------------------------------------------------------
-static INetworkMessageInternal* s_umInfo = nullptr;   // the message factory
+static NetMessageInfo_t* s_umInfo = nullptr;   // the message factory
 static CNetMessage*             s_umData = nullptr;    // the allocated CNetMessage
 static google::protobuf::Message* s_umMsg = nullptr;   // its protobuf Message view
 
 static int s2_user_message_create(const char* name) {
     s_umInfo = nullptr; s_umData = nullptr; s_umMsg = nullptr;   // drop any prior unsent (bounded leak-TODO)
     if (!name || !s_pNetworkMessages) return 0;
-    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
+    NetMessageInfo_t* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
     if (!info) return 0;
     CNetMessage* data = info->AllocateMessage();
     if (!data) return 0;
@@ -1707,13 +1709,15 @@ static int s2_user_message_send(const int* slots, int slotCount) {
 
 // ---------------------------------------------------------------------------
 // UserMessage-interception slice. Doctrine: the ONE borrowed layout fact is
-// NetMessageInfo_t::m_MessageId (inetworkserializer.h; a plain record field at +0x18 since CS2 build
-// 26598758, statically asserted there — never exercised by the send path);
+// NetMessageInfo_t::m_MessageId (inetworkmessages.h; a plain record field at +0x18 since CS2 build
+// 26598758 — never exercised by the send path);
 // validated fail-closed at subscribe (round-trip below) and on an observe-only first fire.
 // Hot path: a bitmap test on the id, S2_Ignore on miss before ANY reflection.
 // Block-scoped view statics are SEPARATE from the send builder's s_umInfo/s_umData/s_umMsg above,
 // so a handler that builds+sends a NEW user message mid-hook cannot retarget the intercepted view.
 // ---------------------------------------------------------------------------
+static_assert(offsetof(NetMessageInfo_t, m_MessageId) == 0x18, "NetMessageInfo_t::m_MessageId moved");
+static_assert(sizeof(NetMessageInfo_t) == 0x28, "NetMessageInfo_t size changed");
 static constexpr int kUserMsgMaxId = 2048;
 static constexpr int kUserMsgSubPending = -2;   // usermsg_hook_sub: not registered YET (pre-startup) — core retries
 static uint64_t s_userMsgSubBits[kUserMsgMaxId / 64] = {0};
@@ -1727,8 +1731,8 @@ static int                        s_hookClientCount = 0;
 // The record's name without the " [<id>]" suffix CS2 appends since build 26598758 (Nov 11 2026):
 // "CUserMessageSayText2 [118]" -> "CUserMessageSayText2". Plugins and the core's mux key on the bare
 // proto type name, as they did before that build. Engine-owned record, so the copy is ours.
-static std::string S2_NetMessageName(const INetworkMessageInternal* info) {
-    const char* raw = info ? info->GetUnscopedName() : nullptr;
+static std::string S2_NetMessageName(const NetMessageInfo_t* info) {
+    const char* raw = info ? info->GetName() : nullptr;
     if (!raw) return std::string();
     std::string name(raw);
     const size_t open = name.rfind(" [");
@@ -1776,7 +1780,7 @@ static const google::protobuf::Message* s2_usermsg_walk(const google::protobuf::
 // On the first-ever OK sub, lazily Add PostEventAbstract on the already-held s_pGameEventSystem.
 static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonicalLen) {
     if (!name || !s_pNetworkMessages || !s_pGameEventSystem) return -1;
-    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
+    NetMessageInfo_t* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
     if (!info) {
         // Before the server starts, the game has not registered its network messages yet (a
         // subscription that runs that early, e.g. from a late-registering message): report PENDING, and core retries via
@@ -1789,9 +1793,7 @@ static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonic
         META_CONPRINTF("[s2script] USERMSG sub FAILED: no message matches '%s'\n", name);
         return -1;
     }
-    const NetMessageInfo_t* mi = info->GetNetMessageInfo();
-    if (!mi) { META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: "
-                              "GetNetMessageInfo null for '%s'\n", name); return -1; }
+    const NetMessageInfo_t* mi = info;
     int id = (int)mi->m_MessageId;
     const std::string canonicalName = S2_NetMessageName(info);
     const char* canonical = canonicalName.c_str();
@@ -4875,7 +4877,7 @@ static void InstallAddonHooks(ISmmAPI* ismm) {
 }
 
 // Post one allocated net message to a single connected human slot. Bots have no net channel.
-static int S2_PostToSlot(int slot, INetworkMessageInternal* info, CNetMessage* data) {
+static int S2_PostToSlot(int slot, NetMessageInfo_t* info, CNetMessage* data) {
     if (!s_pGameEventSystem || slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
     uint64 clients = 1ull << (uint64)slot;
     s_pGameEventSystem->PostEventAbstract(-1, false, 64, &clients, info, data, 0, BUF_RELIABLE);
@@ -4887,7 +4889,7 @@ static int s2_client_query_convar(int slot, const char* name, int cookie) {
     if (!name || !*name || cookie == 0 || !s_pNetworkMessages) return 0;
     if (!S2NamedHookSnapshot(S2NamedHookSite::CvarResponse).Accepted()) return 0;
     if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
-    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial("CSVCMsg_GetCvarValue");
+    NetMessageInfo_t* info = s_pNetworkMessages->FindNetworkMessagePartial("CSVCMsg_GetCvarValue");
     if (!info) return 0;
     CNetMessage* data = info->AllocateMessage();
     if (!data) return 0;
@@ -4908,7 +4910,7 @@ static int s2_client_query_convar(int slot, const char* name, int cookie) {
 static int s2_client_replicate_convar(int slot, const char* name, const char* value) {
     if (!name || !*name || !value || !s_pNetworkMessages) return 0;
     if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
-    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial("CNETMsg_SetConVar");
+    NetMessageInfo_t* info = s_pNetworkMessages->FindNetworkMessagePartial("CNETMsg_SetConVar");
     if (!info) return 0;
     CNetMessage* data = info->AllocateMessage();
     if (!data) return 0;
@@ -7375,7 +7377,7 @@ KHook::Return<bool> S2ScriptPlugin::Hook_FireEventPre(IGameEventManager2* mgr, I
 // >= Handled(2) => S2_FromHookResult Supersede (the message is dropped for every recipient AND any server-side local
 // listener — the live gate watches for server-side fallout; fallback = recall-with-modified-mask).
 KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem, CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
-                                    const unsigned long long* clients, INetworkMessageInternal* pEvent,
+                                    const unsigned long long* clients, NetMessageInfo_t* pEvent,
                                     const CNetMessage* pData, unsigned long nSize,
                                     NetChannelBufType_t bufType) {
     auto obs = g_hk.postEvent.Observe(eventSystem);
@@ -7389,7 +7391,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem
     // AUTHORITATIVE dispatch key is the record's name (S2_NetMessageName). A drifted
     // offset therefore degrades to at-worst a wasted dispatch the name-mux drops, or a fail-closed subscribe —
     // never a false suppression.
-    NetMessageInfo_t* mi = pEvent ? pEvent->GetNetMessageInfo() : nullptr;
+    NetMessageInfo_t* mi = pEvent;
     // OPT-IN TRACE, ahead of the subscription gate.
     //
     // The gate below is a bitmap of message ids a plugin actually subscribed to, which makes every
@@ -7416,7 +7418,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem
     // NAME (the record's, which leads with the proto type name) rather than a hardcoded id, so a build that renumbers messages still
     // works.
     if (s_legacyFilterActive && pEvent) {
-        const char* ln = pEvent->GetUnscopedName();
+        const char* ln = pEvent->GetName();
         // EXACT match. `strstr("Source1LegacyGameEvent")` also matches CMsgSource1LegacyGameEventList —
         // the event-descriptor table a connecting client needs — and eating that breaks the join.
         if (ln && strncmp(ln, "CMsgSource1LegacyGameEvent", 26) == 0 && ln[26] != 'L') {
@@ -7543,7 +7545,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_OnClientConnected(ISource2GameClients* 
     S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
     return S2_Ignore();
 }
-KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* clients, CPlayerSlot slot, const char*, int, unsigned long long xuid) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* clients, CPlayerSlot slot, const char*, ClientPutInServerType_t, unsigned long long xuid) {
     auto obs = g_hk.clientPutInServer.Observe(clients);
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
