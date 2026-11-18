@@ -2060,32 +2060,64 @@ fn s2_once(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv
     }));
 }
 
-pub(crate) fn set_native(
+thread_local! {
+    /// One `FunctionTemplate` per native, shared by every context on the isolate. Each context
+    /// instantiates its own function from it, but the template and the function's shared info are
+    /// built once instead of once per plugin, which was over 200 KB of every plugin context.
+    /// Keyed by name and callback type, so a test that installs a different callback under the
+    /// same name gets its own template.
+    static NATIVE_TEMPLATES: std::cell::RefCell<std::collections::HashMap<(String, std::any::TypeId), v8::Global<v8::FunctionTemplate>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Drop the shared native templates. Runs before the isolate drops.
+pub(crate) fn reset_native_templates() {
+    NATIVE_TEMPLATES.with(|t| t.borrow_mut().clear());
+}
+
+/// `name`'s template, built by `build` the first time any context asks for it.
+fn native_template<'s, F: 'static>(
+    scope: &mut v8::PinScope<'s, '_>,
+    name: &str,
+    build: impl FnOnce(&mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::FunctionTemplate>,
+) -> v8::Local<'s, v8::FunctionTemplate> {
+    let key = (name.to_string(), std::any::TypeId::of::<F>());
+    if let Some(t) = NATIVE_TEMPLATES.with(|t| t.borrow().get(&key).cloned()) {
+        return v8::Local::new(scope, &t);
+    }
+    let t = build(scope);
+    t.remove_prototype();
+    NATIVE_TEMPLATES.with(|m| m.borrow_mut().insert(key, v8::Global::new(scope, t)));
+    t
+}
+
+pub(crate) fn set_native<F: v8::MapFnTo<v8::FunctionCallback> + 'static>(
     scope: &mut v8::PinScope,
     global_obj: v8::Local<v8::Object>,
     name: &str,
-    cb: impl v8::MapFnTo<v8::FunctionCallback>,
+    cb: F,
 ) {
     let key = v8::String::new(scope, name).unwrap();
-    let func = v8::Function::new(scope, cb).unwrap();
+    let tmpl = native_template::<F>(scope, name, |scope| v8::FunctionTemplate::new(scope, cb));
+    let func = tmpl.get_function(scope).unwrap();
     global_obj.set(scope, key.into(), func.into());
 }
 
 /// `set_native` with a V8 fast-API body beside the slow callback. Optimized JS calls `fast`
 /// directly when every argument matches its declared types; anything else runs `cb`, so the two
 /// must agree on every answer. A fast body must not allocate on the JS heap, call into V8 or panic.
-pub(crate) fn set_fast_native(
+pub(crate) fn set_fast_native<F: v8::MapFnTo<v8::FunctionCallback> + 'static>(
     scope: &mut v8::PinScope,
     global_obj: v8::Local<v8::Object>,
     name: &str,
-    cb: impl v8::MapFnTo<v8::FunctionCallback>,
+    cb: F,
     fast: &v8::fast_api::CFunction,
 ) {
     let key = v8::String::new(scope, name).unwrap();
-    let func = v8::FunctionTemplate::builder(cb)
-        .build_fast(scope, std::slice::from_ref(fast))
-        .get_function(scope)
-        .unwrap();
+    let tmpl = native_template::<F>(scope, name, |scope| {
+        v8::FunctionTemplate::builder(cb).build_fast(scope, std::slice::from_ref(fast))
+    });
+    let func = tmpl.get_function(scope).unwrap();
     global_obj.set(scope, key.into(), func.into());
 }
 
@@ -7271,6 +7303,8 @@ pub(crate) fn register_process_singletons() {
     reg("JSMUX", BeforeIsolateDrop, crate::jsmux::reset);
     // The shared framework realm and its modules.
     reg("FRAMEWORK_REALM", BeforeIsolateDrop, realm::reset);
+    // The per-isolate native templates every context instantiates its natives from.
+    reg("NATIVE_TEMPLATES", BeforeIsolateDrop, reset_native_templates);
     reg("INTEROP_FACADES", BeforeIsolateDrop, interop_facade::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())

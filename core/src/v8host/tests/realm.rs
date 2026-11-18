@@ -88,3 +88,21 @@ fn package_scripts_compile_once_and_never_go_stale() {
     register_injected_package("@s2script/cs2", r#"globalThis.__s2pkg_cs2 = {};"#);
     shutdown();
 }
+
+/// Natives come from one template per isolate, but each plugin still gets its own function object:
+/// a property one plugin puts on a native is not seen by another, and a native is not a constructor.
+#[test]
+fn natives_share_a_template_but_not_their_function_objects() {
+    let _ = init(dummy_logger());
+    create_plugin_context("a");
+    create_plugin_context("b");
+    eval_in_context("a", "__s2_client_live.mark = 1;").unwrap();
+    assert_eq!(eval_in_context_string("b", "String(__s2_client_live.mark)"), "undefined");
+    assert_eq!(eval_in_context_string("b", "String(typeof __s2_client_live)"), "function");
+    assert_eq!(
+        eval_in_context_string("b", "(function () { try { new __s2_ent_id_for_index(1); return 'constructed'; } catch (e) { return e.name; } })()"),
+        "TypeError"
+    );
+    assert_eq!(eval_in_context_string("b", "String(__s2_ent_id_for_index(1))"), "0");
+    shutdown();
+}
