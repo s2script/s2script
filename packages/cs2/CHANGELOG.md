@@ -1,5 +1,13 @@
 # @s2script/cs2
 
+## 0.31.1
+
+### Patch Changes
+
+- dc47fea: `Player.all()`, `Player.allConnected()` and `Player.fromSlot` check each slot through faster engine calls, so listing players costs about a tenth of what it did. No API change.
+- 5c82d91: `HudInput` holds its usercmd subscription only while a slot is armed, so a plugin that once armed Tab no longer runs JS for every player's every command afterwards. The ui focus reconciler no longer copies an empty list each frame. No API change.
+- fc73c12: `GameHud.weapon.auto` reads each player once every 4 frames (about 16 Hz) instead of every frame, spread across the frames by slot, and rebuilds the slot list only when the inventory or the item in hand changes. A full server spends about a sixth of the time it did on the card and makes about a third of the garbage. The API is unchanged; an ammo count or a switch can show up to 3 frames later than before.
+
 ## 0.31.0
 
 ### Minor Changes
