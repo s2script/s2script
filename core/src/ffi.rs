@@ -102,7 +102,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
                 }
             }
         }
-        let _end_frame = (phase == Phase::Post).then_some(EndFrame);
+        let _end_frame = (phase == Phase::Post).then(|| EndFrame);
         let out = {
             use crate::profiler::framework;
             use crate::frame_watch::{self as fw, Part};
