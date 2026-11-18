@@ -9,10 +9,13 @@
 // card (`__s2_ui_pool_claim("gamekit:weapon", 1)`, ledgered, freed on unload). `claim()` answers
 // true or false instead of returning a handle, and the other calls throw until this plugin holds it.
 //
-// AUTO. `auto(audience, options)` fills the card from the pawn on every game frame: the active
-// weapon (m_hActiveWeapon) and its m_iClip1 / m_pReserveAmmo[0] each frame, the held weapons
-// (m_hMyWeapons) every INVENTORY_EVERY frames and whenever the active weapon changes. A paint only
-// sends what changed, so a frame where nothing moved costs reads and no HUD traffic. The card hides
+// AUTO. `auto(audience, options)` fills the card from the pawn. Each player is read once every
+// POLL_EVERY frames (about 16 Hz at 64 tick), and the players are spread across those frames so a
+// full server costs a quarter of its players per frame: the active weapon (m_hActiveWeapon) and its
+// m_iClip1 / m_pReserveAmmo[0] on every read, the held weapons (m_hMyWeapons) and the slot list
+// every INVENTORY_POLLS reads and whenever the active weapon changes. A paint only sends what
+// changed, so a read where nothing moved costs reads and no HUD traffic. 16 Hz and not slower: a
+// rifle fires about ten shots a second, and a slower count would skip numbers. The card hides
 // while the player is dead or spectating (the spectate hub covers that), and follows a bot the
 // player has taken over. `set()` and `hide()` take a player out of auto; `auto()` puts them back.
 //
@@ -30,7 +33,8 @@
   var SLOTS = (SPEC.weapon && SPEC.weapon.slots) || ["primary", "secondary", "knife", "grenades", "other"];
   var ROW_ITEMS = (SPEC.weapon && SPEC.weapon.items) || 4;
   var LOW_FRACTION = 0.25;
-  var INVENTORY_EVERY = 8;   // frames between inventory reads (about 8 Hz at 64 tick)
+  var POLL_EVERY = 4;        // frames between reads of one player (about 16 Hz at 64 tick)
+  var INVENTORY_POLLS = 4;   // reads between inventory reads (about 4 Hz)
   var MAX_WEAPONS = 64;
   var AMMO_SLOTS = 32;       // CPlayer_WeaponServices::m_iAmmo is uint16[32]
 
@@ -181,9 +185,10 @@
     var autoSlots = {};             // slot -> true (auto for listed players)
     var manual = {};                // slot -> true (set/hide took the player out of auto)
     var opts = { name: null, icon: null, hideSlots: false };
-    var state = {};                 // slot -> { frame, activeKey, items }
+    var state = {};                 // slot -> { polls, activeKey, items, slots }
     var infos = {};                 // weapon key -> { def, cat, ammoType, maxClip, peak }
     var frameSub = null;
+    var seen = {};                  // slot -> true once auto has read it (then it waits its turn)
     var frameNo = 0;
     var nameErrors = 0;
     var tickErrors = {};
@@ -445,11 +450,11 @@
     function autoView(slot) {
       var pawn = livePawn(slot);
       if (!pawn) { delete state[slot]; return null; }
-      var st = state[slot] || (state[slot] = { frame: 0, activeKey: null, items: null });
+      var st = state[slot] || (state[slot] = { polls: 0, activeKey: null, items: null, slots: null });
       var w = pawn.activeWeapon;
       var key = weaponKey(w);
       if (key && !w.ref.isValid()) { w = null; key = null; }
-      var refresh = !st.items || key !== st.activeKey || (st.frame++ % INVENTORY_EVERY) === 0;
+      var refresh = !st.items || key !== st.activeKey || (st.polls++ % INVENTORY_POLLS) === 0;
       st.activeKey = key;
       if (refresh) readInventory(pawn, st);
       if (!w) return null;
@@ -478,7 +483,12 @@
           v.tone = clip === 0 || (max > 0 && clip <= max * LOW_FRACTION) ? "red" : null;
         }
       }
-      if (!opts.hideSlots) v.slots = slotList(pawn, st, info.cat, key);
+      // The list only changes with the inventory or the item in hand, so it is rebuilt with them
+      // and the same object is painted otherwise (paint's row compare stops at identity).
+      if (!opts.hideSlots) {
+        if (refresh || !st.slots) st.slots = slotList(pawn, st, info.cat, key);
+        v.slots = st.slots;
+      }
       return v;
     }
 
@@ -498,11 +508,14 @@
 
     function frame() {
       if (!held()) { stopFrames(); return; }
-      frameNo++;
+      var turn = frameNo++ % POLL_EVERY;
       var slots = U.activeSlots();
       for (var i = 0; i < slots.length; i++) {
         var s = slots[i];
+        // A player's turn comes once every POLL_EVERY frames; one not seen yet is read at once.
+        if (s % POLL_EVERY !== turn && seen[s]) continue;
         if (!onAuto(s)) continue;
+        seen[s] = true;
         try {
           var v = autoView(s);
           if (v) paint(s, v); else hideSlot(s);
@@ -534,6 +547,7 @@
       state = {};
       infos = {};
       painted = {};
+      seen = {};
     }
 
     /** Take an audience out of auto (set/hide). With "all", auto stops for everyone. */
@@ -573,9 +587,9 @@
         if (options.icon !== undefined && options.icon !== null && typeof options.icon !== "function") {
           throw new Error("GameHud.weapon.auto: options.icon must be a function");
         }
-        var nameChanged = opts.name !== (options.name || null) || opts.icon !== (options.icon || null);
         opts = { name: options.name || null, icon: options.icon || null, hideSlots: !!options.hideSlots };
-        if (nameChanged) { for (var s in state) if (Object.prototype.hasOwnProperty.call(state, s)) state[s].items = null; }
+        // New options: every player's next read rebuilds the names, icons and slot list.
+        for (var s in state) if (Object.prototype.hasOwnProperty.call(state, s)) state[s].items = null;
         if (audience === undefined || audience === null || audience === "all" || typeof audience === "function") {
           autoAll = true;
           autoFilter = typeof audience === "function" ? audience : null;
@@ -601,10 +615,10 @@
         for (var i = 0; i < slots.length; i++) hideSlot(slots[i]);
       },
       _forgetSlot: function (slot) {
-        delete painted[slot]; delete state[slot]; delete autoSlots[slot]; delete manual[slot];
+        delete painted[slot]; delete state[slot]; delete autoSlots[slot]; delete manual[slot]; delete seen[slot];
         if (!anyAuto()) stopFrames();
       },
-      _resetForMap: function () { painted = {}; state = {}; infos = {}; },
+      _resetForMap: function () { painted = {}; state = {}; infos = {}; seen = {}; },
       _frame: frame,
       _frameNo: function () { return frameNo; }
     };

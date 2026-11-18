@@ -58,6 +58,10 @@ function players(m) {
   };
 }
 
+// auto reads each player once every 4 frames, its turn set by its slot. One poll() is one read of
+// every player on auto.
+function poll(m) { for (let i = 0; i < 4; i++) m.frame(); }
+
 test.afterEach(cleanup);
 
 test("the weapon card is held by one plugin, and calls throw until it is claimed", () => {
@@ -125,7 +129,7 @@ test("auto fills the card from the pawn and tracks shots, reloads and switches",
   W.claim();
   W.auto(0);
   assert.equal(m.frameSubs, 1);
-  m.frame();
+  poll(m);
   assert.equal(m.hidden(0, "gk_wpn"), false);
   assert.equal(m.text(0, "gk_wpn_name"), "AK-47");
   assert.equal(m.text(0, "gk_wpn_clip"), "30");
@@ -141,30 +145,30 @@ test("auto fills the card from the pawn and tracks shots, reloads and switches",
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
   assert.equal(m.hidden(1, "gk_wpn"), true, "slot 1 is not on auto");
 
-  // A frame with nothing changed sends nothing.
+  // A read with nothing changed sends nothing.
   const before = m.drives;
-  m.frame();
+  poll(m);
   assert.equal(m.drives, before);
 
   // Shooting: the clip follows, and turns red at or under 25%.
   ak.clip1 = 8;
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_clip"), "8");
   assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), false, "8 of 30 is above 25%");
   ak.clip1 = 7;
-  m.frame();
+  poll(m);
   assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), true, "7 of 30 is at or under 25%");
 
   // Reload: clip refills from reserve, tone goes back.
   ak.clip1 = 30; ak.reserve = 67;
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_clip"), "30");
   assert.equal(m.text(0, "gk_wpn_res"), "/ 67");
   assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), false);
 
   // Switch to the knife: name only, knife slot highlighted.
   pawn.activeWeapon = knife;
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_name"), "Knife");
   assert.equal(m.hidden(0, "gk_wpn_ammo"), true);
   assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true);
@@ -181,7 +185,7 @@ test("auto shows a grenade count and picks up new weapons", () => {
   const W = m.GameHud.weapon;
   W.claim();
   W.auto("all");
-  m.frame();
+  poll(m);
   assert.equal(m.text(2, "gk_wpn_name"), "Flashbang");
   assert.equal(m.hidden(2, "gk_wpn_count"), false);
   assert.equal(m.text(2, "gk_wpn_count"), "×2");
@@ -196,7 +200,7 @@ test("auto shows a grenade count and picks up new weapons", () => {
 
   // Pick up a rifle: the next inventory read adds it without a switch.
   pawn.weapons = [weapon(9, { clip: 5, reserve: 30, max: 5 }), glock, flash, he];
-  for (let i = 0; i < 8; i++) m.frame();
+  for (let i = 0; i < 4; i++) poll(m);
   assert.equal(m.text(2, "gk_wpn_s0_i0_ic"), ICON + "awp.svg");
   assert.equal(m.hidden(2, "gk_wpn_s0"), false);
 });
@@ -209,13 +213,13 @@ test("auto hides the card while dead and shows it again on respawn", () => {
   const W = m.GameHud.weapon;
   W.claim();
   W.auto([1]);
-  m.frame();
+  poll(m);
   assert.equal(m.hidden(1, "gk_wpn"), false);
   P.get(1).pawnIsAlive = false;
-  m.frame();
+  poll(m);
   assert.equal(m.hidden(1, "gk_wpn"), true, "dead or spectating: nothing shows");
   P.get(1).pawnIsAlive = true;
-  m.frame();
+  poll(m);
   assert.equal(m.hidden(1, "gk_wpn"), false);
   assert.equal(m.text(1, "gk_wpn_clip"), "7", "a full repaint after the hide");
   assert.equal(m.hidden(1, "gk_wpn_ammo"), false);
@@ -234,7 +238,7 @@ test("options.name renames items and hideSlots drops the list", () => {
     name: (def, entity) => { seen.push(def); return entity === shop ? "{red}Golden Gun" : null; },
     hideSlots: true,
   });
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_name"), "Golden Gun");
   assert.equal(m.has(0, "gk_wpn_name", "gk-t-red"), true);
   assert.ok(seen.includes(64) && seen.includes(36));
@@ -243,7 +247,7 @@ test("options.name renames items and hideSlots drops the list", () => {
 
   // A throwing name function keeps the default name.
   W.auto("all", { name: () => { throw new Error("boom"); } });
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_name"), "R8 Revolver");
   assert.equal(m.text(0, "gk_wpn_s1_i0_ic"), ICON + "revolver.svg", "the slot list is back, both pistols in one row");
   assert.equal(m.text(0, "gk_wpn_s1_i1_ic"), ICON + "p250.svg");
@@ -258,13 +262,13 @@ test("set takes a player out of auto, auto puts them back, release stops the fra
   const W = m.GameHud.weapon;
   W.claim();
   W.auto("all");
-  m.frame();
+  poll(m);
   W.set(0, { name: "Custom", clip: 1, reserve: 1 });
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_name"), "Custom", "auto leaves a manual player alone");
   assert.equal(m.text(1, "gk_wpn_name"), "MP9");
   W.auto(0);
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_name"), "MP9");
 
   W.release();
@@ -274,7 +278,7 @@ test("set takes a player out of auto, auto puts them back, release stops the fra
   assert.throws(() => W.set(0, { name: "x" }), /claim the region first/);
 });
 
-test("a refused paint is retried in full on the next frame", () => {
+test("a refused paint is retried in full on the next read", () => {
   const m = mount({ files: ["gamekit-weapon.js"] });
   const P = players(m);
   const m4 = weapon(16, { clip: 30, reserve: 90, max: 30 });
@@ -283,9 +287,9 @@ test("a refused paint is retried in full on the next frame", () => {
   W.claim();
   W.auto(0);
   m.refuse.add(0);
-  m.frame();
+  poll(m);
   m.refuse.delete(0);
-  m.frame();
+  poll(m);
   assert.equal(m.hidden(0, "gk_wpn"), false);
   assert.equal(m.text(0, "gk_wpn_clip"), "30");
   assert.equal(m.text(0, "gk_wpn_name"), "M4A4");
@@ -299,7 +303,7 @@ test("a disconnect forgets the slot", () => {
   const W = m.GameHud.weapon;
   W.claim();
   W.auto(0);
-  m.frame();
+  poll(m);
   m.disconnect(0);
   assert.equal(m.frameSubs, 0, "no player left on auto");
 });
@@ -314,25 +318,25 @@ test("a low-ammo tone and a slot highlight do not survive a weapon with no clip 
   const W = m.GameHud.weapon;
   W.claim();
   W.auto(0);
-  m.frame();
+  poll(m);
   assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), true);
   pawn.activeWeapon = knife;
-  m.frame();
+  poll(m);
   pawn.activeWeapon = usp;
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_clip"), "12");
   assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), false, "the knife cleared the AK's low tone");
 
   // Drop the active rifle, then pick one up while holding the pistol.
   pawn.activeWeapon = ak;
-  m.frame();
+  poll(m);
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
   pawn.weapons = [usp, knife];
   pawn.activeWeapon = usp;
-  m.frame();
+  poll(m);
   assert.equal(m.hidden(0, "gk_wpn_s0"), true);
   pawn.weapons = [weapon(9, { clip: 5, reserve: 30, max: 5 }), usp, knife];
-  for (let i = 0; i < 8; i++) m.frame();
+  for (let i = 0; i < 4; i++) poll(m);
   assert.equal(m.hidden(0, "gk_wpn_s0"), false);
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), false, "the returned row is not highlighted");
   assert.equal(m.has(0, "gk_wpn_s1", "gk-sel"), true);
@@ -349,7 +353,7 @@ test("a row named active while empty is highlighted once it fills", () => {
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
 });
 
-test("a shared row marks the item in hand: knife and Zeus flip within one frame", () => {
+test("a shared row marks the item in hand: knife and Zeus flip within one read", () => {
   const m = mount({ files: ["gamekit-weapon.js"] });
   const P = players(m);
   // Inventory order has the Zeus first; the row still reads knife, then Zeus.
@@ -359,7 +363,7 @@ test("a shared row marks the item in hand: knife and Zeus flip within one frame"
   const W = m.GameHud.weapon;
   W.claim();
   W.auto(0);
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_s2_i0_ic"), ICON + "knife.svg");
   assert.equal(m.text(0, "gk_wpn_s2_i1_ic"), ICON + "taser.svg");
   assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true, "the row keeps its accent edge");
@@ -368,7 +372,7 @@ test("a shared row marks the item in hand: knife and Zeus flip within one frame"
   assert.equal(m.hidden(0, "gk_wpn_ammo"), true);
 
   pawn.activeWeapon = zeus;
-  m.frame();
+  poll(m);
   assert.equal(m.has(0, "gk_wpn_s2_i0", "gk-on"), false, "Knife dim");
   assert.equal(m.has(0, "gk_wpn_s2_i1", "gk-on"), true, "Zeus bright");
   assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true);
@@ -387,12 +391,12 @@ test("grenades sit in buy order and the one in hand is marked by entity, not by 
   const W = m.GameHud.weapon;
   W.claim();
   W.auto(0);
-  m.frame();
+  poll(m);
   const icons = [0, 1, 2, 3].map((j) => m.text(0, "gk_wpn_s3_i" + j + "_ic"));
   assert.deepEqual(icons, ["flashbang", "smokegrenade", "hegrenade", "decoy"].map((n) => ICON + n + ".svg"));
   assert.deepEqual([0, 1, 2, 3].map((j) => m.has(0, "gk_wpn_s3_i" + j, "gk-on")), [false, true, false, false]);
   pawn.activeWeapon = decoy;
-  m.frame();
+  poll(m);
   assert.deepEqual([0, 1, 2, 3].map((j) => m.has(0, "gk_wpn_s3_i" + j, "gk-on")), [false, false, false, true]);
 
   // Two pistols renamed to the same thing: only the one in hand is marked.
@@ -401,7 +405,7 @@ test("grenades sit in buy order and the one in hand is marked by entity, not by 
   pawn.weapons = [a, b];
   pawn.activeWeapon = b;
   W.auto(0, { name: () => "Sidearm" });
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_s1_i0_t"), "Sidearm");
   assert.equal(m.text(0, "gk_wpn_s1_i1_t"), "Sidearm");
   assert.equal(m.has(0, "gk_wpn_s1_i0", "gk-on"), false);
@@ -417,12 +421,12 @@ test("a row past four items collapses to +N and keeps the item in hand visible",
   const W = m.GameHud.weapon;
   W.claim();
   W.auto(0);
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_s3_more"), "+2");
   assert.equal(m.hidden(0, "gk_wpn_s3_more"), false);
   assert.equal(m.text(0, "gk_wpn_s3_i3_ic"), ICON + "molotov.svg");
   pawn.activeWeapon = nades[5];   // the fire bomb: sixth in the row, no stock icon
-  m.frame();
+  poll(m);
   assert.equal(m.text(0, "gk_wpn_s3_i3_t"), "Fire Bomb", "the item in hand takes the last shown place");
   assert.equal(m.hidden(0, "gk_wpn_s3_i3_ic"), true);
   assert.equal(m.has(0, "gk_wpn_s3_i3", "gk-on"), true);
@@ -453,7 +457,64 @@ test("set marks an item with { items, active }, takes icons, and options.icon ov
   const ak = weapon(7, { clip: 30, reserve: 90, max: 30 });
   P.put(1, { weapons: [ak], active: ak });
   W.auto(1, { icon: (def) => (def === 7 ? "file://{images}/custom.svg" : null) });
-  m.frame();
+  poll(m);
   assert.equal(m.text(1, "gk_wpn_s0_i0_ic"), "file://{images}/custom.svg");
   assert.equal(m.text(1, "gk_wpn_icon"), "file://{images}/custom.svg");
+});
+
+test("auto spreads players across frames: each is read once every 4 frames", () => {
+  const m = mount({ files: ["gamekit-weapon.js"], slots: [0, 1, 2, 3, 4, 5, 6, 7] });
+  const P = players(m);
+  const guns = {};
+  for (let s = 0; s < 8; s++) {
+    guns[s] = weapon(7, { clip: 30, reserve: 90, max: 30 });
+    P.put(s, { weapons: [guns[s]], active: guns[s] });
+  }
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto("all");
+  m.frame();
+  for (let s = 0; s < 8; s++) assert.equal(m.text(s, "gk_wpn_clip"), "30", "a player not read yet is read at once");
+
+  // Count reads of the active weapon per frame.
+  let reads = 0;
+  for (let s = 0; s < 8; s++) {
+    const pawn = P.get(s).pawn;
+    const w = pawn.activeWeapon;
+    delete pawn.activeWeapon;
+    Object.defineProperty(pawn, "activeWeapon", { get: () => { reads++; return w; }, configurable: true });
+  }
+  const perFrame = [];
+  for (let f = 0; f < 8; f++) { reads = 0; m.frame(); perFrame.push(reads); }
+  assert.deepEqual(perFrame, [2, 2, 2, 2, 2, 2, 2, 2], "8 players over 4 turns: 2 a frame");
+
+  // A shot shows within 4 frames.
+  guns[5].clip1 = 29;
+  let seenAt = -1;
+  for (let f = 0; f < 4 && seenAt < 0; f++) { m.frame(); if (m.text(5, "gk_wpn_clip") === "29") seenAt = f; }
+  assert.ok(seenAt >= 0, "the new count is painted within one turn");
+});
+
+test("auto keeps one slot list until the inventory or the item in hand changes", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const P = players(m);
+  const ak = weapon(7, { clip: 30, reserve: 90, max: 30 });
+  const knife = weapon(42);
+  const pawn = P.put(0, { weapons: [ak, knife], active: ak });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto(0);
+  poll(m);
+  let lists = 0;
+  const weapons = pawn.weapons;
+  delete pawn.weapons;
+  Object.defineProperty(pawn, "weapons", { get: () => { lists++; return weapons; }, configurable: true });
+  for (let i = 0; i < 8; i++) { ak.clip1--; poll(m); }
+  assert.equal(m.text(0, "gk_wpn_clip"), "22");
+  assert.equal(lists, 2, "8 reads: the inventory is read on every 4th");
+  lists = 0;
+  pawn.activeWeapon = knife;
+  poll(m);
+  assert.equal(lists, 1, "a switch reads the inventory at once");
+  assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true);
 });
