@@ -518,3 +518,20 @@ test("auto keeps one slot list until the inventory or the item in hand changes",
   assert.equal(lists, 1, "a switch reads the inventory at once");
   assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true);
 });
+
+test("a throw that leaves grenades in hand updates the slot list count at once", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const P = players(m);
+  const flash = weapon(43, { ammoType: 14 });
+  const ammo = { 14: 2 };
+  P.put(0, { weapons: [flash], active: flash, ammo });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto(0);
+  poll(m);
+  assert.equal(m.text(0, "gk_wpn_s3_i0_t"), "\u00d72");
+  ammo[14] = 1;   // thrown: same entity, same inventory
+  poll(m);
+  assert.equal(m.text(0, "gk_wpn_count"), "\u00d71");
+  assert.equal(m.hidden(0, "gk_wpn_s3_i0_t"), true, "a single grenade shows its icon only, on the same read");
+});

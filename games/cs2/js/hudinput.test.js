@@ -188,3 +188,27 @@ test("the last armed slot disconnecting drops the hook", () => {
   mounted.disconnect({ slot: 4 });
   assert.equal(mounted.handlers.length, 0);
 });
+
+test("the hook drops when the last armed player's seat is taken by someone else", () => {
+  const mounted = mount();
+  let live = true;
+  mounted.clients.set(4, { isValid: () => live });
+  mounted.HudInput.arm(4, { onActivate() {} });
+  assert.equal(mounted.handlers.length, 1);
+  live = false;                                     // the armed player left...
+  mounted.clients.set(4, { isValid: () => true });  // ...and someone else already took the seat
+  mounted.disconnect({ slot: 4 });                  // the late disconnect keeps the new state
+  assert.equal(mounted.handlers.length, 0, "a stale arm does not hold the hook");
+});
+
+test("a seat reused before any disconnect drops the hook on its next command", () => {
+  const mounted = mount();
+  let live = true;
+  mounted.clients.set(4, { isValid: () => live });
+  mounted.HudInput.arm(4, { onActivate() {} });
+  live = false;
+  mounted.clients.set(4, { isValid: () => true });
+  mounted.run(4, 0n);
+  assert.equal(mounted.handlers.length, 0);
+  assert.equal(mounted.HudInput.isArmed(4), false);
+});
