@@ -324,6 +324,11 @@ shard_windows() {
   test -f dist/addons/s2script/bin/win64/s2script.dll
   test -f dist/addons/s2script/bin/win64/s2script_core.dll
   grep -q 'bin/win64/s2script"' dist/addons/metamod/s2script.vdf
+  # The live boot check on a Windows server loads the hello example; ship it in the package the
+  # workflow uploads (the .s2sp is platform-neutral).
+  echo "== hello-plugin .s2sp for the win64 live check =="
+  npx s2s build examples/hello-plugin
+  cp examples/hello-plugin/dist/_example_hello-plugin.s2sp dist/addons/s2script/plugins/
 }
 
 for shard in "${selected[@]}"; do
