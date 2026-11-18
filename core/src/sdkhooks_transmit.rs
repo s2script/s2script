@@ -64,6 +64,7 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_settransmit(
     this_serial: c_int,
     viewer_slot: c_int,
 ) -> c_int {
+    let _fw = crate::frame_watch::enter(crate::frame_watch::Part::Hook);
     catch_unwind(|| dispatch_settransmit(this_index, this_serial, viewer_slot)).unwrap_or(0)
 }
 

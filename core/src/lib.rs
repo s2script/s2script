@@ -77,6 +77,7 @@ mod server_capture;
 mod server_update;
 mod sm_command;
 mod profiler;
+mod frame_watch;
 mod sqldb;
 mod steam;
 mod hide_hud;

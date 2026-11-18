@@ -30,6 +30,33 @@ sm prof start 600
 sm prof stop
 ```
 
+## Always on: the slow-frame line and `sm frames`
+
+`sm prof` only sees frames while it records. The runtime also keeps a cheap account of every frame
+that never stops: each call from the engine into s2script is timed (two clock reads), and so is each
+V8 garbage collection. When s2script's share of one frame reaches the threshold (4 ms by default),
+the server log gets one line saying where that time went:
+
+```
+[s2script] slow frame: s2script used 6.8 ms (of which garbage collection 6.1 ms, 1 full; OnGameFrame post 6.5 ms, game events 0.2 ms)
+```
+
+The parts are the kinds of entry from the engine (`OnGameFrame pre`/`post`, timers and async
+results, game events, usercmd hooks, entity and engine hooks, entity lifecycle, commands and chat,
+client events, the plugin loader). A collection is charged to the part it interrupted, and the GC
+total says how much of the frame it was. At most one line a second is printed; the rest are counted
+in the next line. A slow server frame with no such line was not s2script's: look at the engine, the
+map or the host.
+
+| Command | What it does |
+|---|---|
+| `sm frames` | Totals since the server started: frames seen, frames over the threshold, the most s2script time in one frame, and the young and full collections with the longest of each. |
+| `sm frames 2` | Report frames where s2script used 2 ms or more (any value from 0.01 to 1000). |
+| `sm frames off` | Stop printing the line. The totals keep counting. |
+| `sm frames reset` | Zero the totals. |
+
+Use `sm prof` to find which plugin and callback once the line says s2script was the cause.
+
 ## Reading the report
 
 ```
