@@ -412,6 +412,15 @@
       st.items = items;
     }
 
+    /** The held grenades' counts as one string, to tell when the slot list's "×N" moved. */
+    function grenadeSignature(pawn, st) {
+      var sig = "";
+      for (var i = 0; i < st.items.length; i++) {
+        if (st.items[i].info.cat === G) sig += grenadeCount(pawn, st.items[i].info) + ",";
+      }
+      return sig;
+    }
+
     function slotList(pawn, st, activeCat, activeKey) {
       var out = { active: activeCat, rows: {} };
       var byCat = {};
@@ -450,7 +459,7 @@
     function autoView(slot) {
       var pawn = livePawn(slot);
       if (!pawn) { delete state[slot]; return null; }
-      var st = state[slot] || (state[slot] = { polls: 0, activeKey: null, items: null, slots: null });
+      var st = state[slot] || (state[slot] = { polls: 0, activeKey: null, items: null, slots: null, nades: "" });
       var w = pawn.activeWeapon;
       var key = weaponKey(w);
       if (key && !w.ref.isValid()) { w = null; key = null; }
@@ -483,10 +492,13 @@
           v.tone = clip === 0 || (max > 0 && clip <= max * LOW_FRACTION) ? "red" : null;
         }
       }
-      // The list only changes with the inventory or the item in hand, so it is rebuilt with them
-      // and the same object is painted otherwise (paint's row compare stops at identity).
+      // The list changes with the inventory, the item in hand and the grenade counts (a throw or
+      // a pickup moves m_iAmmo without touching the inventory), so it is rebuilt with them and the
+      // same object is painted otherwise (paint's row compare stops at identity).
       if (!opts.hideSlots) {
-        if (refresh || !st.slots) st.slots = slotList(pawn, st, info.cat, key);
+        var nades = grenadeSignature(pawn, st);
+        if (refresh || !st.slots || nades !== st.nades) st.slots = slotList(pawn, st, info.cat, key);
+        st.nades = nades;
         v.slots = st.slots;
       }
       return v;
