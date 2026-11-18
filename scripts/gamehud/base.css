@@ -464,33 +464,55 @@
 	border-bottom: 1px solid #ffffff12;
 }
 
-/* Inactive slots are dimmed; the active one is full strength with the theme's accent edge (gk-sel). */
+/* The active row takes the theme's accent edge (gk-sel). Items are dimmed; the one in hand (gk-on)
+   is full strength, so a shared row (knife and Zeus, the grenades) shows which item is out. */
 .gk-wslot
 {
 	width: 100%;
 	flow-children: right;
 	padding: 2px 13px 2px 10px;
 	border-left: 3px solid #00000000;
-	opacity: 0.5;
-}
-
-.gk-wslot.gk-sel
-{
-	opacity: 1;
 }
 
 .gk-wslot-k
 {
 	width: 18px;
-	vertical-align: center;
+	vertical-align: top;
+	margin-top: 1px;
 	font-size: 12px;
 	font-weight: bold;
 	color: #8c969f;
 }
 
-.gk-wslot-t
+.gk-wslot-items
 {
 	width: fill-parent-flow(1.0);
+	flow-children: right-wrap;
+}
+
+/* One item: an icon, a label, or both. Dimmed unless it is the one in hand. */
+.gk-wslot-i
+{
+	flow-children: right;
+	margin-right: 10px;
+	opacity: 0.45;
+	transition-property: opacity;
+	transition-duration: 0.08s;
+}
+
+.gk-wslot-i.gk-on
+{
+	opacity: 1;
+}
+
+.gk-wslot-ic
+{
+	vertical-align: center;
+	margin-right: 4px;
+}
+
+.gk-wslot-t
+{
 	vertical-align: center;
 	font-size: 13px;
 	font-weight: bold;
@@ -499,11 +521,22 @@
 	color: #eef1f3;
 }
 
+.gk-wslot-more
+{
+	color: #8c969f;
+}
+
 .gk-wpn-hd
 {
 	width: 100%;
 	flow-children: right;
 	padding: 8px 13px 0px 13px;
+}
+
+.gk-wpn-icon
+{
+	vertical-align: center;
+	margin-right: 9px;
 }
 
 .gk-wpn-name

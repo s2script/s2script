@@ -581,7 +581,7 @@
       // The in-round layout's drive helpers, for regions built in other files (gamekit-weapon.js).
       // They share this kit's layout entity and its tone/class records.
       _internal: {
-        ok: ok, setText: setText, show: show, hide: hide, setClass: setClass, swap: swap,
+        ok: ok, setText: setText, setRaw: setRaw, show: show, hide: hide, setClass: setClass, swap: swap,
         claimRegion: claimRegion, guard: guard
       }
     };

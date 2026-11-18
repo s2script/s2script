@@ -499,14 +499,31 @@ export interface GameHudSpectate {
 /** The weapon card's slot rows, in CS2's slot-key order (1 to 5). `other` holds C4, the medi-shot and the like. */
 export type GameHudWeaponSlot = "primary" | "secondary" | "knife" | "grenades" | "other";
 
-/** The weapon card's slot list. A row with no text is hidden; several items in one slot share a row. */
+/** One item in a slot row: its name, or a name and an icon (either may be left out). */
+export type GameHudWeaponItem = GameHudText | {
+  readonly text?: GameHudText | null;
+  /** An image path, such as `"file://{images}/icons/equipment/ak47.svg"`. */
+  readonly icon?: string | null;
+};
+
+/**
+ * One slot row. A plain item is one unmarked entry (shown bright when its row is the active one).
+ * `{ items, active }` holds several items and marks the one in hand by its index: that item is
+ * bright and the rest are dimmed. Past four items the row ends in "+N".
+ */
+export type GameHudWeaponSlotRow = GameHudWeaponItem | {
+  readonly items: ReadonlyArray<GameHudWeaponItem>;
+  readonly active?: number | null;
+};
+
+/** The weapon card's slot list. A row with nothing in it is hidden. */
 export interface GameHudWeaponSlots {
-  readonly primary?: GameHudText | null;
-  readonly secondary?: GameHudText | null;
-  readonly knife?: GameHudText | null;
-  readonly grenades?: GameHudText | null;
-  readonly other?: GameHudText | null;
-  /** The highlighted row. */
+  readonly primary?: GameHudWeaponSlotRow | null;
+  readonly secondary?: GameHudWeaponSlotRow | null;
+  readonly knife?: GameHudWeaponSlotRow | null;
+  readonly grenades?: GameHudWeaponSlotRow | null;
+  readonly other?: GameHudWeaponSlotRow | null;
+  /** The row that takes the accent edge. */
   readonly active?: GameHudWeaponSlot | null;
 }
 
@@ -514,6 +531,8 @@ export interface GameHudWeaponSlots {
 export interface GameHudWeaponSpec {
   /** The active weapon's name. A leading colour tag colours it. */
   readonly name: GameHudText;
+  /** An icon beside the name. */
+  readonly icon?: string | null;
   /** Rounds in the magazine, shown large. Leave it out (or null) for a weapon with no clip: the card then shows only the name. */
   readonly clip?: number | null;
   /** Reserve rounds, shown as "/ 36" next to the clip. */
@@ -533,6 +552,11 @@ export interface GameHudWeaponAutoOptions {
    * default name. The result also names the item in the slot list.
    */
   readonly name?: (defIndex: number, entity: Weapon) => string | null;
+  /**
+   * Replace an item's icon with your own image path. Return null to keep the game's own icon for
+   * that item, or `""` for no icon (the name shows instead).
+   */
+  readonly icon?: (defIndex: number, entity: Weapon) => string | null;
   /** Hide the slot list and show only the active weapon. */
   readonly hideSlots?: boolean;
 }
@@ -554,7 +578,8 @@ export interface GameHudWeapon {
   release(): void;
   /**
    * Fill the card from each player's pawn, checked every game frame and painted only when something
-   * changed: the active weapon's name, clip and reserve, a grenade count, and the slot list. Knives
+   * changed: the active weapon's name, icon, clip and reserve, a grenade count, and the slot list,
+   * where each item is the game's own icon and the one in hand is marked. Knives
    * and C4 show only the name. The card hides while the player is dead or spectating. With `"all"`
    * or a filter, players who join later are included. Calling again replaces the options.
    */

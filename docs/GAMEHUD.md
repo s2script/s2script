@@ -68,7 +68,14 @@ if (GameHud.weapon.claim()) {
   the name; grenades show a count. The card hides while the player is dead or spectating, and
   follows a bot the player has taken over. `options.name(defIndex, weapon)` renames items (return
   `null` to keep the default); `options.hideSlots` drops the slot list.
-- **`set(audience, { name, clip?, reserve?, count?, tone?, slots? })`** paints it yourself, and
+- **Slot rows** show each item as the game's own equipment icon (the name instead when an item has
+  no icon, and both for a renamed item). The knife and the Zeus share a row, and so do the
+  grenades: the item in hand is at full strength and the others are dimmed, decided by the weapon
+  entity so two items with one name still differ. Items sit knife before Zeus and grenades in buy
+  order, and a row past four ends in "+N". `options.icon(defIndex, weapon)` swaps in your own image.
+- In `set`, a row is a string, or `{ items: ["Knife", "Zeus"], active: 0 }` to mark one item. An
+  item can also be `{ text, icon }`.
+- **`set(audience, { name, icon?, clip?, reserve?, count?, tone?, slots? })`** paints it yourself, and
   **`hide(audience)`** hides it. Both take that audience out of `auto` until `auto` names them again.
 - `claim()` answers `true` when this plugin holds the card. Every other call throws until it does.
   `release()`, or unloading the plugin, hides the card and stops `auto`.
@@ -127,7 +134,9 @@ mounted, from a real client (bots have no HUD). Each line is pass or fail; note 
     your weapon and `clip / reserve`. Fire: the clip counts down with each shot and turns red at a
     quarter of the magazine. Reload, switch to the pistol, knife and a grenade (the knife shows only
     its name, a grenade shows `×N`), buy and pick up a weapon: the slot list follows and the active
-    row is marked. A Desert Eagle reads "Hand Cannon". Die: the card disappears while you spectate
+    row is marked. Every stock item shows its icon (note any that is blank). With a knife and a Zeus,
+    the knife is bright and the Zeus dim, and switching flips them at once; the same for the grenade
+    in hand. A Desert Eagle reads "Hand Cannon". Die: the card disappears while you spectate
     and comes back on respawn. `sm_gk_weapon off`: the stock HUD returns.
 11. **Unload.** `sm plugins unload @example/cookbook` while a vote, sheet, rail and weapon card are up: everything hides
     and a second plugin can claim the rail.

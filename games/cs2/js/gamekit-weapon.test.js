@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { mount, cleanup } = require("./gamekit-fake.js");
 
 // Schema offsets the weapon card reads. Values only need to be stable and distinct.
+const ICON = "file://{images}/icons/equipment/";
 const OFFSETS = {
   "CBasePlayerWeapon.m_pReserveAmmo": 100,
   "CBasePlayerPawn.m_pWeaponServices": 200,
@@ -93,8 +94,12 @@ test("set paints name, clip / reserve, tone and the slot list, then hide hides i
   assert.equal(m.has(1, "gk_wpn_clip", "gk-t-red"), true);
   assert.equal(m.hidden(1, "gk_wpn_ammo"), false);
   assert.equal(m.hidden(1, "gk_wpn_slots"), false);
-  assert.equal(m.text(1, "gk_wpn_s0_t"), "AK-47");
-  assert.equal(m.text(1, "gk_wpn_s1_t"), "Golden Gun");
+  assert.equal(m.text(1, "gk_wpn_s0_i0_t"), "AK-47");
+  assert.equal(m.text(1, "gk_wpn_s1_i0_t"), "Golden Gun");
+  assert.equal(m.has(1, "gk_wpn_s1_i0", "gk-on"), true, "a string row is bright when its row is active");
+  assert.equal(m.has(1, "gk_wpn_s0_i0", "gk-on"), false);
+  assert.equal(m.hidden(1, "gk_wpn_s0_i0_ic"), true, "a string row has no icon");
+  assert.equal(m.hidden(1, "gk_wpn_s0_i1"), true);
   assert.equal(m.has(1, "gk_wpn_s1", "gk-sel"), true);
   assert.equal(m.has(1, "gk_wpn_s0", "gk-sel"), false);
   assert.equal(m.hidden(1, "gk_wpn_s3"), true, "no grenades row");
@@ -126,9 +131,13 @@ test("auto fills the card from the pawn and tracks shots, reloads and switches",
   assert.equal(m.text(0, "gk_wpn_clip"), "30");
   assert.equal(m.text(0, "gk_wpn_res"), "/ 90");
   assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), false);
-  assert.equal(m.text(0, "gk_wpn_s0_t"), "AK-47");
-  assert.equal(m.text(0, "gk_wpn_s1_t"), "USP-S");
-  assert.equal(m.text(0, "gk_wpn_s2_t"), "Knife");
+  assert.equal(m.text(0, "gk_wpn_icon"), ICON + "ak47.svg");
+  assert.equal(m.text(0, "gk_wpn_s0_i0_ic"), ICON + "ak47.svg");
+  assert.equal(m.hidden(0, "gk_wpn_s0_i0_t"), true, "a stock item shows its icon, not its name");
+  assert.equal(m.text(0, "gk_wpn_s1_i0_ic"), ICON + "usp_silencer.svg");
+  assert.equal(m.text(0, "gk_wpn_s2_i0_ic"), ICON + "knife.svg");
+  assert.equal(m.has(0, "gk_wpn_s0_i0", "gk-on"), true);
+  assert.equal(m.has(0, "gk_wpn_s1_i0", "gk-on"), false);
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
   assert.equal(m.hidden(1, "gk_wpn"), true, "slot 1 is not on auto");
 
@@ -177,13 +186,18 @@ test("auto shows a grenade count and picks up new weapons", () => {
   assert.equal(m.hidden(2, "gk_wpn_count"), false);
   assert.equal(m.text(2, "gk_wpn_count"), "×2");
   assert.equal(m.hidden(2, "gk_wpn_ammo"), true, "grenades have no clip");
-  assert.equal(m.text(2, "gk_wpn_s3_t"), "Flashbang ×2 · HE Grenade");
+  assert.equal(m.text(2, "gk_wpn_s3_i0_ic"), ICON + "flashbang.svg");
+  assert.equal(m.text(2, "gk_wpn_s3_i0_t"), "\u00d72", "the count sits beside the icon");
+  assert.equal(m.has(2, "gk_wpn_s3_i0", "gk-on"), true, "the grenade in hand is marked");
+  assert.equal(m.text(2, "gk_wpn_s3_i1_ic"), ICON + "hegrenade.svg");
+  assert.equal(m.hidden(2, "gk_wpn_s3_i1_t"), true);
+  assert.equal(m.has(2, "gk_wpn_s3_i1", "gk-on"), false);
   assert.equal(m.hidden(0, "gk_wpn"), true, "slot 0 has no player: hidden");
 
   // Pick up a rifle: the next inventory read adds it without a switch.
   pawn.weapons = [weapon(9, { clip: 5, reserve: 30, max: 5 }), glock, flash, he];
   for (let i = 0; i < 8; i++) m.frame();
-  assert.equal(m.text(2, "gk_wpn_s0_t"), "AWP");
+  assert.equal(m.text(2, "gk_wpn_s0_i0_ic"), ICON + "awp.svg");
   assert.equal(m.hidden(2, "gk_wpn_s0"), false);
 });
 
@@ -231,7 +245,8 @@ test("options.name renames items and hideSlots drops the list", () => {
   W.auto("all", { name: () => { throw new Error("boom"); } });
   m.frame();
   assert.equal(m.text(0, "gk_wpn_name"), "R8 Revolver");
-  assert.equal(m.text(0, "gk_wpn_s1_t"), "R8 Revolver \u00b7 P250", "the slot list is back, both pistols in one row");
+  assert.equal(m.text(0, "gk_wpn_s1_i0_ic"), ICON + "revolver.svg", "the slot list is back, both pistols in one row");
+  assert.equal(m.text(0, "gk_wpn_s1_i1_ic"), ICON + "p250.svg");
 });
 
 test("set takes a player out of auto, auto puts them back, release stops the frames", () => {
@@ -332,4 +347,113 @@ test("a row named active while empty is highlighted once it fills", () => {
   W.set(0, { name: "AK-47", clip: 30, reserve: 90, slots: { primary: "AK-47", secondary: "Glock-18", active: "primary" } });
   assert.equal(m.hidden(0, "gk_wpn_s0"), false);
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
+});
+
+test("a shared row marks the item in hand: knife and Zeus flip within one frame", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const P = players(m);
+  // Inventory order has the Zeus first; the row still reads knife, then Zeus.
+  const zeus = weapon(31, { clip: 1, reserve: 0, max: 1 });
+  const knife = weapon(42);
+  const pawn = P.put(0, { weapons: [zeus, knife], active: knife });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto(0);
+  m.frame();
+  assert.equal(m.text(0, "gk_wpn_s2_i0_ic"), ICON + "knife.svg");
+  assert.equal(m.text(0, "gk_wpn_s2_i1_ic"), ICON + "taser.svg");
+  assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true, "the row keeps its accent edge");
+  assert.equal(m.has(0, "gk_wpn_s2_i0", "gk-on"), true, "Knife bright");
+  assert.equal(m.has(0, "gk_wpn_s2_i1", "gk-on"), false, "Zeus dim");
+  assert.equal(m.hidden(0, "gk_wpn_ammo"), true);
+
+  pawn.activeWeapon = zeus;
+  m.frame();
+  assert.equal(m.has(0, "gk_wpn_s2_i0", "gk-on"), false, "Knife dim");
+  assert.equal(m.has(0, "gk_wpn_s2_i1", "gk-on"), true, "Zeus bright");
+  assert.equal(m.has(0, "gk_wpn_s2", "gk-sel"), true);
+  assert.equal(m.text(0, "gk_wpn_clip"), "1", "the Zeus keeps its clip");
+  assert.equal(m.text(0, "gk_wpn_icon"), ICON + "taser.svg");
+});
+
+test("grenades sit in buy order and the one in hand is marked by entity, not by name", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const P = players(m);
+  const decoy = weapon(47, { ammoType: 17 });
+  const he = weapon(44, { ammoType: 13 });
+  const smoke = weapon(45, { ammoType: 15 });
+  const flash = weapon(43, { ammoType: 14 });
+  const pawn = P.put(0, { weapons: [decoy, he, smoke, flash], active: smoke });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto(0);
+  m.frame();
+  const icons = [0, 1, 2, 3].map((j) => m.text(0, "gk_wpn_s3_i" + j + "_ic"));
+  assert.deepEqual(icons, ["flashbang", "smokegrenade", "hegrenade", "decoy"].map((n) => ICON + n + ".svg"));
+  assert.deepEqual([0, 1, 2, 3].map((j) => m.has(0, "gk_wpn_s3_i" + j, "gk-on")), [false, true, false, false]);
+  pawn.activeWeapon = decoy;
+  m.frame();
+  assert.deepEqual([0, 1, 2, 3].map((j) => m.has(0, "gk_wpn_s3_i" + j, "gk-on")), [false, false, false, true]);
+
+  // Two pistols renamed to the same thing: only the one in hand is marked.
+  const a = weapon(36, { clip: 13, reserve: 26, max: 13 });
+  const b = weapon(36, { clip: 13, reserve: 26, max: 13 });
+  pawn.weapons = [a, b];
+  pawn.activeWeapon = b;
+  W.auto(0, { name: () => "Sidearm" });
+  m.frame();
+  assert.equal(m.text(0, "gk_wpn_s1_i0_t"), "Sidearm");
+  assert.equal(m.text(0, "gk_wpn_s1_i1_t"), "Sidearm");
+  assert.equal(m.has(0, "gk_wpn_s1_i0", "gk-on"), false);
+  assert.equal(m.has(0, "gk_wpn_s1_i1", "gk-on"), true);
+  assert.equal(m.hidden(0, "gk_wpn_s3"), true, "the grenades row is gone");
+});
+
+test("a row past four items collapses to +N and keeps the item in hand visible", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const P = players(m);
+  const nades = [43, 45, 44, 46, 47, 81].map((def, i) => weapon(def, { ammoType: i }));
+  const pawn = P.put(0, { weapons: nades, active: nades[0] });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto(0);
+  m.frame();
+  assert.equal(m.text(0, "gk_wpn_s3_more"), "+2");
+  assert.equal(m.hidden(0, "gk_wpn_s3_more"), false);
+  assert.equal(m.text(0, "gk_wpn_s3_i3_ic"), ICON + "molotov.svg");
+  pawn.activeWeapon = nades[5];   // the fire bomb: sixth in the row, no stock icon
+  m.frame();
+  assert.equal(m.text(0, "gk_wpn_s3_i3_t"), "Fire Bomb", "the item in hand takes the last shown place");
+  assert.equal(m.hidden(0, "gk_wpn_s3_i3_ic"), true);
+  assert.equal(m.has(0, "gk_wpn_s3_i3", "gk-on"), true);
+});
+
+test("set marks an item with { items, active }, takes icons, and options.icon overrides auto", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.set(0, {
+    name: "Knife", icon: "file://{images}/x.svg",
+    slots: { primary: "AK-47", knife: { items: ["Knife", { text: "Zeus", icon: "file://{images}/z.svg" }], active: 0 }, active: "knife" },
+  });
+  assert.equal(m.text(0, "gk_wpn_icon"), "file://{images}/x.svg");
+  assert.equal(m.text(0, "gk_wpn_s2_i0_t"), "Knife");
+  assert.equal(m.text(0, "gk_wpn_s2_i1_t"), "Zeus");
+  assert.equal(m.text(0, "gk_wpn_s2_i1_ic"), "file://{images}/z.svg");
+  assert.equal(m.has(0, "gk_wpn_s2_i0", "gk-on"), true);
+  assert.equal(m.has(0, "gk_wpn_s2_i1", "gk-on"), false);
+  assert.equal(m.has(0, "gk_wpn_s0_i0", "gk-on"), false, "a string row that is not active is not marked");
+  W.set(0, { name: "Zeus", slots: { knife: { items: ["Knife", "Zeus"], active: 1 }, active: "knife" } });
+  assert.equal(m.has(0, "gk_wpn_s2_i0", "gk-on"), false);
+  assert.equal(m.has(0, "gk_wpn_s2_i1", "gk-on"), true);
+  assert.equal(m.hidden(0, "gk_wpn_s2_i1_ic"), true, "the icon went with the plain item");
+  assert.equal(m.hidden(0, "gk_wpn_icon"), true);
+
+  const P = players(m);
+  const ak = weapon(7, { clip: 30, reserve: 90, max: 30 });
+  P.put(1, { weapons: [ak], active: ak });
+  W.auto(1, { icon: (def) => (def === 7 ? "file://{images}/custom.svg" : null) });
+  m.frame();
+  assert.equal(m.text(1, "gk_wpn_s0_i0_ic"), "file://{images}/custom.svg");
+  assert.equal(m.text(1, "gk_wpn_icon"), "file://{images}/custom.svg");
 });

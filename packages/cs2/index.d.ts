@@ -101,7 +101,8 @@ export type {
   GameHudSheetEvent, GameHudSheetListItem, GameHudSheetSection, GameHudSheetSpec, GameHudSheetTableRow,
   GameHudSheetToggle, GameHudSummarySpec, GameHudSummaryStat, GameHudHubItem, GameHudHubCard, GameHudIntro,
   GameHudIntroSpec, GameHudSpectate, GameHudSpectatePlayer, GameHudSpectateSpec, GameHudShot,
-  GameHudWeapon, GameHudWeaponAutoOptions, GameHudWeaponSlot, GameHudWeaponSlots, GameHudWeaponSpec,
+  GameHudWeapon, GameHudWeaponAutoOptions, GameHudWeaponItem, GameHudWeaponSlot, GameHudWeaponSlotRow,
+  GameHudWeaponSlots, GameHudWeaponSpec,
 } from "./gamehud";
 export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
 import type { CustomPlayerCamera } from "./camera";
