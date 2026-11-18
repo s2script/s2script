@@ -120,9 +120,14 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
                     v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
                 }
                 fw::switch(&mut _fw, Part::Loader);
-                let _p = framework("plugin loader");
-                crate::loader::note_frame();
-                crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
+                {
+                    let _p = framework("plugin loader");
+                    crate::loader::note_frame();
+                    crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
+                }
+                fw::switch(&mut _fw, Part::AsyncDrain);
+                let _p = framework("V8 tasks and planned collections");
+                crate::gc_points::frame_post(crate::loader::settled());
             }
             out
         };
@@ -301,6 +306,8 @@ pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) -> c_int 
         // and arm the one-shot repair sweep (consumed at the next simulating frame).
         crate::entity_live::clear_for_map_transition();
         crate::sdkhooks::drop_all();
+        // A full collection once the plugins settle, while the map loads (`gc_points`).
+        crate::gc_points::arm_map_start();
         deferral_code(v8host::dispatch_map_start(map_str))
     })
     .unwrap_or(0)

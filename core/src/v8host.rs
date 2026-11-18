@@ -152,6 +152,9 @@ pub(crate) fn clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Context
 }
 
 static PLATFORM_INIT: Once = Once::new();
+/// The process's V8 platform, kept so the frame loop can run V8's posted foreground tasks
+/// (`gc_points`).
+static PLATFORM: std::sync::OnceLock<v8::SharedRef<v8::Platform>> = std::sync::OnceLock::new();
 
 /// A JS handler stored as a persistent function reference.  `Clone` is required
 /// because `Descriptor::snapshot` clones each `H`; `v8::Global` clone is a cheap
@@ -908,6 +911,7 @@ const INJECTED_STD_PRELUDE: &str = concat!(
 fn ensure_platform() {
     PLATFORM_INIT.call_once(|| {
         let platform = v8::new_default_platform(0, false).make_shared();
+        let _ = PLATFORM.set(platform.clone());
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
     });
@@ -1575,6 +1579,13 @@ pub(crate) fn dispatch_precache() {
 
 
 /// Shared logging helper for named WARNs in the engine-op natives and the loader.
+/// Run at most one of the foreground tasks V8 posted for this isolate (incremental-marking steps,
+/// other GC work, FinalizationRegistry cleanup). Returns whether one ran. Skipped when V8 is busy.
+pub(crate) fn pump_one_v8_task() -> bool {
+    let Some(platform) = PLATFORM.get() else { return false };
+    with_host_isolate(|isolate| v8::Platform::pump_message_loop(platform, isolate, false)).unwrap_or(false)
+}
+
 pub(crate) fn log_warn(msg: &str) {
     if let Some(l) = LOGGER.with(|l| l.get()) {
         if let Ok(cs) = CString::new(msg) {

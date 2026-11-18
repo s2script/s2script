@@ -55,6 +55,10 @@ map or the host.
 | `sm frames off` | Stop printing the line. The totals keep counting. |
 | `sm frames reset` | Zero the totals. |
 
+After a map starts and the plugins settle, the runtime runs one full collection on purpose, while
+the map loads, and logs `[s2script] garbage collected after map start: …` with what it took and freed.
+That one is expected and is not a slow-frame line.
+
 Use `sm prof` to find which plugin and callback once the line says s2script was the cause.
 
 ## Reading the report

@@ -1650,6 +1650,11 @@ fn boot_tick() {
 /// Nothing left to load: the last completed scan found no new or changed file, and no batch,
 /// apply, dependency wait or in-flight `OnPluginStart` remains. (A later scan may already be in
 /// flight; it is the ordinary periodic watch, not startup work.)
+/// The loader has nothing queued, loading or waiting (`gc_points` collects once it is).
+pub(crate) fn settled() -> bool {
+    boot_settled()
+}
+
 fn boot_settled() -> bool {
     LAST_SCAN_CLEAN.with(Cell::get) == Some(true)
         && PENDING_OPS.with(|q| q.borrow().is_empty())
