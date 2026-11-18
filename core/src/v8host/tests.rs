@@ -10757,3 +10757,6 @@ mod extensions_tests;
 
 #[path = "tests/usercmd_post.rs"]
 mod usercmd_post;
+
+#[path = "tests/mux_hooks.rs"]
+mod mux_hooks;

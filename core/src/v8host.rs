@@ -4583,8 +4583,23 @@ fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 /// Degrades to `undefined` if `@s2script/usercmd` never registered its prelude (Cmd absent) so a
 /// handler still runs rather than being skipped.
 pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
+    // Through the JS multiplexer: one crossing per command, each subscriber's `(Cmd, { slot })`
+    // built in its own realm. The Rust fan-out runs while the profiler records.
+    let (result, _) = crate::jsmux::dispatch(
+        &crate::jsmux::ChannelStore(&USERCMD_MUX),
+        crate::jsmux::Kind::UserCmd,
+        "onRun",
+        StopAt::Stop,
+        |tc| vec![v8::Integer::new(tc, slot).into()],
+        || usercmd_fan_out(slot),
+    );
+    result as i32
+}
+
+/// `dispatch_usercmd` as a Rust fan-out (the profiler's path).
+fn usercmd_fan_out(slot: i32) -> (HookResult, Delivery) {
     let snap = USERCMD_MUX.with(|m| m.borrow().snapshot("onRun"));
-    let result = fan_out_collapsing(&snap, "dispatch_usercmd", Instrument::none(), StopAt::Stop, |tc| {
+    fan_out_inner(&snap, "dispatch_usercmd", Instrument::none(), StopAt::Stop, |tc| {
         // Fetch the prelude's SINGLETON Cmd: globalThis.__s2pkg_usercmd.Cmd (Task 4 registers
         // it; degrade to `undefined` if the module never loaded in this context).
         let cmd_arg: Option<v8::Local<v8::Value>> = (|| {
@@ -4605,8 +4620,7 @@ pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
         }
         let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
         Some(vec![cmd_val, ctx_val])
-    });
-    result as i32
+    })
 }
 
 /// The post phase: one command finished running for `slot` (movement applied and written back to
@@ -4617,7 +4631,10 @@ pub(crate) fn dispatch_usercmd(slot: i32) -> i32 {
 /// (the prelude wrapper hands each its reused `UserCmdView` and `info`), so a steady-state dispatch
 /// makes no Rust allocation.
 pub(crate) fn dispatch_usercmd_post(snap: &UsercmdSnapshot) {
-    let Some(subs) = usercmd_post_snapshot() else { return };
+    if !USERCMD_MUX.with(|m| m.borrow().has_subscribers(USERCMD_POST_KEY)) {
+        crate::jsmux::release_idle(&crate::jsmux::ChannelStore(&USERCMD_MUX), crate::jsmux::Kind::UserCmdPost);
+        return;
+    }
     struct Restore(bool, [u8; usercmd_shared::LEN]);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -4627,7 +4644,19 @@ pub(crate) fn dispatch_usercmd_post(snap: &UsercmdSnapshot) {
     }
     let _restore = Restore(USERCMD_POST_ACTIVE.with(|a| a.replace(true)), usercmd_shared::get());
     usercmd_shared::publish(snap);
-    let _ = fan_out(&subs, "dispatch_usercmd_post", Instrument::none(), |_| Some(Vec::new()));
+    // Through the JS multiplexer; the cached Rust list serves the profiler's fan-out.
+    let _ = crate::jsmux::dispatch(
+        &crate::jsmux::ChannelStore(&USERCMD_MUX),
+        crate::jsmux::Kind::UserCmdPost,
+        USERCMD_POST_KEY,
+        StopAt::Never,
+        |_| Vec::new(),
+        || {
+            let Some(subs) = usercmd_post_snapshot() else { return (HookResult::Continue, Delivery::Delivered) };
+            let delivery = fan_out(&subs, "dispatch_usercmd_post", Instrument::none(), |_| Some(Vec::new()));
+            (HookResult::Continue, delivery)
+        },
+    );
 }
 
 /// The post channel's subscribers, or `None` when it has none. Rebuilt only when `USERCMD_MUX`
