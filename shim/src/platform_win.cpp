@@ -40,6 +40,26 @@ std::string ModulePath(HMODULE h) {
     return Slashes(Narrow(buf.data(), static_cast<int>(n)));
 }
 
+// The shim's file I/O (fopen, stat, std::ifstream) takes narrow paths, which Windows reads in the
+// ANSI code page, not UTF-8. For a path with non-ASCII characters, use its 8.3 short form, which is
+// ASCII, when the volume has short names. Otherwise the UTF-8 path is returned and such a file
+// open fails with its usual error.
+std::string FileIoPath(HMODULE h) {
+    std::vector<wchar_t> buf(32768);
+    DWORD n = GetModuleFileNameW(h, buf.data(), static_cast<DWORD>(buf.size()));
+    if (n == 0 || n >= buf.size()) return std::string();
+    bool ascii = true;
+    for (DWORD i = 0; i < n; i++) if (buf[i] > 0x7f) { ascii = false; break; }
+    if (!ascii) {
+        std::vector<wchar_t> shortBuf(32768);
+        DWORD m = GetShortPathNameW(buf.data(), shortBuf.data(), static_cast<DWORD>(shortBuf.size()));
+        bool shortAscii = m > 0 && m < shortBuf.size();
+        for (DWORD i = 0; shortAscii && i < m; i++) if (shortBuf[i] > 0x7f) shortAscii = false;
+        if (shortAscii) return Slashes(Narrow(shortBuf.data(), static_cast<int>(m)));
+    }
+    return Slashes(Narrow(buf.data(), static_cast<int>(n)));
+}
+
 std::vector<HMODULE> LoadedModules() {
     std::vector<HMODULE> mods(512);
     for (;;) {
@@ -82,7 +102,7 @@ std::string SelfModulePath() {
                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(&SelfModulePath), &self))
         return std::string();
-    return ModulePath(self);
+    return FileIoPath(self);
 }
 
 std::string Dirname(const std::string& path) {

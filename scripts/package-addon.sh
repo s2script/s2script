@@ -37,6 +37,10 @@ cp "$SHIM_FILE" "$DIST/s2script/bin/$PLATFORM/$SHIM_NAME"
 
 # --- V8 core cdylib (required; checks release first, falls back to debug) ---
 CORE_SO="${S2_CORE_FILE:-}"
+if [ "$PLATFORM" != linuxsteamrt64 ] && [ -z "$CORE_SO" ]; then
+    echo "ERROR: S2_CORE_FILE must name the $PLATFORM $CORE_NAME (scripts/build-windows.sh sets it)" >&2
+    exit 1
+fi
 [ -z "$CORE_SO" ] && [ -f target/release/libs2script_core.so ] && CORE_SO="target/release/libs2script_core.so"
 [ -z "$CORE_SO" ] && [ -f target/debug/libs2script_core.so ] && CORE_SO="target/debug/libs2script_core.so"
 if [ -z "$CORE_SO" ]; then
