@@ -191,7 +191,7 @@
             var row = "gk_wpn_s" + i;
             var label = v.slots[SLOTS[i]];
             var had = prev ? prev[SLOTS[i]] : undefined;
-            var wasSel = prev ? prev.active === SLOTS[i] : undefined;
+            var wasSel = prev ? (!!had && prev.active === SLOTS[i]) : undefined;
             // A hidden row is never selected, so its highlight is cleared before it hides.
             var sel = !!label && v.slots.active === SLOTS[i];
             if (sel !== wasSel) note(I.setClass(slot, row, "gk-sel", sel));

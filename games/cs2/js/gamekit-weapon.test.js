@@ -322,3 +322,14 @@ test("a low-ammo tone and a slot highlight do not survive a weapon with no clip 
   assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), false, "the returned row is not highlighted");
   assert.equal(m.has(0, "gk_wpn_s1", "gk-sel"), true);
 });
+
+test("a row named active while empty is highlighted once it fills", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.set(0, { name: "Fists", slots: { secondary: "Glock-18", active: "primary" } });
+  assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), false);
+  W.set(0, { name: "AK-47", clip: 30, reserve: 90, slots: { primary: "AK-47", secondary: "Glock-18", active: "primary" } });
+  assert.equal(m.hidden(0, "gk_wpn_s0"), false);
+  assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
+});
