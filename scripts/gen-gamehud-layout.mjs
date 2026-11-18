@@ -60,6 +60,8 @@ export const SPEC = {
   sheet: { side: 16, list: 8, paragraphs: 4, toggles: 8, grid: 9, tableCols: 6, tableRows: 8, rowActions: 2, dots: 10 },
   hub: { items: 8, card: 6, picker: 12 },
   summary: { stats: 4, cols: 4, rows: 5 },
+  // Weapon card rows, in CS2's slot-key order: primary, secondary, knife, grenades, other (C4 and the rest).
+  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"] },
 };
 const S = SPEC;
 
@@ -74,6 +76,8 @@ function layoutBuilder(name) {
     open: (d, tag, id, cls) => st.lines.push(`${T(d)}<${tag}${id ? ` id="${reg(id)}"` : ""} class="${cls}">`),
     close: (d, tag) => st.lines.push(`${T(d)}</${tag}>`),
     panel: (d, id, cls) => st.lines.push(`${T(d)}<Panel${id ? ` id="${reg(id)}"` : ""} class="${cls}" />`),
+    // A Label with fixed text and no id: nothing for the server to drive.
+    text: (d, cls, value) => st.lines.push(`${T(d)}<Label class="${cls}" text="${value}" />`),
     label: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Label id="${id}" class="${cls}" text="{s:${id}}" />`); return id; },
     image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" scaling="stretch-to-fit-preserve-aspect" />`); return id; },
     button: (d, id, cls, kids) => { b.open(d, "Button", id, cls); st.buttons.push(id); kids(d + 1); b.close(d, "Button"); },
@@ -118,7 +122,7 @@ const HEADER = (what) => `<!--
 
 // ---- layout 1: in-round HUD -------------------------------------------------------------------
 const hud = layoutBuilder("hud");
-const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card, toast)"), (d) => {
+const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card, weapon card, toast)"), (d) => {
   const b = hud;
   b.raw(d, `<!-- Top rail: two score blocks around a clock, and a round line. The side tone (gk-e-*) is a class on gk_rail_l / gk_rail_r. -->`);
   b.open(d, "Panel", "gk_rail", "gk-rail s2-hide");
@@ -169,6 +173,29 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
     b.label(d + 2, `gk_bar${i}_val`, "gk-bar-val");
     b.close(d + 1, "Panel");
   }
+  b.close(d, "Panel");
+
+  b.raw(d, `<!-- Weapon card: replaces the stock weapons HUD (m_iHideHUD bit 6). Bottom right, clear of chat (left) and the kill feed (top right).
+       A compact slot list, then the active weapon's name (or grenade count) and clip / reserve. -->`);
+  b.open(d, "Panel", "gk_wpn", "gk-panel gk-wpn s2-hide");
+  b.open(d + 1, "Panel", "gk_wpn_slots", "gk-wpn-slots s2-hide");
+  S.weapon.slots.forEach((slotName, i) => {
+    const r = `gk_wpn_s${i}`;
+    b.open(d + 2, "Panel", r, "gk-wslot s2-hide");
+    b.text(d + 3, "gk-wslot-k", String(i + 1));
+    b.label(d + 3, `${r}_t`, "gk-wslot-t");
+    b.close(d + 2, "Panel");
+    b.pool("weaponSlots", { id: r, slot: slotName, vars: [`${r}_t`] });
+  });
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", null, "gk-wpn-hd");
+  b.label(d + 2, "gk_wpn_name", "gk-wpn-name");
+  b.label(d + 2, "gk_wpn_count", "gk-wpn-count s2-hide");
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", "gk_wpn_ammo", "gk-wpn-ammo s2-hide");
+  b.label(d + 2, "gk_wpn_clip", "gk-wpn-clip");
+  b.label(d + 2, "gk_wpn_res", "gk-wpn-res");
+  b.close(d + 1, "Panel");
   b.close(d, "Panel");
 
   b.raw(d, `<!-- Toast: one line and a small subline, top centre. -->`);

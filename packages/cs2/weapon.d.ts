@@ -70,6 +70,8 @@ export interface WeaponData {
   readonly killAward: number | null;
   readonly primaryReserveAmmoMax: number | null;
   readonly secondaryReserveAmmoMax: number | null;
+  /** Index into the owner's ammo counts (`CPlayer_WeaponServices::m_iAmmo`); grenades keep their count there. */
+  readonly primaryAmmoType: number | null;
   readonly isFullAuto: boolean | null;
   readonly isMelee: boolean | null;
   /** Pellets per shot (shotguns fire more than one). */

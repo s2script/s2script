@@ -33,6 +33,8 @@
 .HUD_SCOREBOARD_VISIBLE .gk-feed,
 .HUD_BUYMENU_VISIBLE .gk-status,
 .HUD_SCOREBOARD_VISIBLE .gk-status,
+.HUD_BUYMENU_VISIBLE .gk-wpn,
+.HUD_SCOREBOARD_VISIBLE .gk-wpn,
 .HUD_BUYMENU_VISIBLE .gk-toast,
 .HUD_SCOREBOARD_VISIBLE .gk-toast,
 .HUD_BUYMENU_VISIBLE .gk-sum
@@ -439,6 +441,113 @@
 	font-size: 20px;
 	font-weight: bold;
 	color: #eef1f3;
+}
+
+/* ---- hud: weapon card ---------------------------------------------------------------------------- */
+
+/* Bottom right, where the stock ammo sits, so it stays clear of chat (bottom left) and the kill
+   feed (top right). Same panel look as the status card. */
+.gk-wpn
+{
+	width: 250px;
+	horizontal-align: right;
+	vertical-align: bottom;
+	margin: 0px 18px 18px 0px;
+	padding-bottom: 6px;
+}
+
+.gk-wpn-slots
+{
+	width: 100%;
+	flow-children: down;
+	padding: 5px 0px;
+	border-bottom: 1px solid #ffffff12;
+}
+
+/* Inactive slots are dimmed; the active one is full strength with the theme's accent edge (gk-sel). */
+.gk-wslot
+{
+	width: 100%;
+	flow-children: right;
+	padding: 2px 13px 2px 10px;
+	border-left: 3px solid #00000000;
+	opacity: 0.5;
+}
+
+.gk-wslot.gk-sel
+{
+	opacity: 1;
+}
+
+.gk-wslot-k
+{
+	width: 18px;
+	vertical-align: center;
+	font-size: 12px;
+	font-weight: bold;
+	color: #8c969f;
+}
+
+.gk-wslot-t
+{
+	width: fill-parent-flow(1.0);
+	vertical-align: center;
+	font-size: 13px;
+	font-weight: bold;
+	letter-spacing: 1px;
+	text-transform: uppercase;
+	color: #eef1f3;
+}
+
+.gk-wpn-hd
+{
+	width: 100%;
+	flow-children: right;
+	padding: 8px 13px 0px 13px;
+}
+
+.gk-wpn-name
+{
+	width: fill-parent-flow(1.0);
+	vertical-align: center;
+	font-size: 15px;
+	font-weight: bold;
+	letter-spacing: 2px;
+	text-transform: uppercase;
+	color: #aeb5bc;
+}
+
+.gk-wpn-count
+{
+	vertical-align: center;
+	font-size: 22px;
+	font-weight: bold;
+	color: #eef1f3;
+}
+
+.gk-wpn-ammo
+{
+	width: 100%;
+	flow-children: right;
+	padding: 0px 13px;
+}
+
+/* The clip takes a tone class (gk-t-red when low); the generated tone rules come later and win. */
+.gk-wpn-clip
+{
+	vertical-align: bottom;
+	font-size: 42px;
+	font-weight: bold;
+	color: #eef1f3;
+}
+
+.gk-wpn-res
+{
+	vertical-align: bottom;
+	margin: 0px 0px 7px 8px;
+	font-size: 20px;
+	font-weight: bold;
+	color: #8c969f;
 }
 
 .gk-toast

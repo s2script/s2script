@@ -115,6 +115,8 @@
     ["killAward", "m_nKillAward", "readInt32Via"],
     ["primaryReserveAmmoMax", "m_nPrimaryReserveAmmoMax", "readInt32Via"],
     ["secondaryReserveAmmoMax", "m_nSecondaryReserveAmmoMax", "readInt32Via"],
+    // AmmoIndex_t wraps one int8: the index into the owner's CPlayer_WeaponServices::m_iAmmo.
+    ["primaryAmmoType", "m_nPrimaryAmmoType", "readInt8Via"],
     ["isFullAuto", "m_bIsFullAuto", "readBoolVia"],
     ["isMelee", "m_bMeleeWeapon", "readBoolVia"],
     ["numBullets", "m_nNumBullets", "readInt32Via"],

@@ -21,6 +21,7 @@ a prompt can be an RDM report, a sheet can be JB rules. The worked example is th
 | `rail()` | top rail: two score blocks with pips, clock, sub line | no | one plugin |
 | `status()` | role line, hint, two 10%-step bars | no | one plugin |
 | `feed()` | kill feed, six rows per player, fades after 6 s | no | one plugin |
+| `weapon.claim()` | weapon card: name, clip / reserve, slot list (bottom right) | no | one plugin |
 | `toast(audience, spec)` | one line and a sub line | no | shared, newest wins |
 | `summary(audience, spec)` | round-end title, stats and a short table | no | shared, newest wins |
 | `theme(audience, name)` | accent colour for every piece | n/a | shared |
@@ -45,6 +46,32 @@ player in chat instead. A refused prompt or vote then accepts a typed number.
 
 **Claims.** A claimed surface is held host-side and freed when the plugin unloads, even if the
 plugin's own cleanup never runs. A second plugin asking for a held surface gets `null`.
+
+## Weapon card
+
+`Hud.hide(slot, HideHud.Weapons)` (m_iHideHUD bit 6) hides the stock weapons HUD: ammo, weapon name
+and slot list. The weapon card puts them back, bottom right, in the status card's style:
+
+```ts
+import { Hud } from "@s2script/sdk";
+import { GameHud, HideHud } from "@s2script/cs2";
+
+if (GameHud.weapon.claim()) {
+  Hud.hide(slot, HideHud.Weapons);
+  GameHud.weapon.auto("all", { name: (defIndex) => shopNames[defIndex] ?? null });
+}
+```
+
+- **`auto(audience, options?)`** fills the card from each player's pawn. The active weapon's clip and
+  reserve are read every game frame and the held weapons every 8 frames (and on every switch); only
+  what changed is sent. The clip turns red at or under 25% of the magazine. Knives and C4 show only
+  the name; grenades show a count. The card hides while the player is dead or spectating, and
+  follows a bot the player has taken over. `options.name(defIndex, weapon)` renames items (return
+  `null` to keep the default); `options.hideSlots` drops the slot list.
+- **`set(audience, { name, clip?, reserve?, count?, tone?, slots? })`** paints it yourself, and
+  **`hide(audience)`** hides it. Both take that audience out of `auto` until `auto` names them again.
+- `claim()` answers `true` when this plugin holds the card. Every other call throws until it does.
+  `release()`, or unloading the plugin, hides the card and stops `auto`.
 
 ## Rules with stable numbers
 
@@ -96,5 +123,11 @@ mounted, from a real client (bots have no HUD). Each line is pass or fail; note 
    route. Click Back: the intro returns. Click Join a team: you join the smaller side.
 9. **Fallback.** Unmount the addon (or remove `s2script_gamepanels.xml`) and run `sm_gk_vote`,
    `sm_rules` and `sm_gk_ask`: each arrives in chat, and typing a number answers the vote and prompt.
-10. **Unload.** `sm plugins unload @example/cookbook` while a vote, sheet and rail are up: everything hides
+10. **Weapon card.** `sm_gk_weapon`. The stock ammo and weapon list disappear and the card shows
+    your weapon and `clip / reserve`. Fire: the clip counts down with each shot and turns red at a
+    quarter of the magazine. Reload, switch to the pistol, knife and a grenade (the knife shows only
+    its name, a grenade shows `×N`), buy and pick up a weapon: the slot list follows and the active
+    row is marked. A Desert Eagle reads "Hand Cannon". Die: the card disappears while you spectate
+    and comes back on respawn. `sm_gk_weapon off`: the stock HUD returns.
+11. **Unload.** `sm plugins unload @example/cookbook` while a vote, sheet, rail and weapon card are up: everything hides
     and a second plugin can claim the rail.

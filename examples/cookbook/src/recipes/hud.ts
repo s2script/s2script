@@ -8,7 +8,7 @@ import { HideHud, Player } from "@s2script/cs2";
  * all of them plus the game's own, and the mask follows the player across respawns and spectating.
  * Unloading this recipe gives back exactly the bits it hid.
  *
- *   sm_hidehud <target> <radar|health|crosshair|money|timer|chat|bits>   hide one part (or raw bits)
+ *   sm_hidehud <target> <radar|health|crosshair|money|timer|weapons|bits>   hide one part (or raw bits)
  *   sm_showhud <target> [part|bits]                                      show it again (no arg = all of ours)
  *   sm_hudmask <target>                                                  this plugin's bits vs everyone's
  */
@@ -17,7 +17,7 @@ export const describe = "hide native HUD parts per player (sm_hidehud / sm_showh
 
 const PARTS: Record<string, number> = {
   radar: HideHud.Radar, health: HideHud.Health, crosshair: HideHud.Crosshair,
-  money: HideHud.Money, timer: HideHud.RoundTimer, chat: HideHud.Chat,
+  money: HideHud.Money, timer: HideHud.RoundTimer, weapons: HideHud.Weapons,
 };
 
 function parse(arg: string): number | null {

@@ -101,6 +101,7 @@ export type {
   GameHudSheetEvent, GameHudSheetListItem, GameHudSheetSection, GameHudSheetSpec, GameHudSheetTableRow,
   GameHudSheetToggle, GameHudSummarySpec, GameHudSummaryStat, GameHudHubItem, GameHudHubCard, GameHudIntro,
   GameHudIntroSpec, GameHudSpectate, GameHudSpectatePlayer, GameHudSpectateSpec, GameHudShot,
+  GameHudWeapon, GameHudWeaponAutoOptions, GameHudWeaponSlot, GameHudWeaponSlots, GameHudWeaponSpec,
 } from "./gamehud";
 export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
 import type { CustomPlayerCamera } from "./camera";
@@ -435,7 +436,8 @@ export declare const HideHud: {
   /** The crosshair (`1 << 3`). */ readonly Crosshair: number;
   /** Money (`1 << 4`). */ readonly Money: number;
   /** The round timer (`1 << 5`). */ readonly RoundTimer: number;
-  /** Chat (`1 << 6`). */ readonly Chat: number;
+  /** The weapons HUD: ammo, weapon name and slot list (`1 << 6`). `GameHud.weapon` can replace it. */ readonly Weapons: number;
+  /** @deprecated Bit 6 hides the weapons HUD, not chat. Use {@link HideHud.Weapons} (same value). */ readonly Chat: number;
 };
 
 /**

@@ -884,8 +884,11 @@
 
   // CS2's m_iHideHUD bits, for @s2script/sdk/hud's Hud.hide/show. The mask itself is engine-generic
   // and multiplexed in core; only what each bit hides is a CS2 fact. Other bits pass through as numbers.
+  // Bit 6 hides the weapons HUD (ammo, weapon name, slot list), not chat: it was first published as
+  // `Chat`, which stays as a deprecated alias so existing plugins keep loading.
   var HideHud = Object.freeze({
-    Radar: 1 << 1, Health: 1 << 2, Crosshair: 1 << 3, Money: 1 << 4, RoundTimer: 1 << 5, Chat: 1 << 6
+    Radar: 1 << 1, Health: 1 << 2, Crosshair: 1 << 3, Money: 1 << 4, RoundTimer: 1 << 5, Weapons: 1 << 6,
+    Chat: 1 << 6
   });
 
   // Hand the tag table to core's expander (core/js/colors.js). This is the ONLY direction game

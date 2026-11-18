@@ -4,6 +4,8 @@
 // Paints `s2script_gamehud.xml` and `s2script_gamepanels.xml` from the game-kit workshop addon. The layout spawns with
 // `observable: false`, so every paint is per player: each call takes an audience.
 
+import type { Weapon } from "./weapon";
+
 /** Accent themes, named by colour. Any gamemode picks one. */
 export type GameHudTheme = "amber" | "red" | "orange" | "teal" | "blue" | "violet" | "green";
 
@@ -494,6 +496,75 @@ export interface GameHudSpectate {
   close(): void;
 }
 
+/** The weapon card's slot rows, in CS2's slot-key order (1 to 5). `other` holds C4, the medi-shot and the like. */
+export type GameHudWeaponSlot = "primary" | "secondary" | "knife" | "grenades" | "other";
+
+/** The weapon card's slot list. A row with no text is hidden; several items in one slot share a row. */
+export interface GameHudWeaponSlots {
+  readonly primary?: GameHudText | null;
+  readonly secondary?: GameHudText | null;
+  readonly knife?: GameHudText | null;
+  readonly grenades?: GameHudText | null;
+  readonly other?: GameHudText | null;
+  /** The highlighted row. */
+  readonly active?: GameHudWeaponSlot | null;
+}
+
+/** One full paint of the weapon card. Every paint replaces the last one. */
+export interface GameHudWeaponSpec {
+  /** The active weapon's name. A leading colour tag colours it. */
+  readonly name: GameHudText;
+  /** Rounds in the magazine, shown large. Leave it out (or null) for a weapon with no clip: the card then shows only the name. */
+  readonly clip?: number | null;
+  /** Reserve rounds, shown as "/ 36" next to the clip. */
+  readonly reserve?: number | null;
+  /** A count next to the name, such as "×2" for grenades. */
+  readonly count?: number | null;
+  /** The clip's colour. `auto` uses `red` at or under 25% of the magazine. */
+  readonly tone?: GameHudTone | null;
+  /** The slot list. Leave it out to hide the list. */
+  readonly slots?: GameHudWeaponSlots | null;
+}
+
+export interface GameHudWeaponAutoOptions {
+  /**
+   * Rename items, for example a gamemode's shop items. Called with the item definition index and
+   * the weapon when it enters the inventory (and again every few frames). Return null to keep the
+   * default name. The result also names the item in the slot list.
+   */
+  readonly name?: (defIndex: number, entity: Weapon) => string | null;
+  /** Hide the slot list and show only the active weapon. */
+  readonly hideSlots?: boolean;
+}
+
+/**
+ * The weapon card, bottom right: a replacement for the stock weapons HUD, which
+ * `Hud.hide(slot, HideHud.Weapons)` removes along with the ammo count. One plugin holds it at a time.
+ * Every call except `claim` and `isClaimed` throws until this plugin holds it.
+ */
+export interface GameHudWeapon {
+  /**
+   * Claim the card for this plugin. True when this plugin holds it (calling again is fine), false
+   * when another plugin does. It is released on `release()` or when the plugin unloads, even if the
+   * plugin's own cleanup never runs. The argument is optional: the calling plugin is known.
+   */
+  claim(pluginId?: string): boolean;
+  isClaimed(): boolean;
+  /** Hide the card for everyone, stop `auto`, and free it for another plugin. */
+  release(): void;
+  /**
+   * Fill the card from each player's pawn, checked every game frame and painted only when something
+   * changed: the active weapon's name, clip and reserve, a grenade count, and the slot list. Knives
+   * and C4 show only the name. The card hides while the player is dead or spectating. With `"all"`
+   * or a filter, players who join later are included. Calling again replaces the options.
+   */
+  auto(audience: GameHudAudience, options?: GameHudWeaponAutoOptions): void;
+  /** Paint the card yourself. Takes the audience out of `auto` until you call `auto` for them again. */
+  set(audience: GameHudAudience, spec: GameHudWeaponSpec): void;
+  /** Hide the card. Also takes the audience out of `auto`. */
+  hide(audience?: GameHudAudience): void;
+}
+
 export declare const GameHud: {
   readonly themes: ReadonlyArray<GameHudTheme>;
   readonly tones: ReadonlyArray<GameHudTone>;
@@ -503,6 +574,8 @@ export declare const GameHud: {
   status(): GameHudStatus | null;
   /** Claim the kill feed. Null when another plugin holds it. */
   feed(): GameHudFeed | null;
+  /** The weapon card (bottom right), which replaces the stock weapons and ammo HUD. One plugin holds it. */
+  readonly weapon: GameHudWeapon;
   /**
    * Show a toast. Shared by every plugin: the newest toast replaces the one on screen. If the HUD
    * refuses it for a player, the toast goes to them in chat.
