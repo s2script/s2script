@@ -92,12 +92,15 @@ const MAKE_USERCMD: &str = "(function (slot) { var u = globalThis.__s2pkg_usercm
     return [u ? u.Cmd : undefined, { slot: slot }]; })";
 // Each factory below builds an `EntityRef` in its own realm, or `null` (no id, no entity package,
 // or a throwing constructor). The books were checked in Rust: `id` is the host id, or -1.
-/// Entity lifecycle: `(entity | null, className)`.
+/// Entity lifecycle: `(entity | null, className)`. The handle is adopted from the books for each
+/// subscriber, as the Rust fan-out did, so an entity an earlier handler deleted reaches the later
+/// ones as `null`.
 const MAKE_ENTITY: &str = concat!(
     "(function () { ",
-    "function ref(i, id) { if (id < 0) return null; var E = globalThis.__s2pkg_entity; ",
-    "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
-    " return function (i, id, cls) { return [ref(i, id), cls]; }; })()"
+    "function adopt(h) { if (h < 0) return null; var d = __s2_handle_adopt(h >>> 0); if (!d) return null; ",
+    "var E = globalThis.__s2pkg_entity; if (!E || typeof E.EntityRef !== 'function') return null; ",
+    "try { return new E.EntityRef(d[0], d[1]); } catch (e) { return null; } }",
+    " return function (h, cls) { return [adopt(h), cls]; }; })()"
 );
 /// SetTransmit: `(entity, client)`; a subscriber whose realm cannot build the client is skipped,
 /// as the Rust fan-out skipped it.
@@ -116,12 +119,14 @@ const MAKE_HOOK_THIS: &str = concat!(
     "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
     " return function (i, id) { return [ref(i, id)]; }; })()"
 );
-/// SDKHooks with another entity: `(entity, other | null)`.
+/// SDKHooks with another entity: `(entity, other | null)`. The other entity's handle is adopted for
+/// each subscriber, as the Rust fan-out did.
 const MAKE_HOOK_OTHER: &str = concat!(
     "(function () { ",
     "function ref(i, id) { if (id < 0) return null; var E = globalThis.__s2pkg_entity; ",
     "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
-    " return function (i, id, oi, oid) { return [ref(i, id), ref(oi, oid)]; }; })()"
+    "function adopt(h) { if (h < 0) return null; var d = __s2_handle_adopt(h >>> 0); return d ? ref(d[0], d[1]) : null; }",
+    " return function (i, id, h) { return [ref(i, id), adopt(h)]; }; })()"
 );
 
 /// The part of a channel name after its NUL (the class or hook type), or the whole name.
@@ -397,6 +402,14 @@ pub(crate) fn release_idle_frame(source: &dyn Source, pre: bool) {
     if !any {
         prune_idle(&Job { source, kind: Kind::Frame, name, version });
     }
+}
+
+/// A dispatch that returned before the multiplexer because nothing was subscribed: still drop the
+/// arrays its last subscribers left in JS, which pin their plugins' contexts. Cheap when there is
+/// nothing to drop (a version compare).
+pub(crate) fn release_idle(source: &dyn Source, kind: Kind) {
+    let (_, version) = source.probe("");
+    prune_idle(&Job { source, kind, name: "", version });
 }
 
 /// With nobody subscribed, drop stale arrays if the store moved since the last prune: once a store

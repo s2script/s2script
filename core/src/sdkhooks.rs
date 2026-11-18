@@ -425,6 +425,15 @@ where
     .0
 }
 
+/// A dispatch with no hook to run: drop the multiplexer arrays the store's last changes left stale
+/// (they pin unloaded plugins' contexts). The kinds share the store, so each is pruned.
+pub(crate) fn release_idle() {
+    let source = EntityHooks { entity_id: 0, kind: "" };
+    for kind in [crate::jsmux::Kind::SdkHookThis, crate::jsmux::Kind::SdkHookOther, crate::jsmux::Kind::SetTransmit] {
+        crate::jsmux::release_idle(&source, kind);
+    }
+}
+
 /// Whether this entity has a hook of `kind` (no snapshot taken).
 pub(crate) fn has_hook(entity_id: u64, kind: &str) -> bool {
     HOOKS.with(|hooks| hooks.borrow().has(entity_id, kind))
@@ -581,16 +590,10 @@ pub(crate) fn dispatch_touch(
         return HookResult::Continue as c_int;
     };
     if !has_hook(this_id, type_name) {
+        release_idle();
         return HookResult::Continue as c_int;
     }
     let stop_at = if post != 0 { StopAt::Never } else { StopAt::Stop };
-    // The other entity, books-checked once for every subscriber: (index, host id or -1).
-    let (other_index, other_id) = if other_handle < 0 {
-        (-1, -1.0)
-    } else {
-        let (oi, os) = crate::entity::decode_handle(other_handle as u32);
-        crate::entity_live::adopt(oi, os).map_or((oi, -1.0), |oid| (oi, oid as f64))
-    };
     let result = mux_dispatch(
         this_id,
         type_name,
@@ -600,8 +603,7 @@ pub(crate) fn dispatch_touch(
             vec![
                 v8::Integer::new(tc, this_index).into(),
                 v8::Number::new(tc, this_id as f64).into(),
-                v8::Integer::new(tc, other_index).into(),
-                v8::Number::new(tc, other_id).into(),
+                v8::Number::new(tc, if other_handle < 0 { -1.0 } else { other_handle as u32 as f64 }).into(),
             ]
         },
         || {
@@ -609,10 +611,15 @@ pub(crate) fn dispatch_touch(
             let label = format!("sdkhook:{type_name}");
             fan_out_collapsing(&snap, &label, Instrument::breadcrumb(&label), stop_at, |tc| {
                 let this_ref = build_entity_ref(tc, this_index, this_id);
-                let other_val: v8::Local<v8::Value> = if other_id < 0.0 {
+                // Adopted per subscriber: an earlier handler may have deleted it.
+                let other_val: v8::Local<v8::Value> = if other_handle < 0 {
                     v8::null(tc).into()
                 } else {
-                    build_entity_ref(tc, other_index, other_id as u64)
+                    let (oi, os) = crate::entity::decode_handle(other_handle as u32);
+                    match crate::entity_live::adopt(oi, os) {
+                        Some(oid) => build_entity_ref(tc, oi, oid),
+                        None => v8::null(tc).into(),
+                    }
                 };
                 Some(vec![this_ref, other_val])
             })
@@ -738,6 +745,7 @@ pub(crate) fn dispatch_this(this_index: i32, this_serial: i32, post: c_int, type
         return HookResult::Continue as c_int;
     };
     if !has_hook(this_id, type_name) {
+        release_idle();
         return HookResult::Continue as c_int;
     }
     let stop_at = collapsing_stop(type_name);

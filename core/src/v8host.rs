@@ -4631,7 +4631,10 @@ fn usercmd_fan_out(slot: i32) -> (HookResult, Delivery) {
 /// (the prelude wrapper hands each its reused `UserCmdView` and `info`), so a steady-state dispatch
 /// makes no Rust allocation.
 pub(crate) fn dispatch_usercmd_post(snap: &UsercmdSnapshot) {
-    if !USERCMD_MUX.with(|m| m.borrow().has_subscribers(USERCMD_POST_KEY)) { return; }
+    if !USERCMD_MUX.with(|m| m.borrow().has_subscribers(USERCMD_POST_KEY)) {
+        crate::jsmux::release_idle(&crate::jsmux::ChannelStore(&USERCMD_MUX), crate::jsmux::Kind::UserCmdPost);
+        return;
+    }
     struct Restore(bool, [u8; usercmd_shared::LEN]);
     impl Drop for Restore {
         fn drop(&mut self) {

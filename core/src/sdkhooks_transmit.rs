@@ -33,6 +33,7 @@ pub(crate) fn dispatch_settransmit(this_index: i32, this_serial: i32, viewer_slo
         return HookResult::Continue as c_int;
     };
     if !crate::sdkhooks::has_hook(this_id, KIND_SET_TRANSMIT) {
+        crate::sdkhooks::release_idle();
         return HookResult::Continue as c_int;
     }
     // Through the JS multiplexer: SetTransmit runs per entity per viewer per tick, where a Rust
