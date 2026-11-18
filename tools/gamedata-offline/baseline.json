@@ -2,7 +2,7 @@
   "_comment": "The CS2 build the shipped gamedata was last checked against. .github/workflows/cs2-update.yml compares Steam's public manifest with this and files an issue when they differ; the PR that fixes the gamedata for a new build bumps it.",
   "app": 730,
   "depot": 2347773,
-  "buildid": "26747005",
-  "manifest": "4838211175569621862",
+  "buildid": "26748068",
+  "manifest": "5185046280295927252",
   "checked": "2026-11-18"
 }
