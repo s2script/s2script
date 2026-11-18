@@ -39,7 +39,7 @@
 #include <gameentitysystem.h>      // CGameEntitySystem (game/shared in s2sdk)
 #include <entity2/entityinstance.h>   // CEntityInstance::GetRefEHandle (inline; identity-backed)
 
-#include <link.h>     // dl_iterate_phdr, ElfW
+#include "platform.h"  // module views (ELF PT_LOAD segments / PE sections)
 #include <cstdio>     // snprintf — the degrade-reason string
 #include <cstring>    // strcmp/strstr/memcpy
 #include <string>
@@ -276,18 +276,17 @@ void* S2_ResolveEntity(int index, int serial) {
 // metamod-proxy tie-break that rule exists for does not apply.
 int S2_AddressIsExecutable(const void* addr) {
     if (!addr) return 0;
-    struct Ctx { uintptr_t a; bool hit; } ctx{ reinterpret_cast<uintptr_t>(addr), false };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
-            const uintptr_t lo = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
-            if (c->a >= lo && c->a < lo + ph.p_memsz) { c->hit = true; return 1; }   // stop the walk
+    const auto a = reinterpret_cast<uintptr_t>(addr);
+    bool hit = false;
+    s2plat::ForEachModule([&](const s2plat::ModuleView& m) {
+        for (int i = 0; i < m.count; i++) {
+            const s2plat::Segment& sg = m.segs[i];
+            if (!sg.exec) continue;
+            if (a >= sg.start && a < sg.start + sg.memSize) { hit = true; return true; }   // stop the walk
         }
-        return 0;
-    }, &ctx);
-    return ctx.hit ? 1 : 0;
+        return false;
+    });
+    return hit ? 1 : 0;
 }
 
 // The module views behind an address: the PF_X segment that CONTAINS it, plus the module's full
@@ -301,23 +300,21 @@ int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std
         uintptr_t text, textEnd, lo, hi;
     } ctx{ reinterpret_cast<uintptr_t>(addr), false, 0, 0, 0, 0 };
 
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
+    s2plat::ForEachModule([&](const s2plat::ModuleView& m) {
         uintptr_t lo = 0, hi = 0, text = 0, textEnd = 0;
         bool contains = false;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            const uintptr_t s = static_cast<uintptr_t>(info->dlpi_addr + ph.p_vaddr);
-            const uintptr_t e = s + ph.p_memsz;
+        for (int i = 0; i < m.count; i++) {
+            const s2plat::Segment& sg = m.segs[i];
+            const uintptr_t s = sg.start;
+            const uintptr_t e = s + sg.memSize;
             if (lo == 0 || s < lo) lo = s;
             if (e > hi) hi = e;
-            if ((ph.p_flags & PF_X) && c->a >= s && c->a < e) { contains = true; text = s; textEnd = e; }
+            if (sg.exec && ctx.a >= s && ctx.a < e) { contains = true; text = s; textEnd = e; }
         }
-        if (!contains) return 0;               // not this module — keep walking
-        c->hit = true; c->text = text; c->textEnd = textEnd; c->lo = lo; c->hi = hi;
-        return 1;                              // found it — stop
-    }, &ctx);
+        if (!contains) return false;           // not this module — keep walking
+        ctx.hit = true; ctx.text = text; ctx.textEnd = textEnd; ctx.lo = lo; ctx.hi = hi;
+        return true;                           // found it — stop
+    });
 
     if (!ctx.hit) return 0;
     *outText = reinterpret_cast<const unsigned char*>(ctx.text);

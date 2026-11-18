@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
-const GAMEDATA_PLATFORM: &str = "linuxsteamrt64";
+use crate::GAMEDATA_PLATFORM;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

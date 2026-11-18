@@ -27,9 +27,9 @@ set(AMTL   ${MMS}/third_party/amtl)
 # -DS2_CORE_LIB_DIR=debug at configure time so the shim links the matching artifact.
 set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir the core .so was built into (release|debug)")
 
-include(cmake/Libffi.cmake)
-
-add_library(s2script SHARED
+# The shim's sources, shared by both platform builds. platform_posix.cpp / platform_win.cpp (the OS
+# seam, src/platform.h) is appended per platform.
+set(S2_SHIM_SOURCES
     src/engine_function_abi.cpp
     src/engine_function_bridge.cpp
     src/engine_function_copy.cpp
@@ -106,6 +106,18 @@ add_library(s2script SHARED
                                              # apply gc-sections to this TU (its global new/delete
                                              # operators must survive) — list it separately below.
 )
+
+if(WIN32)
+    # Windows x64 (cross-built with clang-cl; see cmake/Windows.cmake and
+    # docs/superpowers/specs/2026-11-18-windows-port-design.md). Builds only the shipped DLL: the
+    # selftests below are Linux programs.
+    include(cmake/Windows.cmake)
+    return()
+endif()
+
+include(cmake/Libffi.cmake)
+
+add_library(s2script SHARED ${S2_SHIM_SOURCES} src/platform_posix.cpp)
 
 # --- Crash reporter (Breakpad, vendored) ---------------------------------------------------
 # The Linux client only: exception_handler + the in-process minidump writer. Compiled as a

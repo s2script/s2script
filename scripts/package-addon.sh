@@ -2,6 +2,9 @@
 # Assembles dist/addons/ from build outputs for mounting into the CS2 server.
 # Run after:  make core && make shim
 # Then use:   docker compose -f docker/docker-compose.yml up -d
+#
+# S2_PLATFORM=win64 packages the Windows build instead (scripts/build-windows.sh sets it, with
+# S2_SHIM_FILE / S2_CORE_FILE / S2_SHIM_BUILD_DIR pointing at the cross-built DLLs).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,29 +12,38 @@ cd "$(dirname "$0")/.."
 # no functionsFile. Fail before replacing dist so direct packaging cannot leave stale output.
 node scripts/lib/check-game-package-deps.mjs
 
+PLATFORM="${S2_PLATFORM:-linuxsteamrt64}"
+case "$PLATFORM" in
+  linuxsteamrt64) SHIM_NAME=s2script.so;  CORE_NAME=libs2script_core.so ;;
+  win64)          SHIM_NAME=s2script.dll; CORE_NAME=s2script_core.dll ;;
+  *) echo "ERROR: unknown S2_PLATFORM '$PLATFORM' (linuxsteamrt64|win64)" >&2; exit 1 ;;
+esac
+SHIM_BUILD_DIR="${S2_SHIM_BUILD_DIR:-build/shim}"
+SHIM_FILE="${S2_SHIM_FILE:-$SHIM_BUILD_DIR/$SHIM_NAME}"
+
 DIST=dist/addons
 rm -rf "$DIST"
-mkdir -p "$DIST/s2script/bin/linuxsteamrt64"
+mkdir -p "$DIST/s2script/bin/$PLATFORM"
 mkdir -p "$DIST/s2script/gamedata"
 mkdir -p "$DIST/metamod"
 
 # --- Metamod plugin shim (required) ---
-if [ ! -f build/shim/s2script.so ]; then
-    echo "ERROR: build/shim/s2script.so not found — run: make shim" >&2
+if [ ! -f "$SHIM_FILE" ]; then
+    echo "ERROR: $SHIM_FILE not found — run: make shim (or scripts/build-windows.sh)" >&2
     exit 1
 fi
-cp build/shim/VERSION "$DIST/s2script/VERSION"
-cp build/shim/s2script.so "$DIST/s2script/bin/linuxsteamrt64/s2script.so"
+cp "$SHIM_BUILD_DIR/VERSION" "$DIST/s2script/VERSION"
+cp "$SHIM_FILE" "$DIST/s2script/bin/$PLATFORM/$SHIM_NAME"
 
 # --- V8 core cdylib (required; checks release first, falls back to debug) ---
-CORE_SO=""
-[ -f target/release/libs2script_core.so ] && CORE_SO="target/release/libs2script_core.so"
+CORE_SO="${S2_CORE_FILE:-}"
+[ -z "$CORE_SO" ] && [ -f target/release/libs2script_core.so ] && CORE_SO="target/release/libs2script_core.so"
 [ -z "$CORE_SO" ] && [ -f target/debug/libs2script_core.so ] && CORE_SO="target/debug/libs2script_core.so"
 if [ -z "$CORE_SO" ]; then
-    echo "ERROR: libs2script_core.so not found — run: make core  (cargo build --release)" >&2
+    echo "ERROR: $CORE_NAME not found — run: make core  (cargo build --release)" >&2
     exit 1
 fi
-cp "$CORE_SO" "$DIST/s2script/bin/linuxsteamrt64/libs2script_core.so"
+cp "$CORE_SO" "$DIST/s2script/bin/$PLATFORM/$CORE_NAME"
 echo "core: $CORE_SO"
 
 # --- Shared engine and extension gamedata; CS2's relocated source is packaged below. ---
@@ -60,11 +72,18 @@ if [ -d translations ]; then
 fi
 
 # --- Metamod plugin registration VDF ---
-cp docker/s2script.vdf "$DIST/metamod/s2script.vdf"
+if [ "$PLATFORM" = linuxsteamrt64 ]; then
+    cp docker/s2script.vdf "$DIST/metamod/s2script.vdf"
 
-# --- Copy VDF into docker/metamod/ so compose only needs a single dir mount ---
-mkdir -p docker/metamod
-cp docker/s2script.vdf docker/metamod/s2script.vdf
+    # --- Copy VDF into docker/metamod/ so compose only needs a single dir mount ---
+    mkdir -p docker/metamod
+    cp docker/s2script.vdf docker/metamod/s2script.vdf
+else
+    # Metamod appends the platform's library suffix to "file".
+    sed "s#bin/linuxsteamrt64/s2script#bin/$PLATFORM/s2script#" docker/s2script.vdf > "$DIST/metamod/s2script.vdf"
+    grep -q "bin/$PLATFORM/s2script\"" "$DIST/metamod/s2script.vdf" || {
+        echo "ERROR: could not derive the $PLATFORM Metamod VDF from docker/s2script.vdf" >&2; exit 1; }
+fi
 
 echo ""
 echo "packaged: $DIST"

@@ -54,16 +54,11 @@
 #include <engine2/inetworkgameserver.h>
 #include <engine2/inetworkserverservice.h>
 
-#include <dlfcn.h>    // dladdr
-#include <libgen.h>   // dirname
-#include <link.h>       // dl_iterate_phdr, ElfW
-#include <sys/mman.h>   // mincore — fault-free readable-address probe
+#include "platform.h"   // the OS seam: own path, module views, exports, readable probe
 #include <igamesystem.h>          // model precache: CBaseGameSystem + EventBuildGameSessionManifest_t
 #include <igamesystemfactory.h>   // model precache: CGameSystemStaticFactory / CBaseGameSystemFactory
 #include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
 #include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
-#include <unistd.h>     // sysconf(_SC_PAGESIZE) — readable-address probe
-#include <sys/syscall.h>
 #include "sigscan.h"
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
 #include "engine_function_copy.h"   // sound event manager: fault-free reads of a vtable header
@@ -87,7 +82,9 @@
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
 #include <cstdlib>   // getenv — the env-gated opt-in self-tests
-#include <strings.h> // strcasecmp — cvar_set bool parse
+#ifndef _WIN32
+#include <strings.h> // strcasecmp — cvar_set bool parse (Windows: _stricmp, see CMakeLists)
+#endif
 #include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
 #include <sstream>
@@ -107,6 +104,12 @@
 #include <vector>
 #include <iterator>
 #include <stdexcept>
+#include <chrono>
+#ifdef _WIN32
+// <windows.h> (pulled in by the Metamod/KHook headers) maps GetMessage to GetMessageA, which renames
+// protobuf's Reflection::GetMessage at every call site below.
+#undef GetMessage
+#endif
 
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
@@ -200,7 +203,7 @@ static bool g_lifecycleInstallAttempted = false;
 static bool g_preShutdownHookInstalled = false;
 static bool g_shutdownHookInstalled = false;
 static long g_coreOwnerTid = -1;
-static long S2Tid() { return static_cast<long>(::syscall(SYS_gettid)); }
+static long S2Tid() { return s2plat::ThreadId(); }
 static void S2InstallLifecycleHooks();
 
 static S2TerminalCoordinator g_terminalCoord;
@@ -377,7 +380,7 @@ static int schema_find_field(CSchemaClassInfo* info, const char* field, int dept
 // TODO: gamedata key if the module name ever varies across games/platforms.
 static CSchemaClassInfo* schema_find_class(const char* cls) {
     if (!s_pSchemaSystem || !cls) return nullptr;
-    CSchemaSystemTypeScope* srvScope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    CSchemaSystemTypeScope* srvScope = s_pSchemaSystem->FindTypeScopeForModule(S2_MODULE("server"));
     CSchemaClassInfo* info = srvScope ? srvScope->FindRawClassBinding(cls) : nullptr;
     if (!info) {
         CSchemaSystemTypeScope* gScope = s_pSchemaSystem->GlobalTypeScope();
@@ -2318,8 +2321,10 @@ static bool S2Capture_Ready() {
         META_CONPRINTF("[s2script] WARN: console capture OFF — ICvar not acquired; Server.commandEx returns null\n");
         return false;
     }
-    s_logRegister = reinterpret_cast<S2LoggingListenerFn>(dlsym(RTLD_DEFAULT, "LoggingSystem_RegisterLoggingListener"));
-    s_logUnregister = reinterpret_cast<S2LoggingListenerFn>(dlsym(RTLD_DEFAULT, "LoggingSystem_UnregisterLoggingListener"));
+    s_logRegister = reinterpret_cast<S2LoggingListenerFn>(
+        s2plat::FindExport(S2_TIER0_EXPORT_SCOPE, "LoggingSystem_RegisterLoggingListener"));
+    s_logUnregister = reinterpret_cast<S2LoggingListenerFn>(
+        s2plat::FindExport(S2_TIER0_EXPORT_SCOPE, "LoggingSystem_UnregisterLoggingListener"));
     if (!s_logRegister || !s_logUnregister) {
         META_CONPRINTF("[s2script] WARN: console capture OFF — tier0 LoggingSystem_(Un)RegisterLoggingListener "
                        "not exported; Server.commandEx returns null\n");
@@ -2509,11 +2514,7 @@ static int s2_server_build_number(void) {
     s_build = 0;
     std::string root = AddonRoot();                       // <mod>/addons/s2script
     if (root.empty()) return s_build;
-    char buf[4096];
-    snprintf(buf, sizeof buf, "%s", root.c_str());
-    std::string addons = dirname(buf);
-    snprintf(buf, sizeof buf, "%s", addons.c_str());
-    std::ifstream f(std::string(dirname(buf)) + "/steam.inf");
+    std::ifstream f(s2plat::Dirname(s2plat::Dirname(root)) + "/steam.inf");
     std::string line;
     while (std::getline(f, line)) {
         if (line.compare(0, 14, "ServerVersion=") != 0) continue;
@@ -3325,7 +3326,7 @@ static void schema_type_to_kind(CSchemaType* t, const char** kind,
 static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_field_fn emit_field,
                             s2_emit_enum_fn emit_enum) noexcept {
     if (!s_pSchemaSystem) return 0;
-    CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
+    CSchemaSystemTypeScope* scope = s_pSchemaSystem->FindTypeScopeForModule(S2_MODULE("server"));
     if (!scope) scope = s_pSchemaSystem->GlobalTypeScope();
     if (!scope) return 0;
 
@@ -3425,21 +3426,7 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
 // the .so path costs no new engine dependency and is correct before any interface is acquired,
 // which matters because the gamedata load happens first in Load().
 // ---------------------------------------------------------------------------
-static std::string AddonRoot() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&AddonRoot), &info) && info.dli_fname) {
-        char buf[4096];
-        // dirname mutates the buffer in-place; copy each time.
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir;
-    }
-    return std::string();
-}
+static std::string AddonRoot() { return s2plat::AddonRoot(); }
 
 static std::string GamedataRoot() {
     std::string root = AddonRoot();
@@ -3451,13 +3438,8 @@ static std::string GamedataRoot() {
 static std::string DetectModDir() {
     std::string root = AddonRoot();
     if (root.empty()) return std::string();
-    char buf[4096];
-    snprintf(buf, sizeof buf, "%s", root.c_str());
-    std::string dir = dirname(buf);                 // addons
-    snprintf(buf, sizeof buf, "%s", dir.c_str());
-    dir = dirname(buf);                             // the mod directory
-    snprintf(buf, sizeof buf, "%s", dir.c_str());
-    return std::string(basename(buf));              // "csgo"
+    // addons/ -> the mod directory, whose name is the gamedata "game" condition ("csgo").
+    return s2plat::Basename(s2plat::Dirname(s2plat::Dirname(root)));
 }
 
 // ---------------------------------------------------------------------------
@@ -3470,17 +3452,8 @@ static std::string DetectModDir() {
 //   + /plugins
 // ---------------------------------------------------------------------------
 static std::string PluginsDir() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&PluginsDir), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir + "/plugins";
-    }
+    std::string root = s2plat::AddonRoot();
+    if (!root.empty()) return root + "/plugins";
     // Fallback: relative to the server's cwd.
     return "addons/s2script/plugins";
 }
@@ -3489,17 +3462,14 @@ static std::string PluginsDir() {
 // (mirrors PluginsDir). Created (mkdir -p equivalent, two levels) if absent; "" on any failure
 // (fail-off — crash reporting then stays disarmed).
 static std::string CrashSpoolDir() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&CrashSpoolDir), &info) && info.dli_fname) {
-        std::string dir(info.dli_fname);
-        // The .so lives at addons/s2script/bin/linuxsteamrt64/s2script.so — 3 dirname steps reach
-        // the addon root (mirrors s2_db_data_dir()/PluginsDir()). ONE step lands the spool under
-        // bin/ (a :ro mount in docker-compose) → mkdir fails → silent fail-off. Must be 3.
-        for (int i = 0; i < 3; i++) dir = dir.substr(0, dir.find_last_of('/'));
+    // The addon root, never bin/: bin/ is a :ro mount in docker-compose, so a spool there would
+    // fail mkdir and silently leave crash reporting off.
+    std::string dir = s2plat::AddonRoot();
+    if (!dir.empty()) {
         std::string data = dir + "/data";
         std::string spool = data + "/crashes";
-        mkdir(data.c_str(), 0755);            // EEXIST is fine
-        if (mkdir(spool.c_str(), 0755) == 0 || errno == EEXIST) return spool;
+        s2plat::MakeDir(data);                // already existing is fine
+        if (s2plat::MakeDir(spool)) return spool;
     }
     return "";
 }
@@ -3517,14 +3487,9 @@ static std::string TranslationsPath(const char* lang, const char* name) {
         o += ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='.'||c=='_'||c=='-') ? c : '_'; } return o; };
     std::string safeLang = lang ? sani(lang) : "";
     std::string safeName = sani(name);
-    Dl_info info;
-    std::string root;
-    if (dladdr(reinterpret_cast<void*>(&TranslationsPath), &info) && info.dli_fname) {
-        char buf[4096]; snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf); snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);             snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);
-        root = dir + "/translations/";
+    std::string root = s2plat::AddonRoot();
+    if (!root.empty()) {
+        root += "/translations/";
     } else {
         root = "addons/s2script/translations/";
     }
@@ -3551,17 +3516,9 @@ static const char* s2_client_language(int slot) {
 // ---------------------------------------------------------------------------
 static std::string s_dbDataDirBuf;
 static const char* s2_db_data_dir(void) {
-    Dl_info info;
-    std::string dir;
-    if (dladdr(reinterpret_cast<void*>(&s2_db_data_dir), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string d = dirname(buf);               // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", d.c_str());
-        d = dirname(buf);                            // bin
-        snprintf(buf, sizeof buf, "%s", d.c_str());
-        d = dirname(buf);                            // s2script addon root
-        dir = d + "/data";
+    std::string dir = s2plat::AddonRoot();
+    if (!dir.empty()) {
+        dir += "/data";
     } else {
         // Fallback: relative to the server's cwd.
         dir = "addons/s2script/data";
@@ -3606,20 +3563,19 @@ static ModText FindModuleText(const char* soname) {
     // ALSO contains the "libserver.so" substring. Stopping at the first substring match grabbed that
     // proxy (no game code) instead of the real ~25 MB game module. The real game module's .text
     // dwarfs the proxy's, so largest-PF_X-segment-wins selects it robustly (found live, de_inferno).
-    struct Ctx { const char* name; ModText out; } ctx{ soname, { nullptr, 0 } };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;  // not a match; keep scanning
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
-                c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-                c->out.size = ph.p_filesz;                       // largest PF_X seg across all matches
+    ModText out{ nullptr, 0 };
+    s2plat::ForEachModule([&](const s2plat::ModuleView& m) {
+        if (!std::strstr(m.path, soname)) return false;          // not a match; keep scanning
+        for (int i = 0; i < m.count; i++) {
+            const s2plat::Segment& sg = m.segs[i];
+            if (sg.exec && sg.fileSize > out.size) {
+                out.text = reinterpret_cast<const uint8_t*>(sg.start);
+                out.size = sg.fileSize;                          // largest exec seg across all matches
             }
         }
-        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
-    }, &ctx);
-    return ctx.out;
+        return false;   // keep scanning ALL modules — the metamod proxy must not shadow the real game module
+    });
+    return out;
 }
 
 // Full mapped [lo, hi) LOAD extent of the SAME module FindModuleText selects (largest-PF_X-wins,
@@ -3628,27 +3584,26 @@ static ModText FindModuleText(const char* soname) {
 // range-guarded against the whole mapping before it is read.
 struct ModBounds { const uint8_t* lo; const uint8_t* hi; };
 static ModBounds FindModuleBounds(const char* soname) {
-    struct Ctx { const char* name; size_t bestX; ModBounds out; } ctx{ soname, 0, { nullptr, nullptr } };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
+    size_t bestX = 0;
+    ModBounds out{ nullptr, nullptr };
+    s2plat::ForEachModule([&](const s2plat::ModuleView& m) {
+        if (!std::strstr(m.path, soname)) return false;
         size_t maxX = 0;
-        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) maxX = ph.p_filesz;
-            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
-            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
+        uintptr_t lo = ~static_cast<uintptr_t>(0), hi = 0;
+        for (int i = 0; i < m.count; i++) {
+            const s2plat::Segment& sg = m.segs[i];
+            if (sg.exec && sg.fileSize > maxX) maxX = sg.fileSize;
+            if (sg.start < lo) lo = sg.start;
+            if (sg.start + sg.memSize > hi) hi = sg.start + sg.memSize;
         }
-        if (maxX > c->bestX) {   // same winner rule as FindModuleText: largest PF_X segment
-            c->bestX = maxX;
-            c->out.lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
-            c->out.hi = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
+        if (maxX > bestX) {   // same winner rule as FindModuleText: largest exec segment
+            bestX = maxX;
+            out.lo = reinterpret_cast<const uint8_t*>(lo);
+            out.hi = reinterpret_cast<const uint8_t*>(hi);
         }
-        return 0;
-    }, &ctx);
-    return ctx.out;
+        return false;
+    });
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -3735,20 +3690,11 @@ struct S2VtableLayout {
     const char* pinKey;        // gamedata/core offsets entry holding the live slot count
 };
 
-// Executable mappings, read once per verification pass: /proc/self/maps is the kernel's own
-// answer, and this runs a handful of times at boot.
+// Executable mappings, read once per verification pass (Linux: /proc/self/maps, the kernel's own
+// answer; Windows: VirtualQuery). This runs a handful of times at boot.
 static std::vector<std::pair<uintptr_t, uintptr_t>> S2ExecRanges() {
     std::vector<std::pair<uintptr_t, uintptr_t>> out;
-    FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return out;
-    char line[4096];   // PATH_MAX: a longer line would split and its tail fail the parse below
-    while (fgets(line, sizeof line, f)) {
-        unsigned long long lo = 0, hi = 0;
-        char perms[5] = {};
-        if (sscanf(line, "%llx-%llx %4s", &lo, &hi, perms) == 3 && perms[2] == 'x')
-            out.emplace_back(static_cast<uintptr_t>(lo), static_cast<uintptr_t>(hi));
-    }
-    fclose(f);
+    s2plat::ExecutableRanges([&](s2plat::Range r) { out.emplace_back(r.lo, r.hi); });
     return out;
 }
 
@@ -3857,15 +3803,15 @@ enum S2HookGroup {
 };
 struct S2HookGroupSpec { S2VtableLayout layout; S2HookSlot first, last; };
 static const S2HookGroupSpec kHookGroups[kHG_Count] = {
-    { { "ISource2Server",        "libserver.so",  "ISource2Server_vtableSize" },        kHS_GameFrame,            kHS_GameFrame },
-    { { "ISource2ServerConfig",  "libserver.so",  "ISource2ServerConfig_vtableSize" },  kHS_ServerConfigShutdown, kHS_ServerConfigPreShutdown },
-    { { "ISource2GameClients",   "libserver.so",  "ISource2GameClients_vtableSize" },   kHS_OnClientConnected,    kHS_ClientVoice },
-    { { "ISource2GameEntities",  "libserver.so",  "ISource2GameEntities_vtableSize" },  kHS_CheckTransmit,        kHS_CheckTransmit },
-    { { "IGameEventManager2",    "libserver.so",  "IGameEventManager2_vtableSize" },    kHS_FireEvent,            kHS_FireEvent },
-    { { "IGameEventSystem",      "libengine2.so", "IGameEventSystem_vtableSize" },      kHS_PostEventAbstract,    kHS_PostEventAbstract },
-    { { "INetworkServerService", "libengine2.so", "INetworkServerService_vtableSize" }, kHS_StartupServer,        kHS_StartupServer },
-    { { "ICvar",                 "libtier0.so",   "ICvar_vtableSize" },                 kHS_DispatchConCommand,   kHS_DispatchConCommand },
-    { { "IVEngineServer2",       "libengine2.so", "IVEngineServer2_vtableSize" },       kHS_SetClientListening,   kHS_SetClientListening },
+    { { "ISource2Server",        S2_MODULE("server"),  "ISource2Server_vtableSize" },        kHS_GameFrame,            kHS_GameFrame },
+    { { "ISource2ServerConfig",  S2_MODULE("server"),  "ISource2ServerConfig_vtableSize" },  kHS_ServerConfigShutdown, kHS_ServerConfigPreShutdown },
+    { { "ISource2GameClients",   S2_MODULE("server"),  "ISource2GameClients_vtableSize" },   kHS_OnClientConnected,    kHS_ClientVoice },
+    { { "ISource2GameEntities",  S2_MODULE("server"),  "ISource2GameEntities_vtableSize" },  kHS_CheckTransmit,        kHS_CheckTransmit },
+    { { "IGameEventManager2",    S2_MODULE("server"),  "IGameEventManager2_vtableSize" },    kHS_FireEvent,            kHS_FireEvent },
+    { { "IGameEventSystem",      S2_MODULE("engine2"), "IGameEventSystem_vtableSize" },      kHS_PostEventAbstract,    kHS_PostEventAbstract },
+    { { "INetworkServerService", S2_MODULE("engine2"), "INetworkServerService_vtableSize" }, kHS_StartupServer,        kHS_StartupServer },
+    { { "ICvar",                 S2_MODULE("tier0"),   "ICvar_vtableSize" },                 kHS_DispatchConCommand,   kHS_DispatchConCommand },
+    { { "IVEngineServer2",       S2_MODULE("engine2"), "IVEngineServer2_vtableSize" },       kHS_SetClientListening,   kHS_SetClientListening },
 };
 
 static bool S2_ResolveHookSlots(S2HookGroup g, const void* obj) {
@@ -3897,7 +3843,7 @@ static INetChannelInfo* S2NetChanCalls(int slot) {
     INetChannelInfo* nci = S2Engine_GetPlayerNetInfo(slot);
     if (!nci) return nullptr;
     if (s_netChanLayout == 0) {
-        static const S2VtableLayout kLayout = { "INetChannelInfo", "libnetworksystem.so",
+        static const S2VtableLayout kLayout = { "INetChannelInfo", S2_MODULE("networksystem"),
                                                 "INetChannelInfo_vtableSize" };
         s_netChanLayout = S2_VerifyVtableSlots(kLayout, nci, nullptr, 0, nullptr) ? 1 : -1;
         if (s_netChanLayout < 0)
@@ -3964,7 +3910,7 @@ static void GamedataBanner() {
     if (s_gdModDir.empty())
         META_CONPRINTF("[s2script] === GAMEDATA FAIL: mod directory UNDETECTED — every "
                        "\"game\"-conditioned gamedata file was skipped (unexpected addon layout; "
-                       "expected <game>/csgo/addons/s2script/bin/linuxsteamrt64/) ===\n");
+                       "expected <game>/<mod>/addons/s2script/bin/%s/) ===\n", s2plat::PlatformKey());
     for (const auto& o : GamedataOwners())
         if (!o.cfg->overridden.empty())
             META_CONPRINTF("[s2script] === %zu ENTRY/ENTRIES FROM gamedata/%s/custom/ — "
@@ -4036,7 +3982,7 @@ static bool IsAddressInServerText(void* fn) {
     // loaded module via dl_iterate_phdr on every call.
     static const uint8_t* s_text = nullptr;
     static size_t          s_textSize = 0;
-    if (!s_text) { ModText mt = FindModuleText("libserver.so"); s_text = mt.text; s_textSize = mt.size; }
+    if (!s_text) { ModText mt = FindModuleText(S2_MODULE("server")); s_text = mt.text; s_textSize = mt.size; }
     const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
     return s_text && f >= s_text && f < s_text + s_textSize;
 }
@@ -4084,6 +4030,30 @@ static bool IsAddressInServerText(void* fn) {
 // `adj` is the this-adjustment (nonzero only under multiple inheritance). Reading it is how we turn
 // the header's declaration order into the number the call site would actually use, without
 // hand-counting slots (a virtual destructor alone occupies TWO of them).
+//
+// The Microsoft ABI has no such encoding: a pointer to a virtual member is the address of a
+// "vcall" thunk that loads the vptr from `this` (rcx) and jumps through the slot,
+//     48 8B 01         mov rax, [rcx]
+//     FF 60 xx         jmp [rax + disp8]        or   FF A0 xx xx xx xx   jmp [rax + disp32]
+// so on Windows the slot is decoded from the thunk's displacement, and anything else (a direct
+// function address, an adjusting thunk) answers -1 exactly as a non-virtual does under Itanium.
+#ifdef _WIN32
+template <typename Pmf>
+static int VTableSlotOfPmf(Pmf pmf) {
+    static_assert(sizeof(Pmf) == sizeof(void*), "unexpected pointer-to-member-function layout");
+    const uint8_t* code = nullptr;
+    std::memcpy(&code, &pmf, sizeof(code));
+    if (!code) return -1;
+    if (code[0] == 0xE9) code += 5 + *reinterpret_cast<const int32_t*>(code + 1);   // incremental-link jmp
+    if (code[0] != 0x48 || code[1] != 0x8B || code[2] != 0x01 || code[3] != 0xFF) return -1;
+    int64_t byteOff = -1;
+    if (code[4] == 0x60) byteOff = code[5];
+    else if (code[4] == 0xA0) byteOff = *reinterpret_cast<const int32_t*>(code + 5);
+    else if (code[4] == 0x20) byteOff = 0;                       // jmp [rax]
+    if (byteOff < 0 || byteOff % static_cast<int64_t>(sizeof(void*)) != 0) return -1;
+    return static_cast<int>(byteOff / static_cast<int64_t>(sizeof(void*)));
+}
+#else
 template <typename Pmf>
 static int VTableSlotOfPmf(Pmf pmf) {
     struct ItaniumPmf { uintptr_t ptr; intptr_t adj; };
@@ -4096,6 +4066,7 @@ static int VTableSlotOfPmf(Pmf pmf) {
     if (byteOff % sizeof(void*) != 0) return -1;
     return static_cast<int>(byteOff / sizeof(void*));
 }
+#endif
 
 static void ArmDeferredEventDuplication() {
     s_deferEventOk   = false;
@@ -4108,7 +4079,7 @@ static void ArmDeferredEventDuplication() {
     const int idxFree = VTableSlotOfPmf(&IGameEventManager2::FreeEvent);
     // The manager's vptr must itself land inside libserver.so's mapping (a vtable lives in
     // .data.rel.ro, NOT .text) and the two slots must be fully inside it, before we read either.
-    ModBounds mb = FindModuleBounds("libserver.so");
+    ModBounds mb = FindModuleBounds(S2_MODULE("server"));
     void** vt = *reinterpret_cast<void***>(s_pGameEventManager);
     const uint8_t* vtb = reinterpret_cast<const uint8_t*>(vt);
     const char* why = nullptr;
@@ -4134,17 +4105,11 @@ static void ArmDeferredEventDuplication() {
     }
 }
 
-// Fault-free "is this address readable" probe: mincore() reports ENOMEM iff the range is unmapped,
-// so it answers the question without a signal handler and without a /proc/self/maps walk. The
-// caller has already required 8-alignment, and a page size is a multiple of 8, so the one aligned
-// word read below cannot straddle into an unprobed page.
-static bool IsPointerReadable(const void* p) {
-    const long pageSize = sysconf(_SC_PAGESIZE);
-    if (pageSize <= 0) return false;
-    const uintptr_t page = reinterpret_cast<uintptr_t>(p) & ~static_cast<uintptr_t>(pageSize - 1);
-    unsigned char vec = 0;
-    return mincore(reinterpret_cast<void*>(page), static_cast<size_t>(pageSize), &vec) == 0;
-}
+// Fault-free "is this address readable" probe (Linux: mincore, which reports ENOMEM iff the range
+// is unmapped; Windows: VirtualQuery), so it answers without a signal handler. The caller has already
+// required 8-alignment, and a page size is a multiple of 8, so the one aligned word read below
+// cannot straddle into an unprobed page.
+static bool IsPointerReadable(const void* p) { return s2plat::IsReadable(p); }
 
 // Stage 2 of the DuplicateEvent validation: does the slot we resolved BEHAVE like DuplicateEvent?
 // Returns nullptr on success, else the named reason.
@@ -4575,18 +4540,17 @@ static PrecacheAddResourceFn_t s_pPrecacheAddResource = nullptr;
 // rejected every add (observed live: slot0=0x7fd0c059ec40, inText=0) and the call never ran.
 static bool IsAddressInAnyModuleText(void* fn) {
     if (!fn) return false;
-    struct Ctx { const uint8_t* p; bool hit; } ctx{ reinterpret_cast<const uint8_t*>(fn), false };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X)) continue;
-            const uint8_t* lo = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-            if (c->p >= lo && c->p < lo + ph.p_memsz) { c->hit = true; return 1; }  // stop scanning
+    const auto p = reinterpret_cast<uintptr_t>(fn);
+    bool hit = false;
+    s2plat::ForEachModule([&](const s2plat::ModuleView& m) {
+        for (int i = 0; i < m.count; i++) {
+            const s2plat::Segment& sg = m.segs[i];
+            if (!sg.exec) continue;
+            if (p >= sg.start && p < sg.start + sg.memSize) { hit = true; return true; }  // stop scanning
         }
-        return 0;
-    }, &ctx);
-    return ctx.hit;
+        return false;
+    });
+    return hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -4647,7 +4611,7 @@ static int s2_session_manifest_add(const char* path) {
 static bool InstallGameSystem(int64_t smpFirstOffset) {
     if (s_pGameSystemFactory) return true;
     if (smpFirstOffset == s2sig::kFail) return false;
-    ModText mt = FindModuleText("libserver.so");
+    ModText mt = FindModuleText(S2_MODULE("server"));
     if (!mt.text) return false;
     CBaseGameSystemFactory::sm_pFirst =
         reinterpret_cast<CBaseGameSystemFactory**>(const_cast<uint8_t*>(mt.text) + smpFirstOffset);
@@ -4712,7 +4676,7 @@ static int s2_precache_entity_add(const char* classname) {
     if (!es) return 0;
     if (!s_manifestBuilderVerifyTried) {
         s_manifestBuilderVerifyTried = true;
-        const S2VtableLayout layout = { "IEntityResourceManifestBuilder", "libserver.so",
+        const S2VtableLayout layout = { "IEntityResourceManifestBuilder", S2_MODULE("server"),
                                         "IEntityResourceManifestBuilder_vtableSize" };
         S2_VerifyVtableSlots(layout, es, kManifestBuilderKeys, kMB_Count, s_manifestBuilderSlot);
     }
@@ -4737,7 +4701,7 @@ static void InstallPrecacheHook() {
     if (s_precacheVtblIdx < 0) return;   // the offsets-block GamedataResult already recorded the absent key
     s2resolve::VirtualSlotResolution resolved;
     std::string reason;
-    if (!s2resolve::ResolveVirtualSlot("libserver.so","CGameRulesGameSystem",
+    if (!s2resolve::ResolveVirtualSlot(S2_MODULE("server"),"CGameRulesGameSystem",
                                       s_precacheVtblIdx,resolved,reason)) {
         META_CONPRINTF("[s2script] WARN: precache structural virtual lookup failed (%s); onPrecache OFF\n",
                        reason.c_str());
@@ -4836,7 +4800,7 @@ static void InstallCvarResponseHook() {
     if (s_cvarResponseVtblIdx < 0 || s_clientSlotOffset < 0) return;   // the offsets block recorded the absent key
     s2resolve::VirtualSlotResolution resolved;
     std::string reason;
-    if (!s2resolve::ResolveVirtualSlot("libengine2.so","CServerSideClient",
+    if (!s2resolve::ResolveVirtualSlot(S2_MODULE("engine2"),"CServerSideClient",
                                       s_cvarResponseVtblIdx,resolved,reason)) {
         META_CONPRINTF("[s2script] WARN: cvar-response structural virtual lookup failed (%s); queryConVar OFF\n",
                        reason.c_str());
@@ -4866,7 +4830,7 @@ static void InstallAddonHooks(ISmmAPI* ismm) {
         int ret = 0;
         auto* fs = fsFactory ? reinterpret_cast<IFileSystem*>(fsFactory(ver, &ret)) : nullptr;
         if (fs && ret == 0) {
-            static const S2VtableLayout kLayout = { "IFileSystem", "libfilesystem_stdio.so", "IFileSystem_vtableSize" };
+            static const S2VtableLayout kLayout = { "IFileSystem", S2_MODULE("filesystem_stdio"), "IFileSystem_vtableSize" };
             if (S2_VerifyVtableSlots(kLayout, fs, nullptr, 0, nullptr)) eng.fs = fs;
         } else {
             META_CONPRINTF("[s2script] WARN: interface MISSING: FileSystem (%s) — addon mounting off\n", ver);
@@ -4898,7 +4862,7 @@ static void InstallAddonHooks(ISmmAPI* ismm) {
     const int sendIdx = pick("CServerSideClient_SendNetMessage");
     if (sendIdx >= 0) {
         std::string reason;
-        if (!s2resolve::ResolveVirtualSlot("libengine2.so", "CServerSideClient", sendIdx, eng.sendNetMessage, reason)) {
+        if (!s2resolve::ResolveVirtualSlot(S2_MODULE("engine2"), "CServerSideClient", sendIdx, eng.sendNetMessage, reason)) {
             eng.sendNetMessage = {};
             META_CONPRINTF("[s2script] WARN: CServerSideClient::SendNetMessage structural lookup failed (%s)\n",
                            reason.c_str());
@@ -5233,7 +5197,7 @@ static void S2_ResolveSoundEventManager(void* soundOpSystem) {
     }
     GamedataResult(key, true, nullptr);
     void* mgr = reinterpret_cast<void*>(base + off);
-    const S2VtableLayout layout = { "ISoundEventManager", "libsoundsystem.so", "ISoundEventManager_vtableSize" };
+    const S2VtableLayout layout = { "ISoundEventManager", S2_MODULE("soundsystem"), "ISoundEventManager_vtableSize" };
     if (S2_VerifyVtableSlots(layout, mgr, kSoundEventSlotKeys, kSES_Count, s_soundEventSlot))
         s_pSoundEventManager = mgr;
 }
@@ -5310,7 +5274,7 @@ static void* StringTableById(int id) {
     void* vt = *reinterpret_cast<void**>(t);
     if (!s_stringTableVerifyTried) {
         s_stringTableVerifyTried = true;
-        const S2VtableLayout layout = { "INetworkStringTable", "libengine2.so", "INetworkStringTable_vtableSize" };
+        const S2VtableLayout layout = { "INetworkStringTable", S2_MODULE("engine2"), "INetworkStringTable_vtableSize" };
         if (S2_VerifyVtableSlots(layout, t, kStringTableKeys, kST_Count, s_stringTableSlot)) {
             bool all = true;
             for (int i = 0; i < kST_Count; i++) all = all && s_stringTableSlot[i] >= 0;
@@ -5787,6 +5751,15 @@ static int S2NamedInputOp(CEntityIdentity* identity, void* input, CEntityInstanc
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     PLUGIN_SAVEVARS();  // sets KHook::__exported__khook from ismm->GetDetourInterface — required by Virtual::Add
+    {
+        // Windows: bind the delay-loaded core to the copy next to this DLL before the first core
+        // call (a no-op on Linux, where the $ORIGIN rpath finds it).
+        std::string preloadError;
+        if (!s2plat::PreloadSibling(S2_CORE_LIBRARY_FILE, preloadError)) {
+            snprintf(error, maxlen, "s2script: cannot load core: %s", preloadError.c_str());
+            return false;
+        }
+    }
     S2Shutdown_ResetLoad();
     g_lifecycleInstallAttempted = false;
     g_preShutdownHookInstalled = false;
@@ -5891,7 +5864,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     };
 
     for (const auto& o : kGamedataOwners) {
-        *o.cfg = LoadGameConfig(gdRoot, o.name, "source2", modDir, "linuxsteamrt64", *o.error);
+        *o.cfg = LoadGameConfig(gdRoot, o.name, "source2", modDir, s2plat::PlatformKey(), *o.error);
         reportOwner(o.name, *o.cfg, *o.error);
     }
 
@@ -6141,7 +6114,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 // held FindNetworkGroup, whose -1 crashed the first user-message subscribe. Check the
                 // live CNetworkMessages vtable against its pin and degrade (chat print, user messages,
                 // client cvar queries) instead of calling into a layout this build was not made for.
-                static const S2VtableLayout kLayout = { "INetworkMessages", "libnetworksystem.so",
+                static const S2VtableLayout kLayout = { "INetworkMessages", S2_MODULE("networksystem"),
                                                         "INetworkMessages_vtableSize" };
                 if (!S2_VerifyVtableSlots(kLayout, s_pNetworkMessages, nullptr, 0, nullptr)) {
                     s_pNetworkMessages = nullptr;
@@ -6177,7 +6150,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             void* container = engineFactory ? engineFactory(verStr, &ret) : nullptr;
             if (container && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: NetworkStringTableServer (%s)\n", verStr);
-                const S2VtableLayout layout = { "INetworkStringTableContainer", "libengine2.so",
+                const S2VtableLayout layout = { "INetworkStringTableContainer", S2_MODULE("engine2"),
                                                 "INetworkStringTableContainer_vtableSize" };
                 if (S2_VerifyVtableSlots(layout, container, kStringTableContainerKeys, kSTC_Count,
                                          s_stringTableContainerSlot)
@@ -6793,7 +6766,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // is gamedata and validated below). Unresolved -> s_pTraceShape stays null -> the
         // trace_shape op degrades to a no-op (never a crash).
         {
-            void** vt = s2vtable::GetVTableByName("libserver.so", "CNavPhysicsInterface");
+            void** vt = s2vtable::GetVTableByName(S2_MODULE("server"), "CNavPhysicsInterface");
             if (!vt) {
                 GamedataResult("CNavPhysicsInterface (RTTI vtable)", false,
                                "RTTI typeinfo/vtable not found in libserver.so — regenerate");
@@ -6808,7 +6781,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     // Validate the resolved slot lands inside libserver.so's own executable range
                     // (Rule 2 parity with ResolveSigValidated) — a borrowed/stale index could point
                     // anywhere; a wrong-but-in-range value would otherwise crash on first call.
-                    ModText svt = FindModuleText("libserver.so");
+                    ModText svt = FindModuleText(S2_MODULE("server"));
                     const uint8_t* f = reinterpret_cast<const uint8_t*>(fn);
                     if (fn && svt.text && f >= svt.text && f < svt.text + svt.size) {
                         s_pTraceShape = reinterpret_cast<s2trace::TraceShapeFn>(fn);
@@ -6916,7 +6889,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // No public package or legacy owner appears until the single core commit succeeds.
     {
         const uint64_t handle = s2script_core_select_game_package(AddonRoot().c_str(),
-            "source2", modDir.c_str(), "linuxsteamrt64");
+            "source2", modDir.c_str(), s2plat::PlatformKey());
         struct AbortSelection {
             uint64_t handle;
             ~AbortSelection() { if (handle) s2script_core_abort_game_package(handle); }
@@ -6930,7 +6903,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 auto info = nlohmann::json::parse(metadata);
                 const std::string owner = info.at("gamedataOwner").get<std::string>();
                 GameConfig candidate = LoadGameConfigFromBundle(bundle, owner, gdRoot,
-                    "source2", modDir, "linuxsteamrt64", info.at("gamedataSha256").get<std::string>(), s_gdErrorGame);
+                    "source2", modDir, s2plat::PlatformKey(), info.at("gamedataSha256").get<std::string>(), s_gdErrorGame);
                 reportOwner(owner.c_str(), candidate, s_gdErrorGame);
                 if (!candidate.filesFailed.empty())
                     throw std::runtime_error("selected shipped bundle failed: " + s_gdErrorGame);
@@ -7041,7 +7014,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                        s2script_core_crash_breadcrumb_size())) {
             META_CONPRINTF("[s2script] crash handler armed (spool %s)\n", spool.c_str());
         } else {
-            META_CONPRINTF("[s2script] WARN: crash handler NOT armed (spool dir unavailable)\n");
+            const char* why = S2CrashUnavailableReason();
+            META_CONPRINTF("[s2script] WARN: crash handler NOT armed (%s)\n",
+                           why ? why : "spool dir unavailable");
         }
     }
 
@@ -7855,8 +7830,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_CheckTransmit(ISource2GameEntities* ent
     const int setTransmitActive = s2script_core_sdkhook_settransmit_active();
     if (s_transmitTable.empty() && !setTransmitActive) return S2_Ignore();
 
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    const auto t0 = std::chrono::steady_clock::now();
     // Entries outer, infos inner: serial-gate each entry ONCE per snapshot (a single lookup — no
     // TOCTOU window inside the snapshot), then apply to every client's bitvec. A failed resolve
     // means the entity is gone FOREVER (serials never come back), so the entry is evicted —
@@ -7915,9 +7889,8 @@ KHook::Return<void> S2ScriptPlugin::Hook_CheckTransmit(ISource2GameEntities* ent
             }
         }
     }
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull
-                + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+    const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - t0).count());
     s_transmitNsLast = ns;
     if (ns > s_transmitNsMax) s_transmitNsMax = ns;
     return S2_Ignore();

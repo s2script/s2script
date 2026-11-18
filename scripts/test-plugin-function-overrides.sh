@@ -10,5 +10,5 @@ if printf 'int main(){return 0;}' | ${CXX:-c++} -x c++ -fsanitize=address,undefi
 fi
 libs=()
 if [[ "$(uname -s)" == Linux ]]; then libs+=(-ldl); fi
-${CXX:-c++} "${flags[@]}" -I shim/src -isystem shim/third_party shim/src/plugin_function_overrides.cpp shim/tests/plugin_function_overrides_test.cpp ${libs[@]+"${libs[@]}"} -o "$build_dir/test"
+${CXX:-c++} "${flags[@]}" -I shim/src -isystem shim/third_party shim/src/plugin_function_overrides.cpp shim/src/platform_posix.cpp shim/tests/plugin_function_overrides_test.cpp ${libs[@]+"${libs[@]}"} -o "$build_dir/test"
 "$build_dir/test"

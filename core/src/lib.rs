@@ -27,6 +27,13 @@
 /// which stays 0.0.0.
 pub const VERSION: &str = env!("S2SCRIPT_VERSION");
 
+/// The gamedata platform key of the build target: the nested key every gamedata entry is read under,
+/// and the platform a game package's per-platform gamedata is selected for.
+#[cfg(windows)]
+pub(crate) const GAMEDATA_PLATFORM: &str = "win64";
+#[cfg(not(windows))]
+pub(crate) const GAMEDATA_PLATFORM: &str = "linuxsteamrt64";
+
 mod engine_functions;
 mod game_packages;
 mod async_limits;

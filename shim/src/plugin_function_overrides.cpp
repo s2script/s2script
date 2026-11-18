@@ -6,16 +6,28 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
-#include <dirent.h>
-#include <dlfcn.h>
-#include <fcntl.h>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <vector>
+#include "platform.h"
+#ifndef _WIN32
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <vector>
+#endif
 namespace s2::function_overrides {
+#ifdef _WIN32
+// The snapshot below walks the override directory with openat/O_NOFOLLOW so a symlink can never
+// lead it outside the addon. Windows needs its own handle-relative walk (reparse points instead of
+// symlinks); until then plugin function overrides are off there, with a reason every caller logs.
+std::string Snapshot(const std::string&, const std::string&) {
+    using nlohmann::json;
+    return json{{"records", json::array()},
+                {"error", "plugin function overrides are not yet ported to Windows"}}.dump();
+}
+#else
 namespace {
 using nlohmann::json;
 struct Fd {
@@ -154,18 +166,18 @@ std::string Snapshot(const std::string& addonRoot, const std::string& id) {
         return json{{"records", json::array()}, {"error", e.what()}}.dump();
     }
 }
+#endif  // _WIN32
 } // namespace s2::function_overrides
 
 const char* s2_plugin_function_overrides(const char* id) {
     static thread_local std::string result;
     try {
-        Dl_info info{};
-        if (!id || !dladdr(reinterpret_cast<void*>(&s2_plugin_function_overrides), &info) || !info.dli_fname) {
+        // The shim is addons/s2script/bin/<platform>/s2script.(so|dll).
+        const std::string root = id ? s2plat::AddonRoot() : std::string();
+        if (root.empty()) {
             result = R"({"records":[],"error":"addon root discovery failed"})";
         } else {
-            // The shim is addons/s2script/bin/linuxsteamrt64/s2script.so.
-            auto root = std::filesystem::path(info.dli_fname).parent_path().parent_path().parent_path();
-            result = s2::function_overrides::Snapshot(root.string(), id);
+            result = s2::function_overrides::Snapshot(root, id);
         }
         return result.c_str();
     } catch (...) {

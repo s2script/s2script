@@ -4,8 +4,15 @@
 #include <limits>
 #include <memory>
 #include <new>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 #ifdef __linux__
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -172,6 +179,15 @@ static std::size_t SelfRead(void*, std::uintptr_t source, void* destination, std
     auto count = syscall(SYS_process_vm_readv, getpid(), &local, 1UL, &remote, 1UL, 0UL);
     return count > 0 ? static_cast<std::size_t>(count) : 0;
 }
+#elif defined(_WIN32)
+// ReadProcessMemory on our own process is the Windows fault-free copy: an unmapped or guarded
+// source page fails the call (ERROR_PARTIAL_COPY reports how much did copy) instead of faulting.
+static std::size_t SelfRead(void*, std::uintptr_t source, void* destination, std::size_t size) {
+    if (!Range(source, size)) return 0;
+    SIZE_T count = 0;
+    ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(source), destination, size, &count);
+    return static_cast<std::size_t>(count);
+}
 #endif
 Reader SystemReader() {
     static const Reader reader = [] {
@@ -179,6 +195,10 @@ Reader SystemReader() {
         auto page = sysconf(_SC_PAGESIZE); std::uint8_t source = 0x53, output = 0;
         if (page > 0 && SelfRead(nullptr, reinterpret_cast<std::uintptr_t>(&source), &output, 1) == 1 && output == source)
             return Reader{SelfRead, nullptr, static_cast<std::size_t>(page), true};
+#elif defined(_WIN32)
+        SYSTEM_INFO info; GetSystemInfo(&info); std::uint8_t source = 0x53, output = 0;
+        if (info.dwPageSize > 0 && SelfRead(nullptr, reinterpret_cast<std::uintptr_t>(&source), &output, 1) == 1 && output == source)
+            return Reader{SelfRead, nullptr, static_cast<std::size_t>(info.dwPageSize), true};
 #endif
         return Reader{}; // No direct-memory, /proc, or signal-handler fallback.
     }();
@@ -282,8 +302,13 @@ bool Equal(const Slot& entry, const Snapshot& s, std::uint64_t hash, const std::
 }
 } // namespace
 Arena::Arena() {
+#ifdef _WIN32
+    void* memory = VirtualAlloc(nullptr, MappingBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!memory) return;
+#else
     auto* memory = mmap(nullptr, MappingBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED) return;
+#endif
     mapping_ = memory; new (memory) Metadata;
     // Deliberately no destructor/munmap/reset. The existing shim is resident;
     // service reinitialization, maps and script generations reuse this instance.

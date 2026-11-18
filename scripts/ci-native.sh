@@ -20,7 +20,7 @@ if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-SHARDS=(rust fixtures engine-function runtime)
+SHARDS=(rust fixtures engine-function runtime windows)
 if [[ "${1:-}" == --list ]]; then
   printf '['; sep=''; for s in "${SHARDS[@]}"; do printf '%s"%s"' "$sep" "$s"; sep=','; done; printf ']\n'
   exit 0
@@ -313,6 +313,17 @@ shard_runtime() {
   echo "== build-khook-runtime.py (native consumers and stamped fixture) =="
   python3 scripts/build-khook-runtime.py
 
+}
+
+# --- windows: cross-build core + shim for Windows x64 (clang-cl, xwin CRT), import checks, package ---
+shard_windows() {
+  # Build-only until a Windows server runs in CI: proves every TU compiles and links for win64,
+  # that neither DLL needs a redistributable, and that the win64 addon layout packages.
+  echo "== build-windows.sh (core + shim cross-build, import checks, win64 package) =="
+  bash scripts/build-windows.sh
+  test -f dist/addons/s2script/bin/win64/s2script.dll
+  test -f dist/addons/s2script/bin/win64/s2script_core.dll
+  grep -q 'bin/win64/s2script"' dist/addons/metamod/s2script.vdf
 }
 
 for shard in "${selected[@]}"; do

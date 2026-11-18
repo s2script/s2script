@@ -13,3 +13,8 @@
 # parallel-safe (e.g. by making those buffers `thread_local!`), this can be removed.
 [env]
 RUST_TEST_THREADS = "1"
+
+# Windows: link the MSVC CRT statically, so s2script_core.dll needs no VCRUNTIME140 on the server
+# (the shim is /MT for the same reason; see shim/cmake/Windows.cmake).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

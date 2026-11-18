@@ -47,9 +47,9 @@ pub(crate) fn is_reserved_owner(id: &str) -> bool {
     id.starts_with(RESERVED_OWNER_PREFIX)
 }
 
-/// The platform id whose nested details the runtime consumes (spec §5, Global Constraints). Exactly
-/// one platform ships today; the key stays explicit so a second one is additive.
-const PLATFORM: &str = "linuxsteamrt64";
+/// The platform id whose nested details the runtime consumes (spec §5, Global Constraints): the
+/// gamedata key of the platform this core was built for.
+const PLATFORM: &str = crate::GAMEDATA_PLATFORM;
 
 /// Per-GP-slot arg kind bytes. MUST match `engine_calls.cpp`'s `kArg*` enum — this is an ABI, not a
 /// convention.
