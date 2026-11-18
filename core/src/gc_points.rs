@@ -59,7 +59,7 @@ fn collect(why: &str) {
     };
     let mb = |b: usize| b as f64 / 1048576.0;
     crate::v8host::log_warn(&format!(
-        "[s2script] garbage collected {why}: {:.1} ms, heap {:.1} MB -> {:.1} MB",
+        "garbage collected {why}: {:.1} ms, heap {:.1} MB -> {:.1} MB",
         t.elapsed().as_secs_f64() * 1000.0,
         mb(before),
         mb(after)

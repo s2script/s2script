@@ -34,7 +34,7 @@ sm prof stop
 
 `sm prof` only sees frames while it records. The runtime also keeps a cheap account of every frame
 that never stops: each call from the engine into s2script is timed (two clock reads), and so is each
-V8 garbage collection. When s2script's share of one frame reaches the threshold (4 ms by default),
+V8 garbage collection. When s2script's share of one frame reaches the threshold (8 ms by default, half a 64-tick frame),
 the server log gets one line saying where that time went:
 
 ```
@@ -44,8 +44,9 @@ the server log gets one line saying where that time went:
 The parts are the kinds of entry from the engine (`OnGameFrame pre`/`post`, timers and async
 results, game events, usercmd hooks, entity and engine hooks, entity lifecycle, commands and chat,
 client events, the plugin loader). A collection is charged to the part it interrupted, and the GC
-total says how much of the frame it was. At most one line a second is printed; the rest are counted
-in the next line. A slow server frame with no such line was not s2script's: look at the engine, the
+total says how much of the frame it was. The first slow frame is printed at once. After that, at
+most one line a minute is printed: it describes the longest slow frame of that minute and says how
+many there were (`[the longest of 12 slow frame(s) in the last 60 s]`). A slow server frame with no such line was not s2script's: look at the engine, the
 map or the host.
 
 | Command | What it does |
