@@ -269,6 +269,24 @@ mod tests {
         shutdown();
     }
 
+    /// A reload is unload + load under the SAME plugin id. The new generation must get its
+    /// single-owner region back from its OnPluginStart, with no release in the old generation.
+    #[test]
+    fn native_reload_reclaims_a_single_owner_region() {
+        init(dummy_logger()).unwrap();
+        let body = r#" globalThis.__idx = __s2_ui_pool_claim("gamekit:rail", 1); "#;
+        load_body("pool_reload", body, "{}");
+        assert_eq!(eval_in_context_string("pool_reload", "String(globalThis.__idx)"), "0");
+        load_body("pool_other", r#" globalThis.__idx = __s2_ui_pool_claim("gamekit:rail", 1); "#, "{}");
+        assert_eq!(eval_in_context_string("pool_other", "String(globalThis.__idx)"), "-1",
+            "a second plugin cannot take a held region");
+        unload_plugin("pool_reload");
+        load_body("pool_reload", body, "{}");
+        assert_eq!(eval_in_context_string("pool_reload", "String(globalThis.__idx)"), "0",
+            "the reloaded generation must reclaim the region its previous generation held");
+        shutdown();
+    }
+
     #[test]
     fn released_panels_are_not_reassigned_during_the_same_dispatch() {
         init(dummy_logger()).unwrap();

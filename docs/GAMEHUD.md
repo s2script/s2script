@@ -45,7 +45,10 @@ for example), the kill-feed row, toast, summary, vote, drawer, sheet, prompt and
 player in chat instead. A refused prompt or vote then accepts a typed number.
 
 **Claims.** A claimed surface is held host-side and freed when the plugin unloads, even if the
-plugin's own cleanup never runs. A second plugin asking for a held surface gets `null`.
+plugin's own cleanup never runs. A second plugin asking for a held surface gets `null`. A plugin
+that is reloaded mid-map gets its surfaces back from `OnPluginStart`: the world is already live, so
+claims and paints made there land at once, and a new claim clears what the previous generation left
+on screen.
 
 ## Weapon card
 
@@ -140,3 +143,6 @@ mounted, from a real client (bots have no HUD). Each line is pass or fail; note 
     and comes back on respawn. `sm_gk_weapon off`: the stock HUD returns.
 11. **Unload.** `sm plugins unload @example/cookbook` while a vote, sheet, rail and weapon card are up: everything hides
     and a second plugin can claim the rail.
+12. **Reload.** With the rail, status card and weapon card up, `sm plugins reload @example/cookbook`: all three
+    come straight back with fresh content (no `world not ready` line in the log), and nothing the old
+    generation painted is left behind.
