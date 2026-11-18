@@ -10,17 +10,23 @@
   var states = {};
   var hookId = null;   // the usercmd subscription while any slot is armed
 
+  function stale(s) { return !!(s.client && !s.client.isValid()); }
+
   function state(slot) {
     var s = states[slot];
-    if (!s || (s.client && !s.client.isValid())) {
+    if (!s || stale(s)) {
+      var wasArmed = !!(s && s.armed);
       s = { client: Clients && Clients.fromSlot(slot), armed: false, active: false, held: false, swallowHold: false, onActivate: null };
       states[slot] = s;
+      // The seat changed hands: the old player's arm is gone, and it may have been the last one.
+      if (wasArmed) releaseHook();
     }
     return s;
   }
 
+  /** An arm counts only while its player is still the one in the seat. */
   function anyArmed() {
-    for (var k in states) if (Object.prototype.hasOwnProperty.call(states, k) && states[k].armed) return true;
+    for (var k in states) if (Object.prototype.hasOwnProperty.call(states, k) && states[k].armed && !stale(states[k])) return true;
     return false;
   }
 
@@ -93,7 +99,9 @@
 
   if (Clients && typeof Clients.onDisconnect === "function") {
     Clients.onDisconnect(function (c) {
-      if (c && typeof c.slot === "number" && !Clients.fromSlot(c.slot)) { delete states[c.slot]; releaseHook(); }
+      if (c && typeof c.slot === "number" && !Clients.fromSlot(c.slot)) delete states[c.slot];
+      // Also when a replacement already holds the seat: the leaving player's arm no longer counts.
+      releaseHook();
     });
   }
 
