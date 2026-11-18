@@ -9,10 +9,17 @@ const source = readFileSync(join(__dirname, "hudinput.js"), "utf8");
 function mount() {
   const handlers = [];
   let disconnect = null;
+  let nextId = 1;
   const clients = new Map();
   globalThis.__s2pkg_usercmd = {
     UserCmd: {
-      onRun(fn) { handlers.push(fn); }
+      onRun(fn) { fn.id = nextId++; handlers.push(fn); return fn.id; }
+    }
+  };
+  globalThis.__s2_scope_dispose = (ids) => {
+    for (const id of ids) {
+      const i = handlers.findIndex((h) => h.id === id);
+      if (i >= 0) handlers.splice(i, 1);
     }
   };
   globalThis.__s2pkg_clients = {
@@ -31,13 +38,14 @@ function mount() {
     clients,
     run(slot, buttons) {
       const cmd = { buttons };
-      handlers[0](cmd, { slot });
+      if (handlers[0]) handlers[0](cmd, { slot });
       return cmd;
     }
   };
 }
 
 test.afterEach(() => {
+  delete globalThis.__s2_scope_dispose;
   delete globalThis.__s2pkg_usercmd;
   delete globalThis.__s2pkg_clients;
   delete globalThis.__s2pkg_cs2;
@@ -137,4 +145,46 @@ test("slot reuse drops an old Tab callback before the disconnect replay", () => 
   mounted.clients.set(4, { isValid: () => true });
   assert.equal(mounted.run(4, IN_SCORE).buttons, IN_SCORE);
   assert.equal(activated, 0);
+});
+
+test("the usercmd hook is held only while a slot is armed", () => {
+  const mounted = mount();
+  mounted.HudInput.arm(1, { onActivate() {} });
+  mounted.HudInput.arm(2, { onActivate() {} });
+  assert.equal(mounted.handlers.length, 1, "one subscription for every armed slot");
+  mounted.HudInput.disarm(1);
+  assert.equal(mounted.handlers.length, 1, "slot 2 is still armed");
+  mounted.HudInput.disarm(2);
+  assert.equal(mounted.handlers.length, 0, "nothing armed: no per-command JS");
+  mounted.HudInput.arm(3, { onActivate() {} });
+  assert.equal(mounted.handlers.length, 1, "arming again subscribes again");
+});
+
+test("disarming from inside onActivate drops the hook after that command", () => {
+  const mounted = mount();
+  let activations = 0;
+  mounted.HudInput.arm(1, { onActivate() { activations++; mounted.HudInput.disarm(1); } });
+  const cmd = mounted.run(1, IN_SCORE);
+  assert.equal(cmd.buttons, 0n, "the activating press is still swallowed");
+  assert.equal(activations, 1);
+  assert.equal(mounted.handlers.length, 0);
+});
+
+test("a slot armed again after the hook was dropped starts from Tab released", () => {
+  const mounted = mount();
+  mounted.HudInput.arm(1, { onActivate() {} });
+  mounted.run(1, IN_SCORE);           // held while armed
+  mounted.HudInput.disarm(1);         // hook dropped; the release is never seen
+  let activated = false;
+  mounted.HudInput.arm(1, { onActivate() { activated = true; } });
+  const next = mounted.run(1, IN_SCORE);
+  assert.equal(next.buttons, 0n);
+  assert.equal(activated, true, "a press after re-arming activates, as on the very first arm");
+});
+
+test("the last armed slot disconnecting drops the hook", () => {
+  const mounted = mount();
+  mounted.HudInput.arm(4, { onActivate() {} });
+  mounted.disconnect({ slot: 4 });
+  assert.equal(mounted.handlers.length, 0);
 });

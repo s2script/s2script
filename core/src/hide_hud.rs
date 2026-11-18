@@ -119,6 +119,10 @@ fn sync(slot: i32) -> bool {
 
 /// Per-frame re-assert for every slot that has, or recently had, bits.
 pub(crate) fn sweep() {
+    // The common case, no plugin hiding anything: two checks instead of 64 map walks a frame.
+    if MASKS.with(|m| m.borrow().is_empty()) && APPLIED.with(|a| a.borrow().iter().all(|p| p.bits == 0)) {
+        return;
+    }
     for slot in 0..SLOTS as i32 {
         let active = APPLIED.with(|a| a.borrow()[slot as usize].bits != 0) || merged(slot) != 0;
         if active { let _ = sync(slot); }
