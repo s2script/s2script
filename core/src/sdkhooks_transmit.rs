@@ -32,19 +32,36 @@ pub(crate) fn dispatch_settransmit(this_index: i32, this_serial: i32, viewer_slo
     let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
         return HookResult::Continue as c_int;
     };
-    let snap = snapshot_kind(this_id, KIND_SET_TRANSMIT);
-    if snap.is_empty() {
+    if !crate::sdkhooks::has_hook(this_id, KIND_SET_TRANSMIT) {
         return HookResult::Continue as c_int;
     }
-    fan_out_collapsing(
-        &snap,
-        "sdkhook:SetTransmit",
-        Instrument::breadcrumb("sdkhook:SetTransmit"),
+    // Through the JS multiplexer: SetTransmit runs per entity per viewer per tick, where a Rust
+    // fan-out's per-subscriber context entry costs the most.
+    crate::sdkhooks::mux_dispatch(
+        this_id,
+        KIND_SET_TRANSMIT,
+        crate::jsmux::Kind::SetTransmit,
         StopAt::Stop,
         |tc| {
-            let this_ref = build_entity_ref(tc, this_index, this_id);
-            let client = build_client(tc, viewer_slot)?;
-            Some(vec![this_ref, client])
+            vec![
+                v8::Integer::new(tc, this_index).into(),
+                v8::Number::new(tc, this_id as f64).into(),
+                v8::Integer::new(tc, viewer_slot).into(),
+            ]
+        },
+        || {
+            let snap = snapshot_kind(this_id, KIND_SET_TRANSMIT);
+            fan_out_collapsing(
+                &snap,
+                "sdkhook:SetTransmit",
+                Instrument::breadcrumb("sdkhook:SetTransmit"),
+                StopAt::Stop,
+                |tc| {
+                    let this_ref = build_entity_ref(tc, this_index, this_id);
+                    let client = build_client(tc, viewer_slot)?;
+                    Some(vec![this_ref, client])
+                },
+            )
         },
     ) as c_int
 }

@@ -54,8 +54,23 @@ pub(crate) enum Kind {
     ClientCommand = 3,
     /// `OnGameFrame`, channels `"pre"` and `"post"` (see [`dispatch_frame`]).
     Frame = 4,
+    /// `UserCmd.onRun` pre phase (channel `"onRun"`): collapsing, WARN only. Each subscriber gets
+    /// its own realm's `Cmd` singleton and a fresh `{ slot }`.
+    UserCmd = 5,
+    /// `UserCmd.onRun` post phase: notify, no arguments (the prelude wrapper reads the snapshot).
+    UserCmdPost = 6,
+    /// Entity lifecycle listeners, channels `"<kind>\0<class>"`: notify, WARN only. Each
+    /// subscriber gets an `EntityRef` (or `null`) built in its own realm, and the class name.
+    Entity = 7,
+    /// SDKHook `SetTransmit` for one entity, channel `"<host id>"`: collapsing, breadcrumb.
+    SetTransmit = 8,
+    /// Per-entity SDKHooks with only the entity (Think, Spawn, ...), channels `"<host id>\0<type>"`:
+    /// collapsing or notify by type, breadcrumb.
+    SdkHookThis = 9,
+    /// Per-entity SDKHooks with another entity (the touch family), channels as `SdkHookThis`.
+    SdkHookOther = 10,
 }
-const KINDS: usize = 5;
+const KINDS: usize = 11;
 
 /// What each subscriber is handed.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,9 +81,56 @@ enum Payload {
     Args,
     /// A `{ simulating, firstTick, lastTick, phase }` object built in the subscriber's own realm.
     FrameCtx,
+    /// A function compiled in the subscriber's own realm from this source. It takes the shared
+    /// (plain) arguments and returns the handler's arguments as an array, or `null` to skip that
+    /// subscriber. Objects a handler receives are therefore always from its own realm.
+    Made(&'static str),
+}
+
+/// `UserCmd.onRun` pre: `(Cmd, { slot })`, as `dispatch_usercmd` built them.
+const MAKE_USERCMD: &str = "(function (slot) { var u = globalThis.__s2pkg_usercmd; \
+    return [u ? u.Cmd : undefined, { slot: slot }]; })";
+// Each factory below builds an `EntityRef` in its own realm, or `null` (no id, no entity package,
+// or a throwing constructor). The books were checked in Rust: `id` is the host id, or -1.
+/// Entity lifecycle: `(entity | null, className)`.
+const MAKE_ENTITY: &str = concat!(
+    "(function () { ",
+    "function ref(i, id) { if (id < 0) return null; var E = globalThis.__s2pkg_entity; ",
+    "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
+    " return function (i, id, cls) { return [ref(i, id), cls]; }; })()"
+);
+/// SetTransmit: `(entity, client)`; a subscriber whose realm cannot build the client is skipped,
+/// as the Rust fan-out skipped it.
+const MAKE_TRANSMIT: &str = concat!(
+    "(function () { ",
+    "function ref(i, id) { if (id < 0) return null; var E = globalThis.__s2pkg_entity; ",
+    "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
+    " return function (i, id, slot) { var C = globalThis.__s2pkg_clients; ",
+    "if (!C || typeof C.Client !== 'function') return null; var c; try { c = new C.Client(slot); } catch (e) { return null; } ",
+    "return [ref(i, id), c]; }; })()"
+);
+/// SDKHooks with this entity only: `(entity)`.
+const MAKE_HOOK_THIS: &str = concat!(
+    "(function () { ",
+    "function ref(i, id) { if (id < 0) return null; var E = globalThis.__s2pkg_entity; ",
+    "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
+    " return function (i, id) { return [ref(i, id)]; }; })()"
+);
+/// SDKHooks with another entity: `(entity, other | null)`.
+const MAKE_HOOK_OTHER: &str = concat!(
+    "(function () { ",
+    "function ref(i, id) { if (id < 0) return null; var E = globalThis.__s2pkg_entity; ",
+    "if (!E || typeof E.EntityRef !== 'function') return null; try { return new E.EntityRef(i, id); } catch (e) { return null; } }",
+    " return function (i, id, oi, oid) { return [ref(i, id), ref(oi, oid)]; }; })()"
+);
+
+/// The part of a channel name after its NUL (the class or hook type), or the whole name.
+fn after_nul(name: &str) -> &str {
+    name.split_once('\0').map_or(name, |(_, rest)| rest)
 }
 
 impl Kind {
+    /// The WARN label, matching the Rust fan-out's label for the same dispatch.
     fn label(self, name: &str) -> String {
         match self {
             Kind::Event => format!("dispatch_game_event('{}')", name),
@@ -76,21 +138,46 @@ impl Kind {
             Kind::ChatMessage => "dispatch_chat: onSay".to_string(),
             Kind::ClientCommand => format!("dispatch_client_command on '{}'", name),
             Kind::Frame => format!("OnGameFrame ({})", name),
+            Kind::UserCmd => "dispatch_usercmd".to_string(),
+            Kind::UserCmdPost => "dispatch_usercmd_post".to_string(),
+            Kind::Entity => {
+                let (kind, class) = name.split_once('\0').unwrap_or((name, ""));
+                format!("dispatch_entity_event('{}','{}')", kind, class)
+            }
+            Kind::SetTransmit => "sdkhook:SetTransmit".to_string(),
+            Kind::SdkHookThis | Kind::SdkHookOther => format!("sdkhook:{}", after_nul(name)),
         }
     }
-    /// The breadcrumb and crash-report tag (`Instrument::full`), or `None` (`Instrument::none`).
+    /// The breadcrumb tag held across each handler, or `None`.
     fn tag(self, name: &str) -> Option<String> {
         match self {
             Kind::Event => Some(format!("event:{}", name)),
             Kind::Frame => Some(format!("OnGameFrame:{}", name)),
-            Kind::EventPre | Kind::ChatMessage | Kind::ClientCommand => None,
+            Kind::SetTransmit => Some("sdkhook:SetTransmit".to_string()),
+            Kind::SdkHookThis | Kind::SdkHookOther => Some(format!("sdkhook:{}", after_nul(name))),
+            Kind::EventPre | Kind::ChatMessage | Kind::ClientCommand | Kind::UserCmd | Kind::UserCmdPost | Kind::Entity => None,
         }
+    }
+    /// Whether a throwing handler is also filed with the crash reporter under the tag
+    /// (`Instrument::full`), or only WARNs (`Instrument::breadcrumb`).
+    fn reports(self) -> bool {
+        matches!(self, Kind::Event | Kind::Frame)
+    }
+    /// Whether channel names are worth caching: not for per-entity channels, whose names die with
+    /// the entity.
+    fn caches_names(self) -> bool {
+        !matches!(self, Kind::SetTransmit | Kind::SdkHookThis | Kind::SdkHookOther)
     }
     fn payload(self) -> Payload {
         match self {
             Kind::Event | Kind::EventPre => Payload::GameEvent,
-            Kind::ChatMessage | Kind::ClientCommand => Payload::Args,
+            Kind::ChatMessage | Kind::ClientCommand | Kind::UserCmdPost => Payload::Args,
             Kind::Frame => Payload::FrameCtx,
+            Kind::UserCmd => Payload::Made(MAKE_USERCMD),
+            Kind::Entity => Payload::Made(MAKE_ENTITY),
+            Kind::SetTransmit => Payload::Made(MAKE_TRANSMIT),
+            Kind::SdkHookThis => Payload::Made(MAKE_HOOK_THIS),
+            Kind::SdkHookOther => Payload::Made(MAKE_HOOK_OTHER),
         }
     }
 }
@@ -235,7 +322,8 @@ struct Outcome {
 const CONTINUE: Outcome = Outcome { result: HookResult::Continue, errored: Vec::new() };
 
 /// Dispatch `name` on `source` through the multiplexer. `args` builds the arguments every
-/// subscriber receives (at most three; unused for game events, whose payload is per subscriber).
+/// subscriber receives (at most four; unused for game events, whose payload is per subscriber; for
+/// a `Payload::Made` kind they are what the subscriber's factory takes).
 /// `fallback` is the Rust fan-out for the same dispatch, taken while the profiler records.
 pub(crate) fn dispatch<A>(
     source: &dyn Source,
@@ -260,14 +348,16 @@ where
             StopAt::Handled => 2,
         };
         let payload = args(tc);
-        debug_assert!(payload.len() <= 3, "the multiplexer passes at most three shared arguments");
-        let mut argv: Vec<v8::Local<v8::Value>> = vec![
-            kind_v,
-            name_v,
-            v8::Integer::new(tc, stop).into(),
-            v8::Integer::new(tc, payload.len().min(3) as i32).into(),
-        ];
-        argv.extend(payload.into_iter().take(3));
+        debug_assert!(payload.len() <= 4, "the multiplexer passes at most four shared arguments");
+        let n = payload.len().min(4);
+        let mut argv = Argv::new(kind_v);
+        argv.push(kind_v);
+        argv.push(name_v);
+        argv.push(v8::Integer::new(tc, stop).into());
+        argv.push(v8::Integer::new(tc, n as i32).into());
+        for v in payload.into_iter().take(4) {
+            argv.push(v);
+        }
         (|st: &State| st.dispatch.clone(), argv)
     });
     (outcome.result, delivery)
@@ -288,13 +378,12 @@ pub(crate) fn dispatch_frame(
     }
     let phase = if pre { "pre" } else { "post" };
     let (outcome, _) = cross(source, Kind::Frame, phase, |tc, kind_v, name_v| {
-        let argv: Vec<v8::Local<v8::Value>> = vec![
-            kind_v,
-            name_v,
-            v8::Boolean::new(tc, simulating).into(),
-            v8::Boolean::new(tc, first).into(),
-            v8::Boolean::new(tc, last).into(),
-        ];
+        let mut argv = Argv::new(kind_v);
+        argv.push(kind_v);
+        argv.push(name_v);
+        argv.push(v8::Boolean::new(tc, simulating).into());
+        argv.push(v8::Boolean::new(tc, first).into());
+        argv.push(v8::Boolean::new(tc, last).into());
         (|st: &State| st.frame.clone(), argv)
     });
     crate::multiplexer::ChainOutcome { result: outcome.result, errored: outcome.errored }
@@ -326,6 +415,26 @@ fn prune_idle(job: &Job) {
 
 type Entry = fn(&State) -> v8::Global<v8::Function>;
 
+/// A crossing's arguments, on the stack: a per-command dispatch must not allocate for them.
+pub(crate) struct Argv<'s> {
+    a: [v8::Local<'s, v8::Value>; 8],
+    n: usize,
+}
+
+impl<'s> Argv<'s> {
+    /// `fill` only fills the unused tail; it is never passed.
+    fn new(fill: v8::Local<'s, v8::Value>) -> Self {
+        Self { a: [fill; 8], n: 0 }
+    }
+    fn push(&mut self, v: v8::Local<'s, v8::Value>) {
+        self.a[self.n] = v;
+        self.n += 1;
+    }
+    fn as_slice(&self) -> &[v8::Local<'s, v8::Value>] {
+        &self.a[..self.n]
+    }
+}
+
 /// The one crossing: the re-entrancy decision, then the multiplexer call. `call` picks the JS
 /// entry point and builds its arguments after the kind and channel name.
 fn cross<C>(source: &dyn Source, kind: Kind, name: &str, call: C) -> (Outcome, Delivery)
@@ -334,7 +443,7 @@ where
         &mut v8::PinScope<'s, '_>,
         v8::Local<'s, v8::Value>,
         v8::Local<'s, v8::Value>,
-    ) -> (Entry, Vec<v8::Local<'s, v8::Value>>),
+    ) -> (Entry, Argv<'s>),
 {
     let (any, version) = source.probe(name);
     let job = Job { source, kind, name, version };
@@ -405,7 +514,7 @@ impl Job<'_> {
             &mut v8::PinScope<'t, '_>,
             v8::Local<'t, v8::Value>,
             v8::Local<'t, v8::Value>,
-        ) -> (Entry, Vec<v8::Local<'t, v8::Value>>),
+        ) -> (Entry, Argv<'t>),
     {
         let Some(context) = ensure_state(hs) else { return CONTINUE };
         let cs = &mut v8::ContextScope::new(hs, context);
@@ -431,7 +540,7 @@ impl Job<'_> {
         let Some(func) = STATE.with(|s| s.borrow().as_ref().map(entry)) else { return CONTINUE };
         let func = v8::Local::new(tc, &func);
         let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-        let Some(ret) = func.call(tc, recv, &argv) else {
+        let Some(ret) = func.call(tc, recv, argv.as_slice()) else {
             // Only the multiplexer itself can land here (handlers are caught in JS).
             let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc)).unwrap_or_default();
             log_warn(&format!("WARN: {}: multiplexer: {}", self.kind.label(self.name), msg));
@@ -469,7 +578,7 @@ impl Job<'_> {
         let name: std::rc::Rc<str> = self.name.into();
         STATE.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
-                if st.names[k].len() < NAMES_CAP {
+                if self.kind.caches_names() && st.names[k].len() < NAMES_CAP {
                     let entry = Names { js: v8::Global::new(cs, js), tag: tag.clone(), name: name.clone() };
                     st.names[k].insert(self.name.to_string(), entry);
                 }
@@ -493,7 +602,8 @@ impl Job<'_> {
             for row in &rows {
                 let make = match payload {
                     Payload::GameEvent => game_event_ctor(cs, &row.owner),
-                    Payload::FrameCtx => frame_ctx_factory(cs, &row.owner),
+                    Payload::FrameCtx => compile_in_owner(cs, &row.owner, FRAME_CTX),
+                    Payload::Made(src) => compile_in_owner(cs, &row.owner, src),
                     Payload::Args => None,
                 };
                 if payload != Payload::Args && make.is_none() && owner_is_live(&row.owner, row.generation) {
@@ -507,7 +617,7 @@ impl Job<'_> {
                 } else {
                     0
                 };
-                let fields: [v8::Local<v8::Value>; 7] = [
+                let fields: [v8::Local<v8::Value>; 8] = [
                     v8::Number::new(cs, owner_slot(&row.owner).map_or(-1.0, f64::from)).into(),
                     v8::Number::new(cs, row.generation as f64).into(),
                     handler.into(),
@@ -515,6 +625,7 @@ impl Job<'_> {
                     v8::Number::new(cs, row.id as f64).into(),
                     v8::Boolean::new(cs, row.monitor).into(),
                     v8::Integer::new_from_unsigned(cs, line as u32).into(),
+                    v8::Boolean::new(cs, matches!(payload, Payload::Made(_))).into(),
                 ];
                 subs.push(v8::Array::new_with_elements(cs, &fields).into());
             }
@@ -592,14 +703,15 @@ fn game_event_ctor<'s>(cs: &mut v8::PinScope<'s, '_>, owner: &str) -> Option<v8:
 
 /// A function compiled in the owner's context that builds the per-frame `ctx` object there, with
 /// the same keys, in the same order, that `dispatch_onframe` set them.
-fn frame_ctx_factory<'s>(cs: &mut v8::PinScope<'s, '_>, owner: &str) -> Option<v8::Local<'s, v8::Value>> {
+const FRAME_CTX: &str = "(function (s, f, l, p) { return { simulating: s, firstTick: f, lastTick: l, phase: p }; })";
+
+/// A payload function compiled from `src` in the owner's own context, so what it builds belongs
+/// to the subscriber's realm.
+fn compile_in_owner<'s>(cs: &mut v8::PinScope<'s, '_>, owner: &str, src: &str) -> Option<v8::Local<'s, v8::Value>> {
     let g_ctx = clone_plugin_context(owner)?;
     let ctx = v8::Local::new(cs, &g_ctx);
     let scope = &mut v8::ContextScope::new(cs, ctx);
-    let src = v8::String::new(
-        scope,
-        "(function (s, f, l, p) { return { simulating: s, firstTick: f, lastTick: l, phase: p }; })",
-    )?;
+    let src = v8::String::new(scope, src)?;
     let f = v8::Script::compile(scope, src, None)?.run(scope)?;
     v8::Local::<v8::Function>::try_from(f).ok().map(Into::into)
 }
@@ -699,7 +811,7 @@ fn slow_thrown(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _r
         if kind != Kind::Frame {
             log_warn(&format!("WARN: {}: handler '{}': {}", kind.label(&name), owner, msg));
         }
-        if let Some(tag) = kind.tag(&name) {
+        if let Some(tag) = kind.tag(&name).filter(|_| kind.reports()) {
             crate::crash::report_js_error(&owner, &tag, &msg, &stack);
         }
     }));

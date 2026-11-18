@@ -87,6 +87,9 @@ struct HookStore {
     by_entity: HashMap<u64, Vec<u64>>,
     kind_counts: HookMap<String, usize>,
     kind_entities: HookMap<String, Vec<EntityAddress>>,
+    /// Moves on every change, so the JS multiplexer knows when its copy of a channel is stale.
+    /// Kept across `clear`, or a cleared store could match an array pushed before it.
+    version: u64,
 }
 
 impl HookStore {
@@ -95,6 +98,7 @@ impl HookStore {
     }
 
     fn insert(&mut self, entity_id: u64, entity_index: i32, engine_serial: i32, kind: String, entry: Entry) {
+        self.version += 1;
         let first_for_entity_kind = !self.has(entity_id, &kind);
         let sub_id = entry.sub_id;
         let owner = entry.owner.clone();
@@ -153,6 +157,7 @@ impl HookStore {
 
     fn remove_sub(&mut self, sub_id: u64) -> Option<RemovedEntry> {
         let (entity_id, kind) = self.by_sub.remove(&sub_id)?;
+        self.version += 1;
         let (owner, entity_index, engine_serial, bucket_emptied, new_first_sub_id) = {
             let bucket = self.buckets.get_mut(&entity_id)?.get_mut(&kind)?;
             let position = bucket.entries.iter().position(|entry| entry.sub_id == sub_id)?;
@@ -255,7 +260,11 @@ impl HookStore {
         ordered.into_iter().map(|(_, index, serial)| (index, serial)).collect()
     }
 
-    fn clear(&mut self) { *self = Self::default(); }
+    fn clear(&mut self) {
+        let version = self.version + 1;
+        *self = Self::default();
+        self.version = version;
+    }
 }
 
 thread_local! {
@@ -373,6 +382,52 @@ pub(crate) fn snapshot_kind_with_work(
     kind: &str,
 ) -> (Vec<(String, u64, v8::Global<v8::Function>)>, usize) {
     HOOKS.with(|hooks| hooks.borrow().snapshot_with_visit_count(entity_id, kind))
+}
+
+/// One entity's hooks of one type, as a JS multiplexer channel.
+pub(crate) struct EntityHooks<'a> {
+    pub entity_id: u64,
+    pub kind: &'a str,
+}
+
+impl crate::jsmux::Source for EntityHooks<'_> {
+    fn probe(&self, _name: &str) -> (bool, u64) {
+        HOOKS.with(|hooks| {
+            let hooks = hooks.borrow();
+            (hooks.has(self.entity_id, self.kind), hooks.version)
+        })
+    }
+    fn rows(&self, _name: &str) -> Vec<crate::jsmux::Row> {
+        snapshot_kind(self.entity_id, self.kind)
+            .into_iter()
+            .map(|(owner, generation, handler)| crate::jsmux::Row { id: 0, owner, generation, monitor: false, handler })
+            .collect()
+    }
+}
+
+/// Dispatch one entity's hooks of `kind` through the JS multiplexer, `fallback` being the Rust
+/// fan-out the profiler takes. `args` are the factory's plain arguments (see `jsmux::Kind`).
+pub(crate) fn mux_dispatch<A>(
+    entity_id: u64,
+    kind: &str,
+    jskind: crate::jsmux::Kind,
+    stop_at: StopAt,
+    args: A,
+    fallback: impl FnOnce() -> HookResult,
+) -> HookResult
+where
+    A: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Vec<v8::Local<'s, v8::Value>>,
+{
+    let channel = format!("{entity_id}\0{kind}");
+    crate::jsmux::dispatch(&EntityHooks { entity_id, kind }, jskind, &channel, stop_at, args, || {
+        (fallback(), crate::dispatch::Delivery::Delivered)
+    })
+    .0
+}
+
+/// Whether this entity has a hook of `kind` (no snapshot taken).
+pub(crate) fn has_hook(entity_id: u64, kind: &str) -> bool {
+    HOOKS.with(|hooks| hooks.borrow().has(entity_id, kind))
 }
 
 pub(crate) fn kind_active(kind: &str) -> bool {
@@ -525,29 +580,42 @@ pub(crate) fn dispatch_touch(
     let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
         return HookResult::Continue as c_int;
     };
-    let snap = snapshot_kind(this_id, type_name);
-    if snap.is_empty() {
+    if !has_hook(this_id, type_name) {
         return HookResult::Continue as c_int;
     }
     let stop_at = if post != 0 { StopAt::Never } else { StopAt::Stop };
-    let label = format!("sdkhook:{type_name}");
-    let result = fan_out_collapsing(
-        &snap,
-        &label,
-        Instrument::breadcrumb(&label),
+    // The other entity, books-checked once for every subscriber: (index, host id or -1).
+    let (other_index, other_id) = if other_handle < 0 {
+        (-1, -1.0)
+    } else {
+        let (oi, os) = crate::entity::decode_handle(other_handle as u32);
+        crate::entity_live::adopt(oi, os).map_or((oi, -1.0), |oid| (oi, oid as f64))
+    };
+    let result = mux_dispatch(
+        this_id,
+        type_name,
+        crate::jsmux::Kind::SdkHookOther,
         stop_at,
         |tc| {
-            let this_ref = build_entity_ref(tc, this_index, this_id);
-            let other_val: v8::Local<v8::Value> = if other_handle < 0 {
-                v8::null(tc).into()
-            } else {
-                let (oi, os) = crate::entity::decode_handle(other_handle as u32);
-                match crate::entity_live::adopt(oi, os) {
-                    Some(oid) => build_entity_ref(tc, oi, oid),
-                    None => v8::null(tc).into(),
-                }
-            };
-            Some(vec![this_ref, other_val])
+            vec![
+                v8::Integer::new(tc, this_index).into(),
+                v8::Number::new(tc, this_id as f64).into(),
+                v8::Integer::new(tc, other_index).into(),
+                v8::Number::new(tc, other_id).into(),
+            ]
+        },
+        || {
+            let snap = snapshot_kind(this_id, type_name);
+            let label = format!("sdkhook:{type_name}");
+            fan_out_collapsing(&snap, &label, Instrument::breadcrumb(&label), stop_at, |tc| {
+                let this_ref = build_entity_ref(tc, this_index, this_id);
+                let other_val: v8::Local<v8::Value> = if other_id < 0.0 {
+                    v8::null(tc).into()
+                } else {
+                    build_entity_ref(tc, other_index, other_id as u64)
+                };
+                Some(vec![this_ref, other_val])
+            })
         },
     );
     result as c_int
@@ -669,17 +737,23 @@ pub(crate) fn dispatch_this(this_index: i32, this_serial: i32, post: c_int, type
     let Some(this_id) = crate::entity_live::adopt(this_index, this_serial) else {
         return HookResult::Continue as c_int;
     };
-    let snap = snapshot_kind(this_id, type_name);
-    if snap.is_empty() {
+    if !has_hook(this_id, type_name) {
         return HookResult::Continue as c_int;
     }
-    let label = format!("sdkhook:{type_name}");
-    let result = fan_out_collapsing(
-        &snap,
-        &label,
-        Instrument::breadcrumb(&label),
-        collapsing_stop(type_name),
-        |tc| Some(vec![build_entity_ref(tc, this_index, this_id)]),
+    let stop_at = collapsing_stop(type_name);
+    let result = mux_dispatch(
+        this_id,
+        type_name,
+        crate::jsmux::Kind::SdkHookThis,
+        stop_at,
+        |tc| vec![v8::Integer::new(tc, this_index).into(), v8::Number::new(tc, this_id as f64).into()],
+        || {
+            let snap = snapshot_kind(this_id, type_name);
+            let label = format!("sdkhook:{type_name}");
+            fan_out_collapsing(&snap, &label, Instrument::breadcrumb(&label), stop_at, |tc| {
+                Some(vec![build_entity_ref(tc, this_index, this_id)])
+            })
+        },
     );
     result as c_int
 }

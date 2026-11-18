@@ -24,14 +24,15 @@
     return m;
   }
 
-  // rows: [slot, generation, handler, make, id, monitor, line] per subscriber, in dispatch order.
-  // `make` builds the subscriber's payload in its own realm (a GameEvent class, or the frame ctx
-  // factory), or is null for channels whose subscribers share plain arguments.
+  // rows: [slot, generation, handler, make, id, monitor, line, made] per subscriber, in dispatch
+  // order. `make` builds the subscriber's payload in its own realm (a GameEvent class, the frame ctx
+  // factory, or with `made` a function from the shared arguments to the handler's arguments), or is
+  // null for channels whose subscribers share plain arguments.
   function set(kind, name, rows) {
     var subs = new Array(rows.length);
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      subs[i] = { slot: r[0], generation: r[1], handler: r[2], ctor: r[3], id: r[4], monitor: r[5], line: r[6] };
+      subs[i] = { slot: r[0], generation: r[1], handler: r[2], ctor: r[3], id: r[4], monitor: r[5], line: r[6], made: r[7] === true };
     }
     channels(kind).set(name, subs);
   }
@@ -59,9 +60,11 @@
 
   // stopAt: 0 = never (notify: return values are not read), 1 = truncate after a Stop (3),
   // 2 = truncate after Handled (2) or more. Results collapse to their maximum, as run_chain does.
-  // A channel with payload classes (game events) hands each subscriber `new ctor(name)`; any other
-  // channel hands every subscriber the same `argc` arguments, exactly that many.
-  function dispatch(kind, name, stopAt, argc, a0, a1, a2) {
+  // A channel with payload classes (game events) hands each subscriber `new ctor(name)`; a `made`
+  // channel hands each subscriber what its own factory builds from the shared arguments (skipping
+  // it when the factory answers null, or is missing); any other channel hands every subscriber the
+  // same `argc` arguments, exactly that many.
+  function dispatch(kind, name, stopAt, argc, a0, a1, a2, a3) {
     var subs = channels(kind).get(name);
     if (subs === undefined) return 0;
     var result = 0;
@@ -73,7 +76,16 @@
       try {
         // Called through a local so the receiver is `undefined`, never the subscriber record.
         var handler = s.handler;
-        if (s.ctor !== null) {
+        if (s.made) {
+          if (s.ctor === null) continue;
+          var made = s.ctor, a = made(a0, a1, a2, a3);
+          if (a === null || a === undefined) continue;
+          var n = a.length;
+          if (n === 1) ret = handler(a[0]);
+          else if (n === 2) ret = handler(a[0], a[1]);
+          else if (n === 3) ret = handler(a[0], a[1], a[2]);
+          else ret = handler.apply(undefined, a);
+        } else if (s.ctor !== null) {
           // A game event is built in the subscriber's own realm, fresh for each subscriber, as the
           // Rust fan-out built it. A constructor that throws still delivers, with `undefined`.
           var ev = undefined;
@@ -87,6 +99,8 @@
           ret = handler(a0, a1);
         } else if (argc === 3) {
           ret = handler(a0, a1, a2);
+        } else if (argc === 4) {
+          ret = handler(a0, a1, a2, a3);
         } else if (argc === 1) {
           ret = handler(a0);
         } else {

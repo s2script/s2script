@@ -444,7 +444,8 @@ mod tests {
 // The V8 surface — see the module header for why it lives beside the pure half.
 // ---------------------------------------------------------------------------
 
-use crate::dispatch::{fan_out, Delivery, Instrument};
+use crate::dispatch::{fan_out, Delivery, Instrument, StopAt};
+use crate::multiplexer::HookResult;
 use crate::v8host::{
     build_entity_ref, current_plugin, engine_ops, engine_ops_ref, ent_op_serial, js_ent_id,
     schema_offset_cached, set_fast_native, set_native, subscribe_into,
@@ -1647,33 +1648,59 @@ pub(crate) fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
 pub(crate) fn replay_entity_event(kind: &str, class_name: &str, handle: i32) -> Delivery {
     // Most entity events have no subscriber at all: answer before building any key or label.
     if ENTITY_MUX.with(|m| m.borrow().is_empty()) { return Delivery::Delivered; }
-    // Snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*", else
-    // the same key would be snapshotted twice). Both taken before any JS runs.
     let exact = format!("{}\0{}", kind, class_name);
-    let mut snap = ENTITY_MUX.with(|m| m.borrow().snapshot(&exact));
-    if class_name != "*" {
-        let wild = format!("{}\0*", kind);
-        snap.extend(ENTITY_MUX.with(|m| m.borrow().snapshot(&wild)));
+    // The exact-class channel, then the "<kind>\0*" wildcard (not twice when class == "*"). A
+    // delete still adopts: the ffi entry books the removal after the dispatch.
+    let (index, id) = if handle == -1 {
+        (-1, -1.0)
+    } else {
+        let (idx, ser) = crate::entity::decode_handle(handle as u32);
+        crate::entity_live::adopt(idx, ser).map_or((idx, -1.0), |id| (idx, id as f64))
+    };
+    // Deferred means nothing ran (the host was busy), and then the whole event replays later, so
+    // the wildcard waits for that replay too.
+    let delivery = entity_channel(&exact, class_name, index, id, handle);
+    if class_name == "*" || matches!(delivery, Delivery::Deferred) {
+        return delivery;
     }
-    if snap.is_empty() { return Delivery::Delivered; }
-    let label = format!("dispatch_entity_event('{}','{}')", kind, class_name);
-    fan_out(&snap, &label, Instrument::none(), |tc| {
-        let entity_val: v8::Local<v8::Value> = if handle == -1 {
-            v8::null(tc).into()
-        } else {
-            let (idx, ser) = crate::entity::decode_handle(handle as u32);
-            // Books-adopt (delete dispatches still adopt — the ffi entry removes AFTER dispatch).
-            match crate::entity_live::adopt(idx, ser) {
-                Some(id) => build_entity_ref(tc, idx, id),
-                None => v8::null(tc).into(),
-            }
-        };
-        let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
-            Some(s) => s.into(),
-            None => v8::undefined(tc).into(),
-        };
-        Some(vec![entity_val, class_val])
-    })
+    entity_channel(&format!("{}\0*", kind), class_name, index, id, handle)
+}
+
+/// One entity lifecycle channel through the JS multiplexer; the Rust fan-out runs while the
+/// profiler records.
+fn entity_channel(key: &str, class_name: &str, index: i32, id: f64, handle: i32) -> Delivery {
+    crate::jsmux::dispatch(
+        &crate::jsmux::ChannelStore(&ENTITY_MUX),
+        crate::jsmux::Kind::Entity,
+        key,
+        StopAt::Never,
+        |tc| {
+            let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
+                Some(s) => s.into(),
+                None => v8::undefined(tc).into(),
+            };
+            vec![v8::Integer::new(tc, index).into(), v8::Number::new(tc, id).into(), class_val]
+        },
+        || {
+            let snap = ENTITY_MUX.with(|m| m.borrow().snapshot(key));
+            if snap.is_empty() { return (HookResult::Continue, Delivery::Delivered); }
+            let (kind, class) = key.split_once('\0').unwrap_or((key, ""));
+            let label = format!("dispatch_entity_event('{}','{}')", kind, class);
+            let delivery = fan_out(&snap, &label, Instrument::none(), |tc| {
+                let entity_val: v8::Local<v8::Value> = if handle == -1 || id < 0.0 {
+                    v8::null(tc).into()
+                } else {
+                    build_entity_ref(tc, index, id as u64)
+                };
+                let class_val: v8::Local<v8::Value> = match v8::String::new(tc, class_name) {
+                    Some(s) => s.into(),
+                    None => v8::undefined(tc).into(),
+                };
+                Some(vec![entity_val, class_val])
+            });
+            (HookResult::Continue, delivery)
+        },
+    ).1
 }
 
 /// Like `read_vec3` but returns `None` when the arg isn't a 3-number array (for nullable teleport args —
