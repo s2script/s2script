@@ -75,6 +75,15 @@
         "stats": 4,
         "cols": 4,
         "rows": 5
+      },
+      "weapon": {
+        "slots": [
+          "primary",
+          "secondary",
+          "knife",
+          "grenades",
+          "other"
+        ]
       }
     },
     "classes": {
@@ -236,6 +245,43 @@
               "gk_kf5_wi",
               "gk_kf5_w",
               "gk_kf5_v"
+            ]
+          }
+        ],
+        "weaponSlots": [
+          {
+            "id": "gk_wpn_s0",
+            "slot": "primary",
+            "vars": [
+              "gk_wpn_s0_t"
+            ]
+          },
+          {
+            "id": "gk_wpn_s1",
+            "slot": "secondary",
+            "vars": [
+              "gk_wpn_s1_t"
+            ]
+          },
+          {
+            "id": "gk_wpn_s2",
+            "slot": "knife",
+            "vars": [
+              "gk_wpn_s2_t"
+            ]
+          },
+          {
+            "id": "gk_wpn_s3",
+            "slot": "grenades",
+            "vars": [
+              "gk_wpn_s3_t"
+            ]
+          },
+          {
+            "id": "gk_wpn_s4",
+            "slot": "other",
+            "vars": [
+              "gk_wpn_s4_t"
             ]
           }
         ],

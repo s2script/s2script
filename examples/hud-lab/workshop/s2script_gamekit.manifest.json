@@ -72,6 +72,15 @@
       "stats": 4,
       "cols": 4,
       "rows": 5
+    },
+    "weapon": {
+      "slots": [
+        "primary",
+        "secondary",
+        "knife",
+        "grenades",
+        "other"
+      ]
     }
   },
   "classes": {
@@ -233,6 +242,43 @@
             "gk_kf5_wi",
             "gk_kf5_w",
             "gk_kf5_v"
+          ]
+        }
+      ],
+      "weaponSlots": [
+        {
+          "id": "gk_wpn_s0",
+          "slot": "primary",
+          "vars": [
+            "gk_wpn_s0_t"
+          ]
+        },
+        {
+          "id": "gk_wpn_s1",
+          "slot": "secondary",
+          "vars": [
+            "gk_wpn_s1_t"
+          ]
+        },
+        {
+          "id": "gk_wpn_s2",
+          "slot": "knife",
+          "vars": [
+            "gk_wpn_s2_t"
+          ]
+        },
+        {
+          "id": "gk_wpn_s3",
+          "slot": "grenades",
+          "vars": [
+            "gk_wpn_s3_t"
+          ]
+        },
+        {
+          "id": "gk_wpn_s4",
+          "slot": "other",
+          "vars": [
+            "gk_wpn_s4_t"
           ]
         }
       ],
@@ -1330,6 +1376,23 @@
       "gk_bar1_lab",
       "gk_bar1_fill",
       "gk_bar1_val",
+      "gk_wpn",
+      "gk_wpn_slots",
+      "gk_wpn_s0",
+      "gk_wpn_s0_t",
+      "gk_wpn_s1",
+      "gk_wpn_s1_t",
+      "gk_wpn_s2",
+      "gk_wpn_s2_t",
+      "gk_wpn_s3",
+      "gk_wpn_s3_t",
+      "gk_wpn_s4",
+      "gk_wpn_s4_t",
+      "gk_wpn_name",
+      "gk_wpn_count",
+      "gk_wpn_ammo",
+      "gk_wpn_clip",
+      "gk_wpn_res",
       "gk_toast",
       "gk_toast_t",
       "gk_toast_s",
@@ -1903,6 +1966,15 @@
       "gk_bar0_val",
       "gk_bar1_lab",
       "gk_bar1_val",
+      "gk_wpn_s0_t",
+      "gk_wpn_s1_t",
+      "gk_wpn_s2_t",
+      "gk_wpn_s3_t",
+      "gk_wpn_s4_t",
+      "gk_wpn_name",
+      "gk_wpn_count",
+      "gk_wpn_clip",
+      "gk_wpn_res",
       "gk_toast_t",
       "gk_toast_s",
       "gk_sum_eye",

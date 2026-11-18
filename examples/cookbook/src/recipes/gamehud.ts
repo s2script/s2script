@@ -1,5 +1,5 @@
-import { command, config, hook, HookResult } from "@s2script/sdk";
-import { GameHud, Player } from "@s2script/cs2";
+import { command, config, hook, HookResult, Hud } from "@s2script/sdk";
+import { GameHud, HideHud, Player } from "@s2script/cs2";
 import type {
   GameHudFeed, GameHudRail, GameHudSheetSection, GameHudSpectatePlayer, GameHudStatus, GameHudTheme,
 } from "@s2script/cs2";
@@ -12,6 +12,8 @@ import type {
  *   sm_gk_off             release them (they also free themselves when the plugin unloads)
  *   sm_gk_toast <text>    a toast for everyone
  *   sm_gk_summary         a sample round-end summary (also shown on every round_end while on)
+ *   sm_gk_weapon [off]    hide the stock weapons HUD and fill the weapon card from each pawn
+ *                         (the deagle is renamed "Hand Cannon" to show options.name)
  *
  * Panels:
  *   sm_gk_vote            a pop-up vote for everyone: type 1-3 in chat, or Tab to click
@@ -251,6 +253,23 @@ export function OnPluginStart(): void {
     rail = status = feed = null;
     GameHud.hideSummary("all");
     cmd.reply("[cookbook] gamehud: released");
+    return HookResult.Handled;
+  });
+
+  command("sm_gk_weapon", (cmd) => {
+    if (cmd.arg(0) === "off") {
+      GameHud.weapon.release();
+      for (const p of Player.all()) Hud.show(p.slot, HideHud.Weapons);
+      cmd.reply("[cookbook] gamehud: weapon card released, stock weapons HUD back");
+      return HookResult.Handled;
+    }
+    if (!GameHud.weapon.claim()) {
+      cmd.reply("[cookbook] gamehud: the weapon card is held by another plugin");
+      return HookResult.Handled;
+    }
+    for (const p of Player.all()) Hud.hide(p.slot, HideHud.Weapons);
+    GameHud.weapon.auto("all", { name: (defIndex) => (defIndex === 1 ? "Hand Cannon" : null) });
+    cmd.reply("[cookbook] gamehud: weapon card on (sm_gk_weapon off to undo)");
     return HookResult.Handled;
   });
 
