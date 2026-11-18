@@ -253,11 +253,17 @@
   // occupancy signal is that an occupied slot's controller has a valid player pawn (m_hPlayerPawn). This yields
   // in-game (spawned) players; connected-but-pawnless (dead/spectating) is deferred to the engine-identity/
   // connection follow. Offsets stay live-resolved (layout-is-data).
+  // m_hPlayerPawn's offset, looked up once it resolves (a miss is retried: gamedata may load later).
+  var pawnHandleOff = -1;
+  function pawnHandleOffset() {
+    if (pawnHandleOff < 0) pawnHandleOff = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
+    return pawnHandleOff;
+  }
   Player.fromSlot = function (slot) {
     var idx = slot + 1;                                          // controller entity index
     var ref = new EntityRef(idx, __s2_ent_id_for_index(idx));
     if (!ref.isValid()) return null;                            // the controller entity must exist
-    var poff = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
+    var poff = pawnHandleOffset();
     if (poff < 0 || ref.readHandle(poff) === null) return null; // occupied iff the controller has a live pawn
     return new Player(ref);
   };
@@ -296,7 +302,7 @@
   Player.allConnected = function () {
     var out = [];
     for (var s = 0; s < MAX_PLAYERS; s++) {
-      if (__s2_client_valid(s)) { var p = Player._fromSlotUnchecked(s); if (p) out.push(p); }
+      if (__s2_client_connected(s)) { var p = Player._fromSlotUnchecked(s); if (p) out.push(p); }
     }
     return out;
   };

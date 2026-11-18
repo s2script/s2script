@@ -28,7 +28,7 @@ function runWith(clientMock, names) {
   };
   ctx.globalThis = ctx;
   const host = installClientHost(ctx);
-  for (let slot = 0; slot < 64; slot++) if (clientMock.__s2_client_valid?.(slot)) host.connect(slot);
+  for (let slot = 0; slot < 64; slot++) if (clientMock.__s2_client_connected?.(slot)) host.connect(slot);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   return ctx.__s2pkg_cs2;
@@ -36,7 +36,7 @@ function runWith(clientMock, names) {
 
 test("Player.allConnected + userId (offline vm): connected slots regardless of pawn", () => {
   const { Player } = runWith({
-    __s2_client_valid: (slot) => slot < 2,                       // slots 0,1 connected
+    __s2_client_connected: (slot) => slot < 2,                       // slots 0,1 connected
     __s2_client_userid: (slot) => (slot === 0 ? 5 : slot === 1 ? 6 : -1),
     __s2_client_find_by_userid: (id) => (id === 6 ? 1 : -1),
   });
@@ -49,7 +49,7 @@ test("Player.allConnected + userId (offline vm): connected slots regardless of p
 
 test("Player.fromUserId (offline vm): round-trips to the right slot, null on miss", () => {
   const { Player } = runWith({
-    __s2_client_valid: () => true,
+    __s2_client_connected: () => true,
     __s2_client_userid: () => 6,
     __s2_client_find_by_userid: (id) => (id === 6 ? 1 : -1),
   });
@@ -62,7 +62,7 @@ test("Player.fromUserId (offline vm): round-trips to the right slot, null on mis
 test("Player.kick (offline vm): calls __s2_client_kick with slot + reason", () => {
   const calls = [];
   const { Player } = runWith({
-    __s2_client_valid: () => true,
+    __s2_client_connected: () => true,
     __s2_client_userid: () => 6,
     __s2_client_find_by_userid: (id) => (id === 6 ? 1 : -1),
     __s2_client_kick: (slot, reason) => calls.push([slot, reason]),
@@ -76,7 +76,7 @@ test("Player.kick (offline vm): calls __s2_client_kick with slot + reason", () =
 
 test("Player.target (offline vm): #userid / @all / @me / name / no-match", () => {
   const { Player } = runWith({
-    __s2_client_valid: (slot) => slot < 2,
+    __s2_client_connected: (slot) => slot < 2,
     __s2_client_userid: (slot) => (slot === 0 ? 5 : slot === 1 ? 6 : -1),
     __s2_client_find_by_userid: (id) => (id === 5 ? 0 : id === 6 ? 1 : -1),
     __s2_client_kick: () => {},
@@ -93,7 +93,7 @@ test("Player.target (offline vm): #userid / @all / @me / name / no-match", () =>
 
 test("Player.target name match (offline vm): exact wins over partial, partial returns all, no-match empty", () => {
   const { Player } = runWith({
-    __s2_client_valid: (slot) => slot < 3,                       // slots 0,1,2 connected
+    __s2_client_connected: (slot) => slot < 3,                       // slots 0,1,2 connected
     __s2_client_userid: (slot) => slot,
     __s2_client_find_by_userid: () => -1,
     __s2_client_kick: () => {},
@@ -110,7 +110,7 @@ test("Player.target name match (offline vm): exact wins over partial, partial re
 });
 
 test("Pawn.setVelocity (offline vm): writes 3 floats + notifyStateChanged", () => {
-  const { Pawn } = runWith({ __s2_client_valid: () => true, __s2_client_userid: () => 0,
+  const { Pawn } = runWith({ __s2_client_connected: () => true, __s2_client_userid: () => 0,
     __s2_client_find_by_userid: () => -1, __s2_client_kick: () => {} });
   const pawn = Pawn.forSlot(0);
   assert.ok(pawn, "pawn resolved");

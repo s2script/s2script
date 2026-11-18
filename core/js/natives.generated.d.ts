@@ -5,6 +5,35 @@
 // "none", and anything else that fails throws an `S2Error` with a `code`.
 
 /**
+ * Whether the engine reports a client in `slot` (`__s2_client_valid` without a token).
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_client_connected(slot: number): boolean;
+
+/**
+ * The connection id a `Client` captures, as a number (0 when the slot is empty).
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_client_generation_n(slot: number): number;
+
+/**
+ * Whether `slot` holds a connection the host has on its books: `Clients.fromSlot` and
+ * `Clients.all` without building a token string per slot.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_client_live(slot: number): boolean;
+
+/**
+ * `__s2_client_matches` with a number token: whether `slot` still holds the connection `token`.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_client_matches_n(slot: number, token: number): boolean;
+
+/**
  * The live address of the entity `(index, id)`, resolved through the books like every entity
  * read; 0 when the reference is stale. The address is only good until the entity is deleted,
  * and nothing tracks that for you: this is the unsafe tier.
@@ -12,6 +41,14 @@
  * Fast-API native: optimised callers skip the V8 callback.
  */
 declare function __s2_ent_address(index: number, id: number): number;
+
+/**
+ * The books id for a slot-derived index (`Player.fromSlot` / `Pawn.forSlot`), or 0 when the
+ * books say not-live. Books only, no engine memory.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_ent_id_for_index(index: number): number;
 
 /**
  * The scalar read kinds as a number. NaN means "stale, or not a scalar kind" and tells the

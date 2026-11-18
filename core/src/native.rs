@@ -343,6 +343,7 @@ pub(crate) fn all() -> Vec<&'static Meta> {
     v.extend_from_slice(crate::events::NATIVES);
     v.extend_from_slice(crate::entity::NATIVES);
     v.extend_from_slice(crate::memory::NATIVES);
+    v.extend_from_slice(crate::client::NATIVES);
     v
 }
 

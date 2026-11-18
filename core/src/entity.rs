@@ -848,17 +848,6 @@ fn s2_ent_ref_state_changed(
     }));
 }
 
-/// Native `__s2_ent_id_for_index(index) -> number`. The books id for a slot-derived
-/// index (Player.fromSlot / Pawn.forSlot), or 0 when the books say not-live. Books
-/// only — no engine memory. Replaces the retired `__s2_ent_current_serial` idiom.
-fn s2_ent_id_for_index(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        if let Some((id, _)) = crate::entity_live::lookup(index) { rv.set_double(id as f64); }
-    }));
-}
-
 /// Deliver an entity lifecycle event to the `Entity.on{Create,Spawn,Delete}` subscribers. Called from
 /// ffi.rs's `s2script_core_dispatch_entity_event` (the shim's IEntityListener callback). `kind` is
 /// "create"/"spawn"/"delete"; the mux is keyed `"<kind>\0<className>"` with a `"<kind>\0*"` wildcard.
@@ -1528,8 +1517,17 @@ crate::native::native! {
     }
 }
 
+crate::native::native! {
+    /// The books id for a slot-derived index (`Player.fromSlot` / `Pawn.forSlot`), or 0 when the
+    /// books say not-live. Books only, no engine memory.
+    fast fn __s2_ent_id_for_index(index: i32) -> f64 {
+        crate::entity_live::lookup(index).map_or(0.0, |(id, _)| id as f64)
+    }
+}
+
 /// The entity natives defined with `native!`. The rest are still hand-written callbacks.
-pub(crate) const NATIVES: &[&crate::native::Meta] = &[&__s2_ent_ref_valid::META, &__s2_ent_ref_readf::META];
+pub(crate) const NATIVES: &[&crate::native::Meta] =
+    &[&__s2_ent_ref_valid::META, &__s2_ent_ref_readf::META, &__s2_ent_id_for_index::META];
 
 /// Same writes as `s2_ent_ref_write`, for a number `value`.
 fn fast_ent_ref_write(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f64, kind: f64, value: f64) -> bool {
@@ -1577,7 +1575,6 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_ent_ref_gather", s2_ent_ref_gather);
     set_native(scope, global_obj, "__s2_ent_ref_write_chain", s2_ent_ref_write_chain);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
-    set_native(scope, global_obj, "__s2_ent_id_for_index", s2_ent_id_for_index);
     set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
     set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
     set_native(scope, global_obj, "__s2_entity_find_by_name", s2_entity_find_by_name);

@@ -448,7 +448,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       if (h === null) return null; var d = __s2_handle_adopt(h >>> 0);
       return d ? new EntityRef(d[0], d[1]) : null; },   // books-adopted; a dangling handle mints null
     readHandle: function (o) {
-      var h = __s2_ent_ref_read(this.index, this.id, o, K.U32);
+      var h = __s2_ent_ref_readf(this.index, this.id, o, K.U32);   // fast path; NaN = stale
+      if (h !== h) h = __s2_ent_ref_read(this.index, this.id, o, K.U32);
       if (h === null) return null;
       var d = __s2_handle_adopt(h >>> 0);
       return d ? new EntityRef(d[0], d[1]) : null;
@@ -2382,15 +2383,17 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   var __s2_client_snapshots = new WeakMap();
   function Client(slot) {
     Object.defineProperty(this, "slot", { value: slot | 0, enumerable: true });
-    __s2_client_tokens.set(this, __s2_client_generation(this.slot));
+    __s2_client_tokens.set(this, __s2_client_generation_n(this.slot));
   }
-  function __s2_client_token(c) { return __s2_client_tokens.get(c) || "0"; }
+  // Tokens are numbers (connection ids count up from 1, exact in a double); the token-taking natives
+  // that still parse a string accept them through ToString.
+  function __s2_client_token(c) { return __s2_client_tokens.get(c) || 0; }
   function __s2_client_event_handle(slot, token) {
-    var c = new Client(slot); __s2_client_tokens.set(c, token); return c;
+    var c = new Client(slot); __s2_client_tokens.set(c, +token || 0); return c;
   }
-  function __s2_client_replaced(c) { var token = __s2_client_generation(c.slot); return token !== "0" && token !== __s2_client_token(c); }
+  function __s2_client_replaced(c) { var token = __s2_client_generation_n(c.slot); return token !== 0 && token !== __s2_client_token(c); }
   function __s2_same_client(a, b) { return !!a && !!b && a.slot === b.slot && __s2_client_token(a) === __s2_client_token(b); }
-  Client.prototype.isValid = function () { return __s2_client_matches(this.slot, __s2_client_token(this)); };
+  Client.prototype.isValid = function () { return __s2_client_matches_n(this.slot, __s2_client_token(this)); };
   Object.defineProperty(Client.prototype, "steamId", { get: function () {
     var s = __s2_client_snapshots.get(this); return s ? s.steamId : __s2_client_steamid(this.slot, __s2_client_token(this));
   } });
@@ -2462,8 +2465,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // Fires while a client transmits voice (throttled shim-side to <=1 dispatch/slot/second; the FIRST
     // packet of a transmission always fires). Never fires for bots.
     onVoice:           function (h) { return __s2_client_on("voice", h); },
-    fromSlot: function (slot) { slot = slot | 0; return __s2_client_matches(slot, __s2_client_generation(slot)) ? new Client(slot) : null; },
-    all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_matches(s, __s2_client_generation(s))) out.push(new Client(s)); } return out; }
+    fromSlot: function (slot) { slot = slot | 0; return __s2_client_live(slot) ? new Client(slot) : null; },
+    all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_live(s)) out.push(new Client(s)); } return out; }
   };
   var __s2_pendingKicks = {};
   var __s2_kickWired = false;
@@ -2511,7 +2514,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function __s2_sound_slots(recipients) {
     if (Array.isArray(recipients)) return recipients;
     var slots = [];
-    for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
+    for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_connected(s)) slots.push(s);
     return slots;
   }
   function __s2_sound_args(name, opts) {
@@ -2693,7 +2696,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- @s2script/cookies: SM-parity cookies over the __s2_cookie_* host-global cache ---
   var __s2_cookie_defs = {};   // per-context registry: name -> Cookie (idempotent register)
   function __s2_cookie_online(client, op, data) {
-    if (!client || !__s2_client_matches(client.slot, __s2_client_token(client))) return null;
+    if (!client || !__s2_client_matches_n(client.slot, __s2_client_token(client))) return null;
     data.steamId = client.steamId;
     return JSON.parse(__s2_cookie_session(client.slot, __s2_client_token(client), op, JSON.stringify(data)));
   }

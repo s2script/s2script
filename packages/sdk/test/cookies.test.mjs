@@ -10,7 +10,7 @@ const source=prelude.slice(prelude.indexOf('  var __s2_cookie_defs'),prelude.ind
 function fixture() {
   let admitted=true; const calls=[];
   const context=vm.createContext({
-    __s2_client_matches:(slot,token)=>slot===3 && token==='current', __s2_client_token:c=>c.token,
+    __s2_client_matches_n:(slot,token)=>slot===3 && token===1, __s2_client_token:c=>c.token,
     __s2_cookie_session:(...args)=>{calls.push(args);return JSON.stringify(admitted);},
     __s2_cookie_set_authid:(...args)=>{calls.push(args);return admitted;},
   });
@@ -19,14 +19,14 @@ function fixture() {
 }
 test('shipped cookie wrapper exposes host admission and fails closed for stale/bot identities',()=>{
   const f=fixture(), cookie=f.cookies.register('k');
-  const client={slot:3,token:'current',steamId:'account'};
+  const client={slot:3,token:1,steamId:'account'};
   assert.equal(f.cookies.set(client,cookie,'v'),true);
   assert.equal(f.cookies.setAuthId('account',cookie,'v'),true);
   f.reject();
   assert.equal(f.cookies.set(client,cookie,'v'),false);
   assert.equal(f.cookies.setAuthId('account',cookie,'v'),false);
   const n=f.calls.length;
-  assert.equal(f.cookies.set({...client,token:'stale'},cookie,'v'),false);
+  assert.equal(f.cookies.set({...client,token:2},cookie,'v'),false);
   assert.equal(f.cookies.setAuthId('0',cookie,'v'),false);
   assert.equal(f.calls.length,n);
 });

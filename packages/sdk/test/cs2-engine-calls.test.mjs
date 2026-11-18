@@ -105,7 +105,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
     __s2_schema_offset: offsetOf,
     __s2_ent_id_for_index: (i) => i,
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
-    __s2_client_valid: () => true,
+    __s2_client_connected: () => true,
     __s2_client_userid: (s) => s,
     __s2_client_find_by_userid: () => -1,
 
