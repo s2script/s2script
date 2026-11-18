@@ -1022,7 +1022,10 @@
       }
 
       function markReadyIfActive() {
-        var all = clientsApi().all();
+        var pkg = globalThis.__s2pkg_clients;
+        var api = pkg && pkg.Clients;
+        if (!api || typeof api.all !== "function") return;
+        var all = api.all();
         for (var i = 0; i < all.length; i++) {
           if (all[i].signonState === SIGNON_ACTIVE) { becomeReady(); return; }
         }
@@ -1043,6 +1046,13 @@
       }
 
       reg(viaId(function () { serverApi().onMapStart(resetForMap); }));
+      // A plugin that loads into a live world (a reload, `sm plugins load`, a hot swap mid-map)
+      // must be ready NOW. Its `reg` registrations are buffered until the load settles, so the
+      // check below would only run after OnPluginStart returned: every paint, region claim and
+      // modal open made from OnPluginStart failed as "world not ready" and was lost, and the
+      // previous generation's last paint stayed on screen. Reading the clients here registers
+      // nothing, so it is safe inside the load window.
+      markReadyIfActive();
       reg(viaId(function () {
         clientsApi().onActive(function () { becomeReady(); });
         clientsApi().onDisconnect(function (client) {

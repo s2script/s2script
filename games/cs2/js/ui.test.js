@@ -35,7 +35,7 @@ test.afterEach(() => {
 // A tiny fake world: entities are {index, id, name, isValid()} like real EntityRefs (id is the
 // host-minted identity the implementation must key its caches on), and every engine call is
 // recorded verbatim so a test can distinguish "suppressed by cache" from "sent".
-function mount({ active = true, missingCalls = [] } = {}) {
+function mount({ active = true, missingCalls = [], loadWindow = false } = {}) {
   const calls = [];
   const entities = [];
   const missing = new Set(missingCalls);
@@ -105,10 +105,16 @@ function mount({ active = true, missingCalls = [] } = {}) {
   evalFile("ui.js");
   // reg executes immediately: the map-start / client subscriptions are live, and the fake active
   // client makes the ui ready at once.
-  const ns = globalThis.__s2pkg_game_ctx.ui((thunk) => thunk(), (fn) => fn);
+  // `loadWindow` builds the ui the way __s2_make_ctx does for a plugin that is still loading:
+  // registrations are buffered and only run once the load settles (`arm()`).
+  const pending = [];
+  let armed = !loadWindow;
+  const reg = (thunk) => { if (armed) thunk(); else pending.push(thunk); };
+  const ns = globalThis.__s2pkg_game_ctx.ui(reg, (fn) => fn);
 
   return {
     ns,
+    arm() { armed = true; pending.splice(0).forEach((thunk) => thunk()); },
     calls,
     entities,
     callsFor(name) { return calls.filter((c) => c.name === name); },
@@ -560,4 +566,36 @@ test("binding validation reuses a live layout without repeated world scans", () 
   assert.equal(m.callsFor("setDialogVariableStringForPlayer").at(-1).args[0], replacement);
   assert.equal(m.callsFor("setDialogVariableStringForPlayer").length, 2, "replacement receives unchanged text");
   assert.equal(scans, 1, "rediscovered entity is cached");
+});
+
+// A plugin reloaded mid-map paints from OnPluginStart, which runs inside the load window: its
+// registrations (onActive, map start) are still buffered. The world is already live (a client is
+// active and the layout entity another generation spawned is still there), so the paint must land
+// now, not fail with "world not ready" and be lost.
+test("a plugin loading while a client is active paints from OnPluginStart", () => {
+  const w = mount({ loadWindow: true });
+  const hud = w.ns.probe();
+  assert.equal(w.entities.length, 1, "the layout entity spawns during the load window");
+  const err = hud.setText(0, "s2_status", "hello");
+  assert.equal(err, null, "a load-window paint must not fail as not ready: " + err);
+  assert.equal(w.callsFor("setDialogVariableStringForPlayer").length, 1);
+  w.arm();
+  assert.equal(w.entities.length, 1, "arming must not spawn a second layout entity");
+});
+
+test("a reloaded plugin adopts the layout entity its previous generation spawned", () => {
+  const first = mount();
+  first.ns.probe();
+  const entities = first.entities.slice();
+  assert.equal(entities.length, 1);
+  // The new generation's context sees the same world.
+  const prevCreate = globalThis.__s2pkg_entity.createEntity;
+  let spawned = 0;
+  globalThis.__s2pkg_entity.createEntity = (cls, kv) => { spawned++; return prevCreate(cls, kv); };
+  evalFile("ui.js");
+  const pending = [];
+  const ns = globalThis.__s2pkg_game_ctx.ui((thunk) => pending.push(thunk), (fn) => fn);
+  const hud = ns.probe();
+  assert.equal(hud.setText(0, "s2_status", "again"), null);
+  assert.equal(spawned, 0, "the surviving layout entity is reused, not duplicated");
 });
