@@ -65,8 +65,9 @@ if (GameHud.weapon.claim()) {
 }
 ```
 
-- **`auto(audience, options?)`** fills the card from each player's pawn. The active weapon's clip and
-  reserve are read every game frame and the held weapons every 8 frames (and on every switch); only
+- **`auto(audience, options?)`** fills the card from each player's pawn. Each player is read once every
+  4 frames (about 16 Hz), with the players spread across those frames: the active weapon's clip and
+  reserve on every read, the held weapons and the slot list every 4th read and on every switch. Only
   what changed is sent. The clip turns red at or under 25% of the magazine. Knives and C4 show only
   the name; grenades show a count. The card hides while the player is dead or spectating, and
   follows a bot the player has taken over. `options.name(defIndex, weapon)` renames items (return
