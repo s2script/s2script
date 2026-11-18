@@ -2,7 +2,8 @@
 //
 // A gamemode that hides the stock weapons HUD (`Hud.hide(slot, HideHud.Weapons)`, m_iHideHUD bit 6)
 // loses the ammo count with it. This region of s2script_gamehud.xml (bottom right) puts it back:
-// the active weapon's name, clip / reserve in large text, a low-ammo tone, and a compact slot list.
+// the active weapon's name, clip / reserve in large text, a low-ammo tone, and a compact slot list
+// whose rows mark the item in hand (the knife and the Zeus share a row, and so do the grenades).
 //
 // ONE OWNER. The card is a region of the shared in-round layout, claimed like the rail and status
 // card (`__s2_ui_pool_claim("gamekit:weapon", 1)`, ledgered, freed on unload). `claim()` answers
@@ -27,6 +28,7 @@
   var SPEC = U.GK.spec;
   var HIDE = SPEC.hideClass;
   var SLOTS = (SPEC.weapon && SPEC.weapon.slots) || ["primary", "secondary", "knife", "grenades", "other"];
+  var ROW_ITEMS = (SPEC.weapon && SPEC.weapon.items) || 4;
   var LOW_FRACTION = 0.25;
   var INVENTORY_EVERY = 8;   // frames between inventory reads (about 8 Hz at 64 tick)
   var MAX_WEAPONS = 64;
@@ -50,6 +52,30 @@
     78: ["Wrench", K], 80: ["Spectral Shiv", K], 81: ["Fire Bomb", G], 82: ["Diversion", G], 83: ["Frag Grenade", G],
     84: ["Snowball", G], 85: ["Bump Mine", O]
   };
+  // The game client's own equipment icons, by item definition index. The files ship with CS2
+  // (panorama/images/icons/equipment/<name>.svg), so the workshop addon carries none. An item with
+  // no entry shows its name instead.
+  var ICONS = {
+    1: "deagle", 2: "elite", 3: "fiveseven", 4: "glock", 7: "ak47", 8: "aug", 9: "awp", 10: "famas",
+    11: "g3sg1", 13: "galilar", 14: "m249", 16: "m4a1", 17: "mac10", 19: "p90", 23: "mp5sd", 24: "ump45",
+    25: "xm1014", 26: "bizon", 27: "mag7", 28: "negev", 29: "sawedoff", 30: "tec9", 31: "taser",
+    32: "hkp2000", 33: "mp7", 34: "mp9", 35: "nova", 36: "p250", 38: "scar20", 39: "sg556", 40: "ssg08",
+    41: "knifegg", 42: "knife", 43: "flashbang", 44: "hegrenade", 45: "smokegrenade", 46: "molotov",
+    47: "decoy", 48: "incgrenade", 49: "c4", 57: "healthshot", 59: "knife_t", 60: "m4a1_silencer",
+    61: "usp_silencer", 63: "cz75a", 64: "revolver"
+  };
+  var ICON_BASE = "file://{images}/icons/equipment/";
+
+  function itemIcon(def) {
+    var n = ICONS[def] || (def >= 500 && def < 600 ? "knife" : null);
+    return n ? ICON_BASE + n + ".svg" : null;
+  }
+
+  // Names for the slot list, where a row is shared and space is short. The header keeps the full name.
+  var SHORT = { 43: "Flash", 44: "HE", 45: "Smoke", 47: "Decoy", 48: "Incendiary", 31: "Zeus", 83: "Frag" };
+  // Order inside a shared row: knife before the Zeus, grenades in buy-menu order. Unlisted items keep
+  // their inventory order after these.
+  var ORDER = { 31: 50, 43: 1, 45: 2, 44: 3, 46: 4, 48: 4, 47: 5 };
   // gear_slot_t: 0 rifle, 1 pistol, 2 knife, 3 grenades, 4 C4.
   var GEAR = [P, S2, K, G, O];
 
@@ -118,12 +144,26 @@
 
   // ── view: what the card shows for one player ────────────────────────────────────────────────
   // { name, clip, reserve, count, tone, slots: { primary..other, active } | null }
-  function slotsEqual(a, b) {
+  // slots = { active: slot name | null, rows: { <slot>: { items: [{ t: text | null, ic: icon path | null }], on: index | -1, more: n } | null } }
+  function rowEqual(a, b) {
     if (a === b) return true;
-    if (!a || !b) return false;
-    if (a.active !== b.active) return false;
-    for (var i = 0; i < SLOTS.length; i++) if ((a[SLOTS[i]] || "") !== (b[SLOTS[i]] || "")) return false;
+    if (!a || !b || a.on !== b.on || a.more !== b.more || a.items.length !== b.items.length) return false;
+    for (var i = 0; i < a.items.length; i++) {
+      if (a.items[i].t !== b.items[i].t || a.items[i].ic !== b.items[i].ic) return false;
+    }
     return true;
+  }
+
+  /** Fit a row to the layout: at most ROW_ITEMS labels, the item in hand always among them, then "+N". */
+  function fitRow(items, on) {
+    var more = 0;
+    if (items.length > ROW_ITEMS) {
+      more = items.length - ROW_ITEMS;
+      var shown = items.slice(0, ROW_ITEMS);
+      if (on >= ROW_ITEMS) { shown[ROW_ITEMS - 1] = items[on]; on = ROW_ITEMS - 1; }
+      items = shown;
+    }
+    return { items: items, on: on, more: more };
   }
 
   function text(v) { return v === undefined || v === null ? null : String(v); }
@@ -140,7 +180,7 @@
     var autoFilter = null;
     var autoSlots = {};             // slot -> true (auto for listed players)
     var manual = {};                // slot -> true (set/hide took the player out of auto)
-    var opts = { name: null, hideSlots: false };
+    var opts = { name: null, icon: null, hideSlots: false };
     var state = {};                 // slot -> { frame, activeKey, items }
     var infos = {};                 // weapon key -> { def, cat, ammoType, maxClip, peak }
     var frameSub = null;
@@ -167,6 +207,10 @@
         note(I.swap(slot, "gk_wpn_name", "text", lead ? "gk-t-" + lead : null));
         note(I.setText(slot, "gk_wpn_name", v.name));
       }
+      if (full || v.icon !== last.icon) {
+        if (v.icon) note(I.setRaw(slot, "gk_wpn_icon", v.icon));
+        note(I.setClass(slot, "gk_wpn_icon", HIDE, !v.icon));
+      }
       if (full || v.count !== last.count) {
         if (v.count !== null) note(I.setText(slot, "gk_wpn_count", "\u00d7" + v.count));
         note(I.setClass(slot, "gk_wpn_count", HIDE, v.count === null));
@@ -183,22 +227,45 @@
       // Outside the clip branch: a weapon with no clip must still drop the last one's tone, or it
       // would come back on the next weapon's full magazine.
       if (full || v.tone !== last.tone) note(I.swap(slot, "gk_wpn_clip", "text", v.tone ? "gk-t-" + v.tone : null));
-      if (full || !slotsEqual(v.slots, last.slots)) {
-        note(I.setClass(slot, "gk_wpn_slots", HIDE, !v.slots));
-        if (v.slots) {
-          var prev = full ? null : last.slots;
-          for (var i = 0; i < SLOTS.length; i++) {
-            var row = "gk_wpn_s" + i;
-            var label = v.slots[SLOTS[i]];
-            var had = prev ? prev[SLOTS[i]] : undefined;
-            var wasSel = prev ? (!!had && prev.active === SLOTS[i]) : undefined;
-            // A hidden row is never selected, so its highlight is cleared before it hides.
-            var sel = !!label && v.slots.active === SLOTS[i];
-            if (sel !== wasSel) note(I.setClass(slot, row, "gk-sel", sel));
-            if (!label) { if (!prev || had) note(I.setClass(slot, row, HIDE, true)); continue; }
-            if (label !== had) note(I.setText(slot, row + "_t", label));
-            if (!prev || !had) note(I.setClass(slot, row, HIDE, false));
+      var prevSlots = full ? null : (last.slots || null);
+      if (full || !!v.slots !== !!prevSlots) note(I.setClass(slot, "gk_wpn_slots", HIDE, !v.slots));
+      if (v.slots) {
+        for (var i = 0; i < SLOTS.length; i++) {
+          var id = "gk_wpn_s" + i;
+          var row = v.slots.rows[SLOTS[i]] || null;
+          var had = prevSlots ? (prevSlots.rows[SLOTS[i]] || null) : undefined;   // undefined: unknown
+          // A hidden row is never selected, so its highlight is cleared before it hides.
+          var sel = !!row && v.slots.active === SLOTS[i];
+          var wasSel = prevSlots ? (!!had && prevSlots.active === SLOTS[i]) : undefined;
+          if (sel !== wasSel) note(I.setClass(slot, id, "gk-sel", sel));
+          if (had !== undefined && rowEqual(row, had)) continue;
+          if (!row) { note(I.setClass(slot, id, HIDE, true)); continue; }
+          for (var j = 0; j < ROW_ITEMS; j++) {
+            var cell = id + "_i" + j;
+            var item = j < row.items.length ? row.items[j] : null;
+            var hadItem = had ? (j < had.items.length ? had.items[j] : null) : undefined;   // undefined: unknown
+            var on = item !== null && row.on === j;
+            var wasOn = had ? (hadItem !== null && had.on === j) : undefined;
+            if (on !== wasOn) note(I.setClass(slot, cell, "gk-on", on));
+            if (hadItem === undefined || (item === null) !== (hadItem === null)) note(I.setClass(slot, cell, HIDE, item === null));
+            if (item === null) continue;
+            var hadT = hadItem ? hadItem.t : undefined;
+            var hadIc = hadItem ? hadItem.ic : undefined;
+            if (item.t !== hadT) {
+              if (item.t !== null) note(I.setText(slot, cell + "_t", item.t));
+              if (hadT === undefined || (item.t === null) !== (hadT === null)) note(I.setClass(slot, cell + "_t", HIDE, item.t === null));
+            }
+            if (item.ic !== hadIc) {
+              if (item.ic !== null) note(I.setRaw(slot, cell + "_ic", item.ic));
+              if (hadIc === undefined || (item.ic === null) !== (hadIc === null)) note(I.setClass(slot, cell + "_ic", HIDE, item.ic === null));
+            }
           }
+          var hadMore = had ? had.more : undefined;
+          if (row.more !== hadMore) {
+            if (row.more > 0) note(I.setText(slot, id + "_more", "+" + row.more));
+            note(I.setClass(slot, id + "_more", HIDE, row.more <= 0));
+          }
+          if (!had) note(I.setClass(slot, id, HIDE, false));
         }
       }
       if (full) note(I.show(slot, "gk_wpn"));
@@ -215,14 +282,47 @@
     }
 
     // ── manual ───────────────────────────────────────────────────────────────────────────────
+    // A row is a string (one item, bright when its row is the active one, as before item marks
+    // existed) or { items, active? } to mark one item of several. An item is text or { text?, icon? }.
+    function normItem(value) {
+      if (value === undefined || value === null) return null;
+      var t = null;
+      var ic = null;
+      if (typeof value === "object") {
+        t = text(value.text);
+        ic = value.icon ? String(value.icon) : null;
+      } else {
+        t = String(value);
+      }
+      t = t ? U.plainText(t) : "";
+      return t || ic ? { t: t || null, ic: ic } : null;
+    }
+
+    function normRow(value, isActiveRow) {
+      if (value === undefined || value === null) return null;
+      if (typeof value === "object" && Array.isArray(value.items)) {
+        var items = [];
+        var on = -1;
+        for (var i = 0; i < value.items.length; i++) {
+          var item = normItem(value.items[i]);
+          if (!item) continue;
+          if (value.active === i) on = items.length;
+          items.push(item);
+        }
+        return items.length ? fitRow(items, on) : null;
+      }
+      var one = normItem(value);
+      return one ? { items: [one], on: isActiveRow ? 0 : -1, more: 0 } : null;
+    }
+
     function normSlots(spec) {
       if (!spec || typeof spec !== "object") return null;
-      var out = { active: SLOTS.indexOf(spec.active) >= 0 ? spec.active : null };
+      var out = { active: SLOTS.indexOf(spec.active) >= 0 ? spec.active : null, rows: {} };
       var any = false;
       for (var i = 0; i < SLOTS.length; i++) {
-        var t = text(spec[SLOTS[i]]);
-        out[SLOTS[i]] = t ? U.plainText(t) : null;
-        if (out[SLOTS[i]]) any = true;
+        var row = normRow(spec[SLOTS[i]], out.active === SLOTS[i]);
+        out.rows[SLOTS[i]] = row;
+        if (row) any = true;
       }
       return any ? out : null;
     }
@@ -232,6 +332,7 @@
       var clip = count(spec.clip);
       return {
         name: String(spec.name),
+        icon: spec.icon ? String(spec.icon) : null,
         clip: clip,
         reserve: clip === null ? null : count(spec.reserve),
         count: count(spec.count),
@@ -259,16 +360,34 @@
       return info;
     }
 
-    function nameFor(w, info) {
-      if (typeof opts.name === "function") {
+    /** The gamemode's name for an item (options.name), or null to use the default. */
+    function customName(w, info) {
+      if (typeof opts.name !== "function") return null;
+      try {
+        var custom = opts.name(info.def, w);
+        if (custom !== null && custom !== undefined) return String(custom);
+      } catch (e) {
+        if (nameErrors++ < 5) U.log("weapon.auto name() threw: " + ((e && e.message) || e));
+      }
+      return null;
+    }
+
+    /** The item's icon: the gamemode's (options.icon), else the game's own for that item. */
+    function iconFor(w, info) {
+      if (typeof opts.icon === "function") {
         try {
-          var custom = opts.name(info.def, w);
-          if (custom !== null && custom !== undefined) return String(custom);
+          var custom = opts.icon(info.def, w);
+          if (custom !== null && custom !== undefined) return custom === "" ? null : String(custom);
         } catch (e) {
-          if (nameErrors++ < 5) U.log("weapon.auto name() threw: " + ((e && e.message) || e));
+          if (nameErrors++ < 5) U.log("weapon.auto icon() threw: " + ((e && e.message) || e));
         }
       }
-      return itemName(info.def);
+      return itemIcon(info.def);
+    }
+
+    function nameFor(w, info) {
+      var custom = customName(w, info);
+      return custom !== null ? custom : itemName(info.def);
     }
 
     function readInventory(pawn, st) {
@@ -279,28 +398,46 @@
         var key = weaponKey(w);
         if (!key || !w.ref.isValid()) continue;
         var info = infoFor(w, key);
-        items.push({ key: key, weapon: w, info: info, name: nameFor(w, info) });
+        var custom = customName(w, info);
+        items.push({
+          key: key, weapon: w, info: info, custom: custom, icon: iconFor(w, info),
+          name: custom !== null ? custom : itemName(info.def)
+        });
       }
       st.items = items;
     }
 
-    function slotList(pawn, st, activeCat) {
-      var out = { active: activeCat };
+    function slotList(pawn, st, activeCat, activeKey) {
+      var out = { active: activeCat, rows: {} };
       var byCat = {};
       for (var i = 0; i < st.items.length; i++) {
         var it = st.items[i];
-        var label = U.plainText(it.name);
+        // The icon stands for the item. Text joins it for a renamed item, an item with no icon,
+        // and a grenade count.
+        var label = it.custom !== null ? U.plainText(it.custom) : (it.icon ? "" : (SHORT[it.info.def] || it.name));
         if (it.info.cat === G) {
           var n = grenadeCount(pawn, it.info);
-          if (n > 1) label += " ×" + n;
+          if (n > 1) label += (label ? " " : "") + "\u00d7" + n;
         }
-        (byCat[it.info.cat] || (byCat[it.info.cat] = [])).push(label);
+        var rank = ORDER[it.info.def];
+        (byCat[it.info.cat] || (byCat[it.info.cat] = [])).push({
+          label: { t: label || null, ic: it.icon }, key: it.key, rank: rank === undefined ? (it.info.cat === K ? 0 : 99) : rank, at: i
+        });
       }
       var any = false;
       for (var c = 0; c < SLOTS.length; c++) {
-        var names = byCat[SLOTS[c]];
-        out[SLOTS[c]] = names ? names.join(" · ") : null;
-        if (names) any = true;
+        var list = byCat[SLOTS[c]];
+        if (!list) { out.rows[SLOTS[c]] = null; continue; }
+        list.sort(function (a, b) { return a.rank - b.rank || a.at - b.at; });
+        var labels = [];
+        var on = -1;
+        for (var k = 0; k < list.length; k++) {
+          labels.push(list[k].label);
+          // The entity in hand, not its name: two items with one name stay distinguishable.
+          if (list[k].key === activeKey) on = k;
+        }
+        out.rows[SLOTS[c]] = fitRow(labels, on);
+        any = true;
       }
       return any ? out : null;
     }
@@ -319,10 +456,13 @@
 
       var info = infoFor(w, key);
       var name = null;
-      for (var i = 0; i < st.items.length; i++) if (st.items[i].key === key) { name = st.items[i].name; break; }
-      if (name === null) name = nameFor(w, info);
+      var icon = null;
+      for (var i = 0; i < st.items.length; i++) {
+        if (st.items[i].key === key) { name = st.items[i].name; icon = st.items[i].icon; break; }
+      }
+      if (name === null) { name = nameFor(w, info); icon = iconFor(w, info); }
 
-      var v = { name: name, clip: null, reserve: null, count: null, tone: null, slots: null };
+      var v = { name: name, icon: icon, clip: null, reserve: null, count: null, tone: null, slots: null };
       if (info.cat === G) {
         v.count = grenadeCount(pawn, info);
       } else if (info.cat !== K || info.def === 31) {
@@ -338,7 +478,7 @@
           v.tone = clip === 0 || (max > 0 && clip <= max * LOW_FRACTION) ? "red" : null;
         }
       }
-      if (!opts.hideSlots) v.slots = slotList(pawn, st, info.cat);
+      if (!opts.hideSlots) v.slots = slotList(pawn, st, info.cat, key);
       return v;
     }
 
@@ -430,8 +570,11 @@
         if (options.name !== undefined && options.name !== null && typeof options.name !== "function") {
           throw new Error("GameHud.weapon.auto: options.name must be a function");
         }
-        var nameChanged = opts.name !== (options.name || null);
-        opts = { name: options.name || null, hideSlots: !!options.hideSlots };
+        if (options.icon !== undefined && options.icon !== null && typeof options.icon !== "function") {
+          throw new Error("GameHud.weapon.auto: options.icon must be a function");
+        }
+        var nameChanged = opts.name !== (options.name || null) || opts.icon !== (options.icon || null);
+        opts = { name: options.name || null, icon: options.icon || null, hideSlots: !!options.hideSlots };
         if (nameChanged) { for (var s in state) if (Object.prototype.hasOwnProperty.call(state, s)) state[s].items = null; }
         if (audience === undefined || audience === null || audience === "all" || typeof audience === "function") {
           autoAll = true;
@@ -448,7 +591,7 @@
         var v = viewFromSpec(spec);
         var slots = takeManual(audience);
         for (var i = 0; i < slots.length; i++) {
-          var copy = { name: v.name, clip: v.clip, reserve: v.reserve, count: v.count, tone: v.tone, slots: v.slots };
+          var copy = { name: v.name, icon: v.icon, clip: v.clip, reserve: v.reserve, count: v.count, tone: v.tone, slots: v.slots };
           paint(slots[i], copy);
         }
       },

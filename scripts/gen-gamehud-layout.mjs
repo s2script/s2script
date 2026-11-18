@@ -61,7 +61,9 @@ export const SPEC = {
   hub: { items: 8, card: 6, picker: 12 },
   summary: { stats: 4, cols: 4, rows: 5 },
   // Weapon card rows, in CS2's slot-key order: primary, secondary, knife, grenades, other (C4 and the rest).
-  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"] },
+  // Each row holds up to `items` items (knife and Zeus share a row, grenades share a row) and a "+N"
+  // label. An item is an icon, a label, or both.
+  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"], items: 4, iconHeight: 16, headIconHeight: 22 },
 };
 const S = SPEC;
 
@@ -80,6 +82,9 @@ function layoutBuilder(name) {
     text: (d, cls, value) => st.lines.push(`${T(d)}<Label class="${cls}" text="${value}" />`),
     label: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Label id="${id}" class="${cls}" text="{s:${id}}" />`); return id; },
     image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" scaling="stretch-to-fit-preserve-aspect" />`); return id; },
+    // An icon sized by its texture, not by CSS: a fixed height and a width that follows the image's
+    // own aspect (texturewidth -1). Both attributes are on CustomHud's Image whitelist.
+    icon: (d, id, cls, height) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" textureheight="${height}" texturewidth="-1" />`); return id; },
     button: (d, id, cls, kids) => { b.open(d, "Button", id, cls); st.buttons.push(id); kids(d + 1); b.close(d, "Button"); },
     meter: (d, meterName, fillId, trackCls, fillCls) => {
       b.open(d, "Panel", null, trackCls);
@@ -176,19 +181,30 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
   b.close(d, "Panel");
 
   b.raw(d, `<!-- Weapon card: replaces the stock weapons HUD (m_iHideHUD bit 6). Bottom right, clear of chat (left) and the kill feed (top right).
-       A compact slot list, then the active weapon's name (or grenade count) and clip / reserve. -->`);
+       A compact slot list (the item in hand takes gk-on, its row gk-sel), then the active weapon's name (or grenade count) and clip / reserve. -->`);
   b.open(d, "Panel", "gk_wpn", "gk-panel gk-wpn s2-hide");
   b.open(d + 1, "Panel", "gk_wpn_slots", "gk-wpn-slots s2-hide");
   S.weapon.slots.forEach((slotName, i) => {
     const r = `gk_wpn_s${i}`;
     b.open(d + 2, "Panel", r, "gk-wslot s2-hide");
     b.text(d + 3, "gk-wslot-k", String(i + 1));
-    b.label(d + 3, `${r}_t`, "gk-wslot-t");
+    b.open(d + 3, "Panel", null, "gk-wslot-items");
+    const vars = [];
+    for (let j = 0; j < S.weapon.items; j++) {
+      const c = `${r}_i${j}`;
+      b.open(d + 4, "Panel", c, "gk-wslot-i s2-hide");
+      vars.push(b.icon(d + 5, `${c}_ic`, "gk-wslot-ic s2-hide", S.weapon.iconHeight));
+      vars.push(b.label(d + 5, `${c}_t`, "gk-wslot-t s2-hide"));
+      b.close(d + 4, "Panel");
+    }
+    vars.push(b.label(d + 4, `${r}_more`, "gk-wslot-t gk-wslot-more s2-hide"));
+    b.close(d + 3, "Panel");
     b.close(d + 2, "Panel");
-    b.pool("weaponSlots", { id: r, slot: slotName, vars: [`${r}_t`] });
+    b.pool("weaponSlots", { id: r, slot: slotName, vars });
   });
   b.close(d + 1, "Panel");
   b.open(d + 1, "Panel", null, "gk-wpn-hd");
+  b.icon(d + 2, "gk_wpn_icon", "gk-wpn-icon s2-hide", S.weapon.headIconHeight);
   b.label(d + 2, "gk_wpn_name", "gk-wpn-name");
   b.label(d + 2, "gk_wpn_count", "gk-wpn-count s2-hide");
   b.close(d + 1, "Panel");

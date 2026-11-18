@@ -83,7 +83,10 @@
           "knife",
           "grenades",
           "other"
-        ]
+        ],
+        "items": 4,
+        "iconHeight": 16,
+        "headIconHeight": 22
       }
     },
     "classes": {
@@ -253,35 +256,75 @@
             "id": "gk_wpn_s0",
             "slot": "primary",
             "vars": [
-              "gk_wpn_s0_t"
+              "gk_wpn_s0_i0_ic",
+              "gk_wpn_s0_i0_t",
+              "gk_wpn_s0_i1_ic",
+              "gk_wpn_s0_i1_t",
+              "gk_wpn_s0_i2_ic",
+              "gk_wpn_s0_i2_t",
+              "gk_wpn_s0_i3_ic",
+              "gk_wpn_s0_i3_t",
+              "gk_wpn_s0_more"
             ]
           },
           {
             "id": "gk_wpn_s1",
             "slot": "secondary",
             "vars": [
-              "gk_wpn_s1_t"
+              "gk_wpn_s1_i0_ic",
+              "gk_wpn_s1_i0_t",
+              "gk_wpn_s1_i1_ic",
+              "gk_wpn_s1_i1_t",
+              "gk_wpn_s1_i2_ic",
+              "gk_wpn_s1_i2_t",
+              "gk_wpn_s1_i3_ic",
+              "gk_wpn_s1_i3_t",
+              "gk_wpn_s1_more"
             ]
           },
           {
             "id": "gk_wpn_s2",
             "slot": "knife",
             "vars": [
-              "gk_wpn_s2_t"
+              "gk_wpn_s2_i0_ic",
+              "gk_wpn_s2_i0_t",
+              "gk_wpn_s2_i1_ic",
+              "gk_wpn_s2_i1_t",
+              "gk_wpn_s2_i2_ic",
+              "gk_wpn_s2_i2_t",
+              "gk_wpn_s2_i3_ic",
+              "gk_wpn_s2_i3_t",
+              "gk_wpn_s2_more"
             ]
           },
           {
             "id": "gk_wpn_s3",
             "slot": "grenades",
             "vars": [
-              "gk_wpn_s3_t"
+              "gk_wpn_s3_i0_ic",
+              "gk_wpn_s3_i0_t",
+              "gk_wpn_s3_i1_ic",
+              "gk_wpn_s3_i1_t",
+              "gk_wpn_s3_i2_ic",
+              "gk_wpn_s3_i2_t",
+              "gk_wpn_s3_i3_ic",
+              "gk_wpn_s3_i3_t",
+              "gk_wpn_s3_more"
             ]
           },
           {
             "id": "gk_wpn_s4",
             "slot": "other",
             "vars": [
-              "gk_wpn_s4_t"
+              "gk_wpn_s4_i0_ic",
+              "gk_wpn_s4_i0_t",
+              "gk_wpn_s4_i1_ic",
+              "gk_wpn_s4_i1_t",
+              "gk_wpn_s4_i2_ic",
+              "gk_wpn_s4_i2_t",
+              "gk_wpn_s4_i3_ic",
+              "gk_wpn_s4_i3_t",
+              "gk_wpn_s4_more"
             ]
           }
         ],
