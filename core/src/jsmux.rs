@@ -138,12 +138,26 @@ struct State {
     drop: v8::Global<v8::Function>,
     dispatch: v8::Global<v8::Function>,
     frame: v8::Global<v8::Function>,
+    /// Per kind: each channel's name as a V8 string, its breadcrumb tag and a shared copy for the
+    /// crossing stack, built on its first crossing instead of on every one.
+    names: [HashMap<String, Names>; KINDS],
 }
+
+/// What one channel's crossings reuse. Lives in `State`, so it goes with the context it was made in.
+struct Names {
+    js: v8::Global<v8::String>,
+    tag: Option<std::rc::Rc<str>>,
+    name: std::rc::Rc<str>,
+}
+
+/// Channels cached per kind. Client command names come from clients, so the cache is bounded; a
+/// channel past it builds its strings per crossing as before.
+const NAMES_CAP: usize = 512;
 
 /// One per crossing in progress (crossings nest when a handler fires another event).
 struct Frame {
     kind: Kind,
-    name: String,
+    name: std::rc::Rc<str>,
     breadcrumb: bool,
     owner: Option<(u32, u64)>,
 }
@@ -395,15 +409,14 @@ impl Job<'_> {
     {
         let Some(context) = ensure_state(hs) else { return CONTINUE };
         let cs = &mut v8::ContextScope::new(hs, context);
-        let Some(name) = v8::String::new(cs, self.name) else { return CONTINUE };
+        let Some((name, tag, shared)) = self.names(cs) else { return CONTINUE };
         self.sync(cs, name);
 
-        let tag = self.kind.tag(self.name);
         let _crumb = tag.as_deref().map(crate::crash::breadcrumb::enter_dispatch_tag);
         FRAMES.with(|f| {
             f.borrow_mut().push(Frame {
                 kind: self.kind,
-                name: self.name.to_string(),
+                name: shared,
                 breadcrumb: tag.is_some(),
                 owner: None,
             })
@@ -435,6 +448,34 @@ impl Job<'_> {
             return Outcome { result: hook_result(result), errored };
         }
         Outcome { result: hook_result(ret.int32_value(tc).unwrap_or(0)), errored: Vec::new() }
+    }
+
+    /// This channel's name as a V8 string, its breadcrumb tag and a shared copy of the name: from the
+    /// cache after the first crossing.
+    #[allow(clippy::type_complexity)]
+    fn names<'t>(
+        &self,
+        cs: &mut v8::PinScope<'t, '_>,
+    ) -> Option<(v8::Local<'t, v8::String>, Option<std::rc::Rc<str>>, std::rc::Rc<str>)> {
+        let k = self.kind as usize;
+        let hit = STATE.with(|s| {
+            s.borrow().as_ref().and_then(|st| st.names[k].get(self.name).map(|n| (n.js.clone(), n.tag.clone(), n.name.clone())))
+        });
+        if let Some((js, tag, name)) = hit {
+            return Some((v8::Local::new(cs, &js), tag, name));
+        }
+        let js = v8::String::new(cs, self.name)?;
+        let tag: Option<std::rc::Rc<str>> = self.kind.tag(self.name).map(Into::into);
+        let name: std::rc::Rc<str> = self.name.into();
+        STATE.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                if st.names[k].len() < NAMES_CAP {
+                    let entry = Names { js: v8::Global::new(cs, js), tag: tag.clone(), name: name.clone() };
+                    st.names[k].insert(self.name.to_string(), entry);
+                }
+            }
+        });
+        Some((js, tag, name))
     }
 
     /// Push this channel's subscriber array to JS if it changed since it was last pushed, and drop
@@ -589,7 +630,7 @@ fn ensure_state<'s>(hs: &mut v8::PinScope<'s, '_, ()>) -> Option<v8::Local<'s, v
         Some(v8::Global::new(cs, f))
     };
     let (set, drop, dispatch, frame) = (get("set")?, get("drop")?, get("dispatch")?, get("frame")?);
-    let state = State { context: v8::Global::new(cs, context), set, drop, dispatch, frame };
+    let state = State { context: v8::Global::new(cs, context), set, drop, dispatch, frame, names: Default::default() };
     STATE.with(|s| *s.borrow_mut() = Some(state));
     Some(context)
 }

@@ -1645,6 +1645,8 @@ pub(crate) fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
 /// books-gated degrade any stale ref already gets, the className still identifies what died, and it
 /// is strictly more than today's total drop. Documented in the entity `.d.ts`.
 pub(crate) fn replay_entity_event(kind: &str, class_name: &str, handle: i32) -> Delivery {
+    // Most entity events have no subscriber at all: answer before building any key or label.
+    if ENTITY_MUX.with(|m| m.borrow().is_empty()) { return Delivery::Delivered; }
     // Snapshot the exact-class key + the "<kind>\0*" wildcard (skip the wild when class == "*", else
     // the same key would be snapshotted twice). Both taken before any JS runs.
     let exact = format!("{}\0{}", kind, class_name);
@@ -1653,6 +1655,7 @@ pub(crate) fn replay_entity_event(kind: &str, class_name: &str, handle: i32) -> 
         let wild = format!("{}\0*", kind);
         snap.extend(ENTITY_MUX.with(|m| m.borrow().snapshot(&wild)));
     }
+    if snap.is_empty() { return Delivery::Delivered; }
     let label = format!("dispatch_entity_event('{}','{}')", kind, class_name);
     fan_out(&snap, &label, Instrument::none(), |tc| {
         let entity_val: v8::Local<v8::Value> = if handle == -1 {

@@ -959,6 +959,7 @@
       reg(viaId(function () {
         var frame = globalThis.__s2pkg_frame;
         if (frame) return frame.OnGameFrame.subscribe(function () {
+          if (focusReconcilers.length === 0) return;   // no copy (and no garbage) on a quiet frame
           var pending = focusReconcilers.slice();
           for (var i = 0; i < pending.length; i++) pending[i]();
         }, { phase: "pre" });
