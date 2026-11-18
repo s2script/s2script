@@ -780,6 +780,35 @@ unsafe extern "C" fn profiler_promise_hook(
     }
 }
 
+/// The slow-frame watchdog's GC timing (`frame_watch`). Installed for the isolate's lifetime, apart
+/// from the profiler's callbacks: a clock read per collection. Only the pauses count: young
+/// (scavenge, minor mark-sweep) and full (mark-compact) collections; incremental marking steps and
+/// weak-callback notifications are skipped.
+unsafe extern "C" fn watch_gc_prologue(
+    _isolate: v8::UnsafeRawIsolatePtr,
+    ty: v8::GCType,
+    _flags: v8::GCCallbackFlags,
+    _data: *mut std::ffi::c_void,
+) {
+    if matches!(ty, v8::GCType::kGCTypeScavenge | v8::GCType::kGCTypeMinorMarkSweep | v8::GCType::kGCTypeMarkSweepCompact) {
+        let _ = std::panic::catch_unwind(crate::frame_watch::gc_begin);
+    }
+}
+
+unsafe extern "C" fn watch_gc_epilogue(
+    _isolate: v8::UnsafeRawIsolatePtr,
+    ty: v8::GCType,
+    _flags: v8::GCCallbackFlags,
+    _data: *mut std::ffi::c_void,
+) {
+    let full = match ty {
+        v8::GCType::kGCTypeMarkSweepCompact => true,
+        v8::GCType::kGCTypeScavenge | v8::GCType::kGCTypeMinorMarkSweep => false,
+        _ => return,
+    };
+    let _ = std::panic::catch_unwind(move || crate::frame_watch::gc_end(full));
+}
+
 /// Install (`on`) or remove the profiler's V8 hooks. A no-op when V8 is busy or absent: the
 /// profiler then records spans without GC/async detail rather than failing.
 pub(crate) fn profiler_hooks(on: bool) {
@@ -6158,6 +6187,10 @@ pub fn init(logger: LogFn) -> Result<(), String> {
     // rejections into PENDING_REJECTS; the frame_async_drain flush reports whatever survived the
     // end-of-frame microtask checkpoint (a later .catch cancels its entry).
     isolate.set_promise_reject_callback(promise_reject_cb);
+
+    // The slow-frame watchdog times every collection (`frame_watch`).
+    isolate.add_gc_prologue_callback(watch_gc_prologue, std::ptr::null_mut(), v8::GCType::kGCTypeAll);
+    isolate.add_gc_epilogue_callback(watch_gc_epilogue, std::ptr::null_mut(), v8::GCType::kGCTypeAll);
 
     // Build the context inside a nested block so the HandleScope borrow on
     // `isolate` is released before we move `isolate` into `Host`.

@@ -177,13 +177,18 @@ fn run(args: &str) -> Vec<String> {
     match sub.as_str() {
         "" => {
             let mut lines = vec![version_line()];
-            lines.push("Commands: sm version | sm credits | sm plugins … | sm ext … | sm prof …".to_string());
+            lines.push("Commands: sm version | sm credits | sm plugins … | sm ext … | sm prof … | sm frames …".to_string());
             lines
         }
         "version" => vec![version_line(), "Visit https://www.s2script.com/".to_string()],
         "credits" => credits(),
         "plugins" => plugins(&argv[1..]),
         "prof" => prof(&argv[1..]),
+        "frames" => match argv.get(1) {
+            None => crate::frame_watch::status(),
+            Some(arg) if argv.len() == 2 => crate::frame_watch::command(arg),
+            Some(_) => vec![crate::frame_watch::USAGE.to_string()],
+        },
         "ext" | "exts" | "extensions" => ext(&argv[1..]),
         other => vec![format!("[S2S] Unknown sub-command '{other}'. Try: sm plugins list")],
     }
