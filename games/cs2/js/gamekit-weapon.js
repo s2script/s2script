@@ -179,8 +179,10 @@
           if (v.reserve !== null) note(I.setText(slot, "gk_wpn_res", "/ " + v.reserve));
           note(I.setClass(slot, "gk_wpn_res", HIDE, v.reserve === null));
         }
-        if (full || v.tone !== last.tone) note(I.swap(slot, "gk_wpn_clip", "text", v.tone ? "gk-t-" + v.tone : null));
       }
+      // Outside the clip branch: a weapon with no clip must still drop the last one's tone, or it
+      // would come back on the next weapon's full magazine.
+      if (full || v.tone !== last.tone) note(I.swap(slot, "gk_wpn_clip", "text", v.tone ? "gk-t-" + v.tone : null));
       if (full || !slotsEqual(v.slots, last.slots)) {
         note(I.setClass(slot, "gk_wpn_slots", HIDE, !v.slots));
         if (v.slots) {
@@ -190,11 +192,12 @@
             var label = v.slots[SLOTS[i]];
             var had = prev ? prev[SLOTS[i]] : undefined;
             var wasSel = prev ? prev.active === SLOTS[i] : undefined;
-            var sel = v.slots.active === SLOTS[i];
+            // A hidden row is never selected, so its highlight is cleared before it hides.
+            var sel = !!label && v.slots.active === SLOTS[i];
+            if (sel !== wasSel) note(I.setClass(slot, row, "gk-sel", sel));
             if (!label) { if (!prev || had) note(I.setClass(slot, row, HIDE, true)); continue; }
             if (label !== had) note(I.setText(slot, row + "_t", label));
             if (!prev || !had) note(I.setClass(slot, row, HIDE, false));
-            if (sel !== wasSel) note(I.setClass(slot, row, "gk-sel", sel));
           }
         }
       }

@@ -288,3 +288,37 @@ test("a disconnect forgets the slot", () => {
   m.disconnect(0);
   assert.equal(m.frameSubs, 0, "no player left on auto");
 });
+
+test("a low-ammo tone and a slot highlight do not survive a weapon with no clip or a dropped slot", () => {
+  const m = mount({ files: ["gamekit-weapon.js"] });
+  const P = players(m);
+  const ak = weapon(7, { clip: 2, reserve: 90, max: 30 });
+  const usp = weapon(61, { clip: 12, reserve: 24, max: 12 });
+  const knife = weapon(42);
+  const pawn = P.put(0, { weapons: [ak, usp, knife], active: ak });
+  const W = m.GameHud.weapon;
+  W.claim();
+  W.auto(0);
+  m.frame();
+  assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), true);
+  pawn.activeWeapon = knife;
+  m.frame();
+  pawn.activeWeapon = usp;
+  m.frame();
+  assert.equal(m.text(0, "gk_wpn_clip"), "12");
+  assert.equal(m.has(0, "gk_wpn_clip", "gk-t-red"), false, "the knife cleared the AK's low tone");
+
+  // Drop the active rifle, then pick one up while holding the pistol.
+  pawn.activeWeapon = ak;
+  m.frame();
+  assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), true);
+  pawn.weapons = [usp, knife];
+  pawn.activeWeapon = usp;
+  m.frame();
+  assert.equal(m.hidden(0, "gk_wpn_s0"), true);
+  pawn.weapons = [weapon(9, { clip: 5, reserve: 30, max: 5 }), usp, knife];
+  for (let i = 0; i < 8; i++) m.frame();
+  assert.equal(m.hidden(0, "gk_wpn_s0"), false);
+  assert.equal(m.has(0, "gk_wpn_s0", "gk-sel"), false, "the returned row is not highlighted");
+  assert.equal(m.has(0, "gk_wpn_s1", "gk-sel"), true);
+});
