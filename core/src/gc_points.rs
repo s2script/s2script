@@ -47,6 +47,8 @@ pub(crate) fn frame_post(settled: bool) {
 
 /// Run a full collection now and log what it took and freed.
 fn collect(why: &str) {
+    // A pause on purpose, with its own log line below: not a slow frame.
+    crate::frame_watch::planned_pause();
     let t = std::time::Instant::now();
     let Ok((before, after)) = crate::v8host::with_host_isolate(|isolate| {
         let before = isolate.get_heap_statistics().used_heap_size();
