@@ -92,6 +92,17 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
             crate::profiler::apply_pending();
             crate::profiler::frame_pre();
         }
+        // The watchdog's frame ends after every timed section below has closed, and also when one
+        // of them panics: otherwise the window never closes and a panic loop logs nothing.
+        struct EndFrame;
+        impl Drop for EndFrame {
+            fn drop(&mut self) {
+                if let Some(line) = crate::frame_watch::end_frame() {
+                    v8host::log_warn(&line);
+                }
+            }
+        }
+        let _end_frame = (phase == Phase::Post).then_some(EndFrame);
         let out = {
             use crate::profiler::framework;
             use crate::frame_watch::{self as fw, Part};
@@ -128,10 +139,6 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
         };
         if phase == Phase::Post {
             crate::profiler::frame_post(); // after the frame's spans closed; may auto-stop
-            // The watchdog's frame ends here, after every timed section above has closed.
-            if let Some(line) = crate::frame_watch::end_frame() {
-                v8host::log_warn(&line);
-            }
         }
         out.result as c_int
     })
