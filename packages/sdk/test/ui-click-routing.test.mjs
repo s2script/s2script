@@ -45,8 +45,10 @@ function roster(occupied=8){
  });
  c.__s2_handle_adopt=record('handleAdopt',word=>word>=100&&word<100+occupied&&state.pawnLive?[70+word-100,pawnId(70+word-100)]:null);
  c.__s2_ent_identity_flags=record('identityFlags',(index,id)=>live(index,id)?state.flags:null);
- c.__s2_client_generation=record('clientGeneration',slot=>state.connected&&slot>=0&&slot<occupied?String(state.version):'0');
- c.__s2_client_matches=record('clientMatches',(slot,token)=>state.connected&&slot>=0&&slot<occupied&&token===String(state.version));
+ c.__s2_ent_ref_readf=(index,id,offset,kind)=>NaN;   // no fast read here: readHandle takes __s2_ent_ref_read
+ c.__s2_client_generation_n=record('clientGeneration',slot=>state.connected&&slot>=0&&slot<occupied?state.version:0);
+ c.__s2_client_matches_n=record('clientMatches',(slot,token)=>state.connected&&slot>=0&&slot<occupied&&token===state.version);
+ c.__s2_client_live=record('clientLive',slot=>state.connected&&slot>=0&&slot<occupied);
  c.__s2_client_steamid=()=> '0';c.__s2_client_subscribe=()=>0;
  c.__s2require=name=>name==='@s2script/sdk/entity'?c.__s2pkg_entity:{};
  vm.runInContext(prelude.slice(entityStart,entityEnd)+';globalThis.__s2pkg_entity={EntityRef};\n'+prelude.slice(clientStart,clientEnd),c);

@@ -556,8 +556,52 @@ fn s2_client_replicate_convar(scope: &mut v8::PinScope, args: v8::FunctionCallba
     }));
 }
 
+/// A token as the fast natives take it: connection ids are minted from 1 upward, so they are exact
+/// in an f64. Anything else (0, NaN, a fraction, a negative) is no token.
+fn token_of(n: f64) -> u64 {
+    if n.is_finite() && n >= 1.0 && n <= 9_007_199_254_740_992.0 && n.fract() == 0.0 { n as u64 } else { 0 }
+}
+
+crate::native::native! {
+    /// Whether `slot` holds a connection the host has on its books: `Clients.fromSlot` and
+    /// `Clients.all` without building a token string per slot.
+    fast fn __s2_client_live(slot: i32) -> bool {
+        matches(slot, generation(slot))
+    }
+}
+
+crate::native::native! {
+    /// The connection id a `Client` captures, as a number (0 when the slot is empty).
+    fast fn __s2_client_generation_n(slot: i32) -> f64 {
+        generation(slot) as f64
+    }
+}
+
+crate::native::native! {
+    /// `__s2_client_matches` with a number token: whether `slot` still holds the connection `token`.
+    fast fn __s2_client_matches_n(slot: i32, token: f64) -> bool {
+        matches(slot, token_of(token))
+    }
+}
+
+crate::native::native! {
+    /// Whether the engine reports a client in `slot` (`__s2_client_valid` without a token).
+    fast fn __s2_client_connected(slot: i32) -> bool {
+        engine_ops().and_then(|o| o.client_valid).is_some_and(|f| f(slot) != 0)
+    }
+}
+
+/// The client natives defined with `native!`. The rest are still hand-written callbacks.
+pub(crate) const NATIVES: &[&crate::native::Meta] = &[
+    &__s2_client_live::META,
+    &__s2_client_generation_n::META,
+    &__s2_client_matches_n::META,
+    &__s2_client_connected::META,
+];
+
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    crate::native::install(scope, global_obj, NATIVES);
     set_native(scope, global_obj, "__s2_client_generation", s2_client_generation);
     set_native(scope, global_obj, "__s2_client_matches", s2_client_matches);
     set_native(scope, global_obj, "__s2_client_valid", s2_client_valid);

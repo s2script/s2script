@@ -92,7 +92,7 @@ function makeHost({ ready = BASE_CALLS, onInvoke, onHook, entities = [], signon 
       return { status: "active" };
     },
     __s2_schema_offset: () => -1,
-    __s2_client_valid: () => true,
+    __s2_client_connected: () => true,
     __s2_client_signon: () => signon,
     __s2_cvar_get: (n) => (n === "mm_extra_addons" ? "3790153369" : ""),
     __s2_map_start_subscribe: (h) => { mapStartHandlers.push(h); return 1; },

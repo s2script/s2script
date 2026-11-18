@@ -18,8 +18,9 @@ const clientEnd = prelude.indexOf('  // --- @s2script/sound', clientStart);
 assert.ok(clientStart >= 0 && clientEnd > clientStart);
 function world() {
   const w = pluginWorld(), p = w.plugin(), calls = [];
-  p.ctx.__s2_client_generation = slot => { calls.push('generation'); const c = w.client(slot); return c ? String(c.generation) : '0'; };
-  p.ctx.__s2_client_matches = (slot, token) => { calls.push('matches'); const c = w.client(slot); return !!c && String(c.generation) === token; };
+  p.ctx.__s2_client_generation_n = slot => { calls.push('generation'); const c = w.client(slot); return c ? Number(c.generation) : 0; };
+  p.ctx.__s2_client_matches_n = (slot, token) => { calls.push('matches'); const c = w.client(slot); return !!c && Number(c.generation) === token; };
+  p.ctx.__s2_client_live = slot => { calls.push('live'); return !!w.client(slot); };
   p.ctx.__s2_client_steamid = () => '0';
   p.ctx.__s2_client_subscribe = () => 0;
   vm.runInContext(prelude.slice(clientStart, clientEnd), p.ctx);
