@@ -74,6 +74,8 @@ struct State {
     full_n: u32,
     last_log: Option<Instant>,
     suppressed: u32,
+    /// This frame ran a planned pause (the post-map-start collection): not judged slow.
+    planned: bool,
     totals: Totals,
 }
 
@@ -84,7 +86,7 @@ thread_local! {
     static GC_START: Cell<Option<Instant>> = const { Cell::new(None) };
     static STATE: RefCell<State> = const { RefCell::new(State {
         parts: [0; PARTS], scavenge_ns: 0, scavenge_n: 0, full_ns: 0, full_n: 0,
-        last_log: None, suppressed: 0,
+        last_log: None, suppressed: 0, planned: false,
         totals: Totals { frames: 0, slow: 0, worst_ns: 0, scavenges: 0, fulls: 0,
             scavenge_worst_ns: 0, full_worst_ns: 0, gc_total_ns: 0 },
     }) };
@@ -163,6 +165,16 @@ pub(crate) fn gc_end(full: bool) {
     });
 }
 
+/// The current frame runs a pause on purpose, at a point chosen because it is not felt (and logs
+/// its own line): it is counted but not judged slow and not the worst frame.
+pub(crate) fn planned_pause() {
+    STATE.with(|s| {
+        if let Ok(mut s) = s.try_borrow_mut() {
+            s.planned = true;
+        }
+    });
+}
+
 fn ms(ns: u64) -> f64 {
     ns as f64 / 1e6
 }
@@ -175,9 +187,12 @@ pub(crate) fn end_frame() -> Option<String> {
         let Ok(mut s) = s.try_borrow_mut() else { return None };
         let total: u64 = s.parts.iter().sum();
         s.totals.frames += 1;
-        s.totals.worst_ns = s.totals.worst_ns.max(total);
+        let planned = std::mem::take(&mut s.planned);
+        if !planned {
+            s.totals.worst_ns = s.totals.worst_ns.max(total);
+        }
         let mut line = None;
-        if threshold > 0 && total >= threshold {
+        if !planned && threshold > 0 && total >= threshold {
             s.totals.slow += 1;
             let now = Instant::now();
             if s.last_log.is_none_or(|t| now.duration_since(t) >= LOG_INTERVAL) {
@@ -277,6 +292,7 @@ pub(crate) fn test_reset() {
     GC_START.with(|g| g.set(None));
     STATE.with(|s| {
         let mut s = s.borrow_mut();
+        s.planned = false;
         s.parts = [0; PARTS];
         s.scavenge_ns = 0;
         s.scavenge_n = 0;
@@ -352,6 +368,16 @@ mod tests {
         assert!(line.contains("of which garbage collection") && line.contains("1 full"), "{line}");
         let status = status().join("\n");
         assert!(status.contains("1 full"), "{status}");
+    }
+
+    #[test]
+    fn a_planned_pause_is_not_a_slow_frame() {
+        test_reset();
+        spend(Part::FramePost, Duration::from_millis(5));
+        planned_pause();
+        assert_eq!(end_frame(), None);
+        spend(Part::FramePost, Duration::from_millis(5));
+        assert!(end_frame().is_some(), "only that one frame is excused");
     }
 
     #[test]
