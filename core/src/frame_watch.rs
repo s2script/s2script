@@ -209,6 +209,11 @@ pub(crate) fn end_frame() -> Option<String> {
                 }
             }
         }
+        if threshold == 0 {
+            // `sm frames off`: a summary held from before must not print later.
+            s.held = 0;
+            s.worst_held = None;
+        }
         if line.is_none() && s.worst_held.is_some() {
             let now = Instant::now();
             if s.last_log.is_none_or(|t| now.duration_since(t) >= LOG_INTERVAL) {
@@ -418,6 +423,18 @@ mod tests {
         assert!(line.contains("usercmd hooks"), "the longest held frame is the one described: {line}");
         assert!(line.contains("[the longest of 2 slow frame(s) in the last 60 s]"), "{line}");
         assert_eq!(end_frame(), None, "nothing held any more");
+    }
+
+    #[test]
+    fn turning_reporting_off_drops_a_held_summary() {
+        reset();
+        spend(Part::FramePost, Duration::from_millis(3));
+        assert!(end_frame().is_some());
+        spend(Part::FramePost, Duration::from_millis(3));
+        assert_eq!(end_frame(), None, "held");
+        command("off");
+        STATE.with(|s| s.borrow_mut().last_log = Some(Instant::now() - LOG_INTERVAL));
+        assert_eq!(end_frame(), None, "nothing prints after sm frames off");
     }
 
     #[test]
