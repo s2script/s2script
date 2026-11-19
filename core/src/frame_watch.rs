@@ -47,10 +47,12 @@ const LABELS: [&str; PARTS] = [
     "other dispatch",
 ];
 
-/// The default threshold: a frame is reported when s2script used at least this much of it.
-pub(crate) const DEFAULT_THRESHOLD_MS: f64 = 4.0;
-/// At most one line per this interval; frames in between are counted and summarised.
-const LOG_INTERVAL: Duration = Duration::from_secs(1);
+/// The default threshold: a frame is reported when s2script used at least this much of it. Half a
+/// 64-tick frame: below this, s2script alone cannot push a frame past the engine's own warning.
+pub(crate) const DEFAULT_THRESHOLD_MS: f64 = 8.0;
+/// The first slow frame is printed at once; after that, at most one line per interval, naming the
+/// longest frame in it and how many there were.
+const LOG_INTERVAL: Duration = Duration::from_secs(60);
 /// A part smaller than this is left out of the line.
 const SHOW_NS: u64 = 100_000;
 
@@ -73,7 +75,9 @@ struct State {
     full_ns: u64,
     full_n: u32,
     last_log: Option<Instant>,
-    suppressed: u32,
+    /// Slow frames since the last line, and the longest of them, already described.
+    held: u32,
+    worst_held: Option<(u64, String)>,
     /// This frame ran a planned pause (the post-map-start collection): not judged slow.
     planned: bool,
     totals: Totals,
@@ -86,7 +90,7 @@ thread_local! {
     static GC_START: Cell<Option<Instant>> = const { Cell::new(None) };
     static STATE: RefCell<State> = const { RefCell::new(State {
         parts: [0; PARTS], scavenge_ns: 0, scavenge_n: 0, full_ns: 0, full_n: 0,
-        last_log: None, suppressed: 0, planned: false,
+        last_log: None, held: 0, worst_held: None, planned: false,
         totals: Totals { frames: 0, slow: 0, worst_ns: 0, scavenges: 0, fulls: 0,
             scavenge_worst_ns: 0, full_worst_ns: 0, gc_total_ns: 0 },
     }) };
@@ -194,13 +198,31 @@ pub(crate) fn end_frame() -> Option<String> {
         let mut line = None;
         if !planned && threshold > 0 && total >= threshold {
             s.totals.slow += 1;
+            if s.last_log.is_none() {
+                line = Some(describe(&s, total));
+                s.last_log = Some(Instant::now());
+            } else {
+                s.held += 1;
+                if s.worst_held.as_ref().is_none_or(|(ns, _)| total > *ns) {
+                    let text = describe(&s, total);
+                    s.worst_held = Some((total, text));
+                }
+            }
+        }
+        if threshold == 0 {
+            // `sm frames off`: a summary held from before must not print later.
+            s.held = 0;
+            s.worst_held = None;
+        }
+        if line.is_none() && s.worst_held.is_some() {
             let now = Instant::now();
             if s.last_log.is_none_or(|t| now.duration_since(t) >= LOG_INTERVAL) {
-                line = Some(describe(&s, total));
+                let (_, text) = s.worst_held.take().unwrap_or_default();
+                line = Some(format!(
+                    "{} [the longest of {} slow frame(s) in the last {} s]",
+                    text, std::mem::take(&mut s.held), LOG_INTERVAL.as_secs()
+                ));
                 s.last_log = Some(now);
-                s.suppressed = 0;
-            } else {
-                s.suppressed += 1;
             }
         }
         s.parts = [0; PARTS];
@@ -213,7 +235,8 @@ pub(crate) fn end_frame() -> Option<String> {
 }
 
 fn describe(s: &State, total: u64) -> String {
-    let mut out = format!("[s2script] slow frame: s2script used {:.1} ms", ms(total));
+    // The host logger adds the "[s2script]" prefix.
+    let mut out = format!("slow frame: s2script used {:.1} ms", ms(total));
     let mut detail: Vec<String> = Vec::new();
     let gc = s.scavenge_ns + s.full_ns;
     if gc >= SHOW_NS {
@@ -234,9 +257,6 @@ fn describe(s: &State, total: u64) -> String {
     }
     if !detail.is_empty() {
         out.push_str(&format!(" ({})", detail.join("; ")));
-    }
-    if s.suppressed > 0 {
-        out.push_str(&format!(" [+{} slow frame(s) since the last line]", s.suppressed));
     }
     out
 }
@@ -299,7 +319,8 @@ pub(crate) fn test_reset() {
         s.full_ns = 0;
         s.full_n = 0;
         s.last_log = None;
-        s.suppressed = 0;
+        s.held = 0;
+        s.worst_held = None;
         s.totals = Totals::default();
     });
 }
@@ -308,6 +329,12 @@ pub(crate) fn test_reset() {
 mod tests {
     use super::*;
 
+    /// Tests run with a 2 ms threshold so their frames stay short.
+    fn reset() {
+        test_reset();
+        THRESHOLD_NS.with(|t| t.set(2_000_000));
+    }
+
     fn spend(part: Part, d: Duration) {
         let _g = enter(part);
         std::thread::sleep(d);
@@ -315,14 +342,14 @@ mod tests {
 
     #[test]
     fn a_quick_frame_prints_nothing_and_a_slow_one_names_its_parts() {
-        test_reset();
+        reset();
         spend(Part::Event, Duration::from_micros(50));
         assert_eq!(end_frame(), None);
 
         spend(Part::FramePost, Duration::from_millis(5));
         spend(Part::Usercmd, Duration::from_millis(1));
         let line = end_frame().expect("a 4 ms frame is over the 2 ms default");
-        assert!(line.starts_with("[s2script] slow frame: s2script used "), "{line}");
+        assert!(line.starts_with("slow frame: s2script used "), "{line}");
         let post = line.find("OnGameFrame post").expect("names the frame post");
         let cmd = line.find("usercmd hooks").expect("names the usercmd hooks");
         assert!(post < cmd, "largest part first: {line}");
@@ -331,7 +358,7 @@ mod tests {
 
     #[test]
     fn only_the_outermost_entry_is_charged() {
-        test_reset();
+        reset();
         {
             let _outer = enter(Part::Command);
             let _inner = enter(Part::Event);
@@ -344,7 +371,7 @@ mod tests {
 
     #[test]
     fn switch_splits_one_entry_into_sections() {
-        test_reset();
+        reset();
         {
             let mut g = enter(Part::FramePost);
             std::thread::sleep(Duration::from_millis(3));
@@ -357,7 +384,7 @@ mod tests {
 
     #[test]
     fn a_collection_is_named_with_its_kind() {
-        test_reset();
+        reset();
         {
             let _g = enter(Part::FramePost);
             gc_begin();
@@ -372,7 +399,7 @@ mod tests {
 
     #[test]
     fn a_planned_pause_is_not_a_slow_frame() {
-        test_reset();
+        reset();
         spend(Part::FramePost, Duration::from_millis(5));
         planned_pause();
         assert_eq!(end_frame(), None);
@@ -381,16 +408,40 @@ mod tests {
     }
 
     #[test]
-    fn slow_frames_inside_the_interval_are_counted_not_printed() {
+    fn later_slow_frames_are_summed_up_once_per_interval_by_the_longest() {
+        reset();
+        spend(Part::FramePost, Duration::from_millis(3));
+        assert!(end_frame().is_some(), "the first slow frame is printed at once");
+        spend(Part::FramePost, Duration::from_millis(3));
+        assert_eq!(end_frame(), None, "held inside the interval");
+        spend(Part::Usercmd, Duration::from_millis(8));
+        assert_eq!(end_frame(), None);
+        spend(Part::Event, Duration::from_micros(50));
+        assert_eq!(end_frame(), None, "a quick frame does not flush early");
+        STATE.with(|s| s.borrow_mut().last_log = Some(Instant::now() - LOG_INTERVAL));
+        let line = end_frame().expect("the interval passed: the held summary prints on any frame");
+        assert!(line.contains("usercmd hooks"), "the longest held frame is the one described: {line}");
+        assert!(line.contains("[the longest of 2 slow frame(s) in the last 60 s]"), "{line}");
+        assert_eq!(end_frame(), None, "nothing held any more");
+    }
+
+    #[test]
+    fn turning_reporting_off_drops_a_held_summary() {
+        reset();
+        spend(Part::FramePost, Duration::from_millis(3));
+        assert!(end_frame().is_some());
+        spend(Part::FramePost, Duration::from_millis(3));
+        assert_eq!(end_frame(), None, "held");
+        command("off");
+        STATE.with(|s| s.borrow_mut().last_log = Some(Instant::now() - LOG_INTERVAL));
+        assert_eq!(end_frame(), None, "nothing prints after sm frames off");
+    }
+
+    #[test]
+    fn the_default_threshold_is_half_a_64_tick_frame() {
         test_reset();
         spend(Part::FramePost, Duration::from_millis(5));
-        assert!(end_frame().is_some());
-        spend(Part::FramePost, Duration::from_millis(5));
-        assert_eq!(end_frame(), None, "second line inside one second is held back");
-        STATE.with(|s| s.borrow_mut().last_log = Some(Instant::now() - Duration::from_secs(2)));
-        spend(Part::FramePost, Duration::from_millis(5));
-        let line = end_frame().unwrap();
-        assert!(line.contains("[+1 slow frame(s) since the last line]"), "{line}");
+        assert_eq!(end_frame(), None, "5 ms is under the 8 ms default");
     }
 
     /// End to end: a collection a frame handler forces is timed by the isolate's GC callbacks and

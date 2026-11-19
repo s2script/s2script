@@ -268,7 +268,7 @@ Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismat
 
 ## Finding what slows the server
 
-A frame where s2script itself used 4 ms or more logs a `[s2script] slow frame:` line naming where
+A frame where s2script itself used 8 ms or more logs a `[s2script] slow frame:` line (at most one a minute) naming where
 the time went, garbage collection included; `sm frames` prints the totals. If the server logs
 `UNEXPECTED LONG FRAME` or players feel hitches, run `sm prof start 300` from the
 server console, wait for the hitch, then `sm prof stop`. The report says whether s2script caused the
