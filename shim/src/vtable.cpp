@@ -199,7 +199,16 @@ void** GetVTableByName(const char* module, const char* className) {
 
 #else
 #include "vtable.h"
-namespace s2vtable { void** GetVTableByName(const char*, const char*) { return nullptr; } }
+namespace s2vtable {
+// Off Linux the by-module lookup is the verified-image lookup: same module selection
+// (largest executable section wins), RTTI read from the selected image's own data.
+void** GetVTableByName(const char* module, const char* className) {
+    if (!module || !className || !className[0]) return nullptr;
+    std::string reason;
+    auto image = s2original::OpenLoadedModule(module, reason);
+    return image ? GetVTableByName(*image, className) : nullptr;
+}
+}
 #endif
 
 #include "sigscan.h"
@@ -235,8 +244,51 @@ void** GetVTableByName(const s2original::Image& image,const char* className,cons
             }
         return false;
     };
-    std::string decorated=std::to_string(std::strlen(className))+className;
     std::set<uintptr_t> winners;
+    if (image.identity().format==s2original::Format::Pe) {
+        // MSVC RTTI: the TypeDescriptor's decorated name ".?AV<name>@@" (".?AU" for a struct)
+        // sits 16 bytes into the descriptor. A CompleteObjectLocator {signature 1, offset,
+        // cdOffset, TypeDescriptor RVA, hierarchy RVA, self RVA} names it, and the qword before a
+        // vtable's slot 0 points at that locator. Offset 0 is the primary vtable.
+        const uintptr_t base=image.identity().load_bias;
+        auto u32=[&](uintptr_t at,uint32_t& out) {
+            for (const auto& snap : snapshots)
+                if (at>=snap.begin && at-snap.begin<snap.bytes.size() && sizeof out<=snap.bytes.size()-(at-snap.begin)) {
+                    std::memcpy(&out,snap.bytes.data()+(at-snap.begin),sizeof out); return true;
+                }
+            return false;
+        };
+        for (const char* kind : {".?AV",".?AU"}) {
+            std::string decorated=std::string(kind)+className+"@@";
+            for (uintptr_t name : find(reinterpret_cast<const uint8_t*>(decorated.c_str()),decorated.size()+1,false)) {
+                if (name<base+16) continue;
+                const uintptr_t descriptor=name-16;
+                if (!image.mapped(descriptor,16) || descriptor-base>UINT32_MAX) continue;
+                const uint32_t descriptor_rva=uint32_t(descriptor-base);
+                std::vector<uintptr_t> refs;
+                for (const auto& snap : snapshots)
+                    for (size_t off : s2sig::FindPatterns(snap.bytes.data(),snap.bytes.size(),
+                            std::vector<int>(reinterpret_cast<const uint8_t*>(&descriptor_rva),
+                                             reinterpret_cast<const uint8_t*>(&descriptor_rva)+4)))
+                        if ((snap.begin+off)%4==0) refs.push_back(snap.begin+off);
+                for (uintptr_t ref : refs) {
+                    if (ref<base+12) continue;
+                    const uintptr_t locator=ref-12;
+                    uint32_t signature=0,offset=1,self=0;
+                    if (!u32(locator,signature) || signature!=1 || !u32(locator+4,offset) || offset!=0 ||
+                        !u32(locator+20,self) || uint64_t(self)!=uint64_t(locator-base)) continue;
+                    for (uintptr_t locator_ref : find(reinterpret_cast<const uint8_t*>(&locator),sizeof locator,true)) {
+                        if (locator_ref>UINTPTR_MAX-sizeof(uintptr_t) ||
+                            !image.mapped(locator_ref+sizeof(uintptr_t),sizeof(uintptr_t))) continue;
+                        winners.insert(locator_ref+sizeof(uintptr_t));
+                        if (winners.size()>1) return nullptr; // no incidental first match
+                    }
+                }
+            }
+        }
+        return winners.size()==1 ? reinterpret_cast<void**>(*winners.begin()) : nullptr;
+    }
+    std::string decorated=std::to_string(std::strlen(className))+className;
     for (uintptr_t name : find(reinterpret_cast<const uint8_t*>(decorated.c_str()),decorated.size()+1,false)) {
         for (uintptr_t name_ref : find(reinterpret_cast<const uint8_t*>(&name),sizeof name,true)) {
             if (name_ref<sizeof(uintptr_t) || !image.mapped(name_ref-sizeof(uintptr_t),2*sizeof(uintptr_t))) continue;

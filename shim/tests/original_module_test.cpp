@@ -1,4 +1,5 @@
 #include "original_module.h"
+#include "pe_fixture.h"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -157,6 +158,68 @@ void malformed_elf_refusals() {
     put(f.file, 0x400, 30, 8); put(f.file, 0x408, 4, 8);
     reject(f, "text relocation"); // DT_FLAGS / DF_TEXTREL
 }
+void pe_image() {
+    using pefixture::PeFixture;
+    PeFixture f; std::string reason = "stale";
+    auto image = f.open(reason);
+    if (!image) std::fprintf(stderr, "%s\n", reason.c_str());
+    assert(image && reason.empty());
+    assert(image->identity().format == s2original::Format::Pe);
+    assert(image->identity().load_bias == PeFixture::base);
+    assert(image->identity().build_id == "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf07000000");
+    assert(image->executable_segments().size() == 1);
+    uint8_t byte = 0;
+    assert(image->read(PeFixture::base + 0x1000, &byte, 1) && byte == 0x55);
+    assert(image->read(PeFixture::base + 0x100f, &byte, 1) && byte == 0xc3);
+    assert(!image->executable(PeFixture::base + 0x1010)); // raw padding past VirtualSize
+    assert(!image->executable(PeFixture::base + 0x2000)); // .rdata is not code
+    assert(image->mapped(PeFixture::base, 0x400));        // headers
+    assert(image->mapped(PeFixture::base + 0x2000, 0x100));
+    assert(image->mapped(PeFixture::base + 0x3000, 0x2000)); // .data including zero fill
+    assert(!image->mapped(PeFixture::base + 0x5000));
+    assert(!image->mapped(PeFixture::base + 0x2100));     // gap after .rdata's VirtualSize
+    assert(!image->mapped(PeFixture::base + 0x1010, 0x1000));
+    // Same verified bytes and ranges share one immutable image.
+    assert(f.open(reason) == image);
+
+    // The loaded image must be this file's.
+    f.live[PeFixture::nt + 8] ^= 1; assert(!f.open(reason) && reason.find("identity") != std::string::npos);
+    f.load(); f.live[PeFixture::table + 40 + 8] ^= 1; // .rdata VirtualSize in the live table
+    assert(!f.open(reason) && reason.find("identity") != std::string::npos);
+    f.load(); f.live[0x2040 + 4] ^= 1;               // live CodeView GUID
+    assert(!f.open(reason) && reason.find("build id") != std::string::npos);
+    f.load();
+    f.identity.build_id = "00"; assert(!f.open(reason) && reason.find("build-id") != std::string::npos);
+    f.identity.build_id.clear();
+    f.identity.load_bias = 0; assert(!f.open(reason));
+    f.identity.load_bias = PeFixture::base;
+    assert(!s2original::FromPe(f.file, f.identity, {}, reason));
+    assert(!s2original::FromPe(f.file, f.identity,
+                               [](uintptr_t, void*, size_t) { return false; }, reason));
+    assert(f.open(reason));
+
+    auto refuse = [](PeFixture& g, const char* category) {
+        g.load();
+        std::string why;
+        if (g.open(why) || why.find(category) == std::string::npos) {
+            std::fprintf(stderr, "expected PE refusal (%s), got: %s\n", category, why.c_str());
+            std::abort();
+        }
+    };
+    PeFixture g; g.file[0] = 'X'; refuse(g, "DOS");
+    g = PeFixture{}; g.file[PeFixture::nt] = 'X'; refuse(g, "signature");
+    g = PeFixture{}; pefixture::put(g.file, PeFixture::nt + 4, 0x14c, 2); refuse(g, "machine");
+    g = PeFixture{}; pefixture::put(g.file, PeFixture::opt, 0x10b, 2); refuse(g, "PE32+");
+    g = PeFixture{}; pefixture::put(g.file, PeFixture::nt + 6, 40, 2); refuse(g, "section table");
+    g = PeFixture{}; g.section(1, ".rdata", 0x1008, 0x100, 0x600, 0x200, 0x40000040); refuse(g, "overlapping");
+    g = PeFixture{}; g.section(2, ".data", 0x4000, 0x2000, 0x800, 0x200, 0xc0000040); refuse(g, "bounds");
+    g = PeFixture{}; g.section(2, ".data", 0x3000, 0x100, 0x900, 0x200, 0xc0000040); refuse(g, "bounds");
+    g = PeFixture{}; pefixture::put(g.file, PeFixture::opt + 112 + 6 * 8 + 4, 0, 4); refuse(g, "build id missing");
+    g = PeFixture{}; pefixture::put(g.file, PeFixture::opt + 112 + 6 * 8 + 4, 27, 4); refuse(g, "debug directory");
+    g = PeFixture{}; g.file[PeFixture::codeview_raw] = 'X'; refuse(g, "CodeView");
+    g = PeFixture{}; g.section(0, ".text", 0x1000, 0x10, 0x400, 0x200, 0x40000040);
+    refuse(g, "no file-backed executable");
+}
 #ifdef __linux__
 void loaded_module(const char* path, const char* replacement, const char* proxy_path) {
     // Load the small matching-name proxy first: first-match selection is incorrect.
@@ -211,6 +274,8 @@ int main(int argc, char** argv) {
     readable_live_ranges();
     original_bytes_and_ranges(); identity_refusals(); malformed_elf_refusals();
     std::puts("original_module: original bytes, ELF identity and bounds fixtures passed");
+    pe_image();
+    std::puts("original_module: PE identity, sections and bounds fixtures passed");
 #ifdef __linux__
     if (argc == 4) loaded_module(argv[1], argv[2], argv[3]);
     else std::puts("original_module: SKIP Linux loaded-library fixture (supply main/replacement/proxy library paths)");
