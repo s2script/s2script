@@ -408,11 +408,21 @@ pub(crate) fn write_files(
                     .ok_or_else(|| std::io::Error::other("Profiler.stop returned no profile"))?;
                 std::fs::write(path, serde_json::to_vec(&profile).map_err(std::io::Error::other)?)?;
                 let mut hot = js_lines(&profile, JS_ROWS);
+                // The allocation profile is extra: a failure here costs its own table and file, never
+                // the report, the trace or the CPU table.
                 if let (Some(path), Some(response)) = (&paths.heapprofile, &alloc) {
-                    let profile = super::js::extract_profile(response)
-                        .ok_or_else(|| std::io::Error::other("HeapProfiler.stopSampling returned no profile"))?;
-                    std::fs::write(path, serde_json::to_vec(&profile).map_err(std::io::Error::other)?)?;
-                    hot.extend(alloc_lines(&profile, JS_ROWS, wall));
+                    match super::js::extract_profile(response) {
+                        Some(profile) => {
+                            hot.extend(alloc_lines(&profile, JS_ROWS, wall));
+                            let written = serde_json::to_vec(&profile)
+                                .map_err(std::io::Error::other)
+                                .and_then(|bytes| std::fs::write(path, bytes));
+                            if let Err(e) = written {
+                                hot.push(format!("[S2S] Allocation profile not written to {}: {e}", path.display()));
+                            }
+                        }
+                        None => hot.push("[S2S] Allocation profile: V8 returned none.".to_string()),
+                    }
                 }
                 lines.extend(hot.iter().cloned());
                 let mut g = match JS_HOT.lock() {
