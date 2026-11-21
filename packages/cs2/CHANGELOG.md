@@ -1,5 +1,11 @@
 # @s2script/cs2
 
+## 0.33.0
+
+### Minor Changes
+
+- 65f4109: `GameHud.rail()` now covers CS2's stock team counter and round timer by default: a solid bar across the full width of the top edge, with the score blocks, pips, clock and sub line inside it. `rail.set(audience, { cover: false })` keeps the floating look per player. Needs the game-kit workshop addon republished (stylesheet change).
+
 ## 0.32.0
 
 ### Minor Changes
