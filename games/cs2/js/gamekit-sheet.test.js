@@ -261,3 +261,107 @@ test("a refused prompt's typed answer wins over a running vote, and disconnect e
   assert.equal(closed, false);
   assert.equal(got[1].reason, "cancelled");
 });
+
+// ── a repaint clears the previous body ───────────────────────────────────────────────────────
+const shopSpec = () => ({
+  title: "Shop",
+  sections: [{ id: "shop", label: "Shop", body: { kind: "grid", items: [{ id: "radar", title: "Radar", price: 1 }, { id: "armor", title: "Armor", price: 2 }] } }],
+});
+const listRowsShown = (m, slot) => Array.from({ length: 8 }, (_, i) => `gk_sh_li${i}`).filter((id) => !m.hidden(slot, id));
+
+test("a list sheet closed, then a grid sheet: no list row is left", () => {
+  const m = mount({ diffCache: true });
+  const rulesSheet = m.GameHud.sheet(0, rulesSpec());
+  assert.equal(listRowsShown(m, 0).length, 6);
+  rulesSheet.close();
+  // Close empties the panel: every body, row, heading and the pager.
+  assert.deepEqual(listRowsShown(m, 0), []);
+  assert.equal(m.hidden(0, "gk_sh_list"), true);
+  assert.equal(m.text(0, "gk_sh_li0_t"), "");
+  assert.equal(m.text(0, "gk_sh_h"), "");
+  assert.equal(m.hidden(0, "gk_sh_k"), true);
+  assert.equal(m.hidden(0, "gk_sh_pager"), true);
+  assert.equal(m.hidden(0, "gk_sh_s0"), true);
+  m.GameHud.sheet(0, shopSpec());
+  assert.deepEqual(listRowsShown(m, 0), []);
+  assert.equal(m.hidden(0, "gk_sh_list"), true);
+  assert.equal(m.hidden(0, "gk_sh_grid"), false);
+  assert.equal(m.text(0, "gk_sh_g1_t"), "Armor");
+  assert.equal(m.hidden(0, "gk_sh_g2"), true);
+});
+
+test("another plugin's list sheet closed, then this plugin's grid sheet: no list row is left", () => {
+  // Two plugin contexts, one layout entity. TTT opened its shop earlier, so its diff cache says
+  // the list body is hidden; the rules plugin then showed it. TTT's next shop must not trust that.
+  const shared = { panels: {}, claims: {} };
+  const rulesPlugin = mount({ diffCache: true, shared });
+  const ttt = mount({ diffCache: true, shared });
+  ttt.GameHud.sheet(0, shopSpec()).close();
+  const rulesSheet = rulesPlugin.GameHud.sheet(0, rulesSpec());
+  assert.equal(listRowsShown(rulesPlugin, 0).length, 6);
+  assert.equal(rulesPlugin.hidden(0, "gk_sh_list"), false);
+  assert.equal(rulesPlugin.hidden(0, "gk_sh_grid"), true);
+  rulesSheet.close();
+  ttt.GameHud.sheet(0, shopSpec());
+  assert.deepEqual(listRowsShown(ttt, 0), []);
+  assert.equal(ttt.hidden(0, "gk_sh_list"), true);
+  assert.equal(ttt.hidden(0, "gk_sh_grid"), false);
+  assert.equal(ttt.hidden(0, "gk_sh_g0"), false);
+  assert.equal(ttt.text(0, "gk_sh_h"), "Shop");
+  assert.equal(ttt.hidden(0, "gk_sh_pager"), true);
+});
+
+test("a plugin whose sheet was painted over by another repaints all of it on its next open", () => {
+  // The rules plugin never closes cleanly here (e.g. an older runtime): only the fresh claim's
+  // cache drop stands between its leftovers and TTT's shop.
+  const shared = { panels: {}, claims: {} };
+  const rulesPlugin = mount({ diffCache: true, shared });
+  const ttt = mount({ diffCache: true, shared });
+  ttt.GameHud.sheet(0, shopSpec()).close();
+  rulesPlugin.GameHud.sheet(0, rulesSpec({ section: "general", highlight: 3 }));
+  delete shared.claims["gamekit:sheet:0"]; // released without the close repaint
+  ttt.GameHud.sheet(0, shopSpec());
+  assert.equal(ttt.hidden(0, "gk_sh_list"), true);
+  assert.deepEqual(listRowsShown(ttt, 0), []);
+  assert.equal(ttt.hidden(0, "gk_sh_grid"), false);
+  assert.equal(ttt.hidden(0, "gk_sh_s1"), true, "the rules plugin's extra side tabs are gone");
+});
+
+test("switching section to another body kind empties the old body's rows", () => {
+  const m = mount({ diffCache: true });
+  const sh = m.GameHud.sheet(0, {
+    title: "Mixed",
+    sections: [
+      { id: "rules", label: "Rules", body: { kind: "list", items: rules(5) } },
+      { id: "shop", label: "Shop", body: { kind: "grid", items: [{ id: "radar", title: "Radar" }] } },
+      { id: "who", label: "Players", body: { kind: "table", columns: ["Name"], rows: [{ cells: ["bob"], actions: [{ label: "Slay", tone: "red" }] }] } },
+    ],
+    section: "rules",
+    highlight: 2,
+  });
+  assert.equal(m.has(0, "gk_sh_li1", "gk-hl"), true);
+  m.click("gk_sh_s1", 0);
+  assert.deepEqual(listRowsShown(m, 0), []);
+  assert.equal(m.text(0, "gk_sh_li0_t"), "", "the list rows are emptied, not only hidden");
+  assert.equal(m.has(0, "gk_sh_li1", "gk-hl"), false);
+  assert.equal(m.hidden(0, "gk_sh_g0"), false);
+  sh.update({ section: "who" });
+  assert.equal(m.hidden(0, "gk_sh_g0"), true);
+  assert.equal(m.text(0, "gk_sh_g0_t"), "");
+  assert.equal(m.text(0, "gk_sh_tr0_c0"), "bob");
+  sh.show("rules");
+  assert.equal(m.hidden(0, "gk_sh_tr0"), true);
+  assert.equal(m.hidden(0, "gk_sh_tr0_x0"), true);
+  assert.equal(listRowsShown(m, 0).length, 5);
+});
+
+test("a fresh sheet clears a tone another plugin left on a table action", () => {
+  const shared = { panels: {}, claims: {} };
+  const a = mount({ diffCache: true, shared });
+  const b = mount({ diffCache: true, shared });
+  const spec = (tone) => ({ title: "P", sections: [{ id: "who", label: "P", body: { kind: "table", columns: ["Name"], rows: [{ cells: ["bob"], actions: [{ label: "Go", tone }] }] } }] });
+  a.GameHud.sheet(0, spec("red")).close();
+  b.GameHud.sheet(0, spec("green"));
+  assert.equal(b.has(0, "gk_sh_tr0_x0_t", "gk-t-green"), true);
+  assert.equal(b.has(0, "gk_sh_tr0_x0_t", "gk-t-red"), false);
+});
