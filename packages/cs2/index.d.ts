@@ -94,7 +94,7 @@ export { CustomPlayerCamera, CustomCameraMode } from "./camera";
 export { GameHud } from "./gamehud";
 export type {
   GameHudAudience, GameHudBar, GameHudFeed, GameHudFeedEntry, GameHudRail, GameHudRailSide,
-  GameHudRailSpec, GameHudRegion, GameHudStatus, GameHudStatusSpec, GameHudText, GameHudTheme,
+  GameHudRailSpec, GameHudRegion, GameHudStatus, GameHudStatusSpec, GameHudTarget, GameHudTargetSpec, GameHudText, GameHudTheme,
   GameHudToastSpec, GameHudTone, GameHudVote, GameHudVoteOption, GameHudVoteResult, GameHudVoteSpec,
   GameHudDrawer, GameHudDrawerRow, GameHudDrawerSpec, GameHudDrawerTab, GameHudPrompt, GameHudPromptAnswer,
   GameHudPromptResult, GameHudPromptSpec, GameHudSheet, GameHudSheetAction, GameHudSheetBody, GameHudSheetCard,
