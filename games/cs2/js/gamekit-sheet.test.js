@@ -365,3 +365,15 @@ test("a fresh sheet clears a tone another plugin left on a table action", () => 
   assert.equal(b.has(0, "gk_sh_tr0_x0_t", "gk-t-green"), true);
   assert.equal(b.has(0, "gk_sh_tr0_x0_t", "gk-t-red"), false);
 });
+
+test("a table reached later in the claim still clears a tone another plugin left", () => {
+  const shared = { panels: {}, claims: {} };
+  const a = mount({ diffCache: true, shared });
+  const b = mount({ diffCache: true, shared });
+  const table = (tone) => ({ id: "who", label: "P", body: { kind: "table", columns: ["Name"], rows: [{ cells: ["bob"], actions: [{ label: "Go", tone }] }] } });
+  a.GameHud.sheet(0, { title: "P", sections: [table("red")] }).close();
+  b.GameHud.sheet(0, { title: "P", sections: [{ id: "rules", label: "Rules", body: { kind: "list", items: ["x"] } }, table("green")] });
+  b.click("gk_sh_s1", 0);
+  assert.equal(b.has(0, "gk_sh_tr0_x0_t", "gk-t-green"), true);
+  assert.equal(b.has(0, "gk_sh_tr0_x0_t", "gk-t-red"), false);
+});

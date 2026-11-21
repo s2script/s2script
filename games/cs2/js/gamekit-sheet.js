@@ -254,13 +254,19 @@
       return acc.first;
     }
 
-    /** Set an action label's tone. Right after a claim, clear every other tone: whatever painted
-     *  this panel before may have left one this context never recorded. */
+    /** Set an action label's tone. The first time a label is toned in this claim, clear every
+     *  other tone: whatever painted this panel before may have left one this context never
+     *  recorded. After that, swap's own record knows the previous tone. */
     function toneOf(st, id, cls, acc) {
-      if (st.fresh) {
+      if (!st.toned[id]) {
+        var clean = true;
         for (var t = 0; t < TONES.length; t++) {
-          if ("gk-t-" + TONES[t] !== cls) note(acc, kit.setClass(st.slot, id, "gk-t-" + TONES[t], false));
+          if ("gk-t-" + TONES[t] === cls) continue;
+          var err = kit.setClass(st.slot, id, "gk-t-" + TONES[t], false);
+          if (!kit.ok(err)) clean = false;
+          note(acc, err);
         }
+        if (clean) st.toned[id] = true;
       }
       note(acc, kit.swap(st.slot, id, "text", cls));
     }
@@ -393,7 +399,6 @@
       paintSide(st, acc);
       paintBody(st, acc);
       note(acc, kit.show(slot, "gk_sheet", { cursor: true }));
-      st.fresh = false;
       return acc.first;
     }
 
@@ -486,7 +491,7 @@
       if (U.hostClaim("gamekit:sheet:" + slot) < 0) return null;
       var st = {
         slot: slot, live: true, section: 0, page: 0, highlight: -1, sideOffset: 0, sideFollow: true,
-        title: "", right: "", footer: "", sections: [], shown: {}, fresh: true
+        title: "", right: "", footer: "", sections: [], shown: {}, toned: {}
       };
       applySheetSpec(st, spec);
       sheets[slot] = st;
