@@ -9,6 +9,8 @@ import type {
  *
  * In-round pieces paint per player and follow the game:
  *   sm_gk_on [theme]      claim the top rail, status card and kill feed; track kills and rounds
+ *   sm_gk_rail [float|cover]  the rail's look for you: a solid bar over the stock team counter
+ *                         (the default) or floating score blocks
  *   sm_gk_off             release them (they also free themselves when the plugin unloads)
  *   sm_gk_toast <text>    a toast for everyone
  *   sm_gk_summary         a sample round-end summary (also shown on every round_end while on)
@@ -266,6 +268,14 @@ export function OnPluginStart(): void {
     paintRail();
     for (const p of Player.all()) paintStatus(p.slot);
     cmd.reply(`[cookbook] gamehud: rail=${rail ? "ok" : "held by another plugin"} status=${status ? "ok" : "held"} feed=${feed ? "ok" : "held"}`);
+    return HookResult.Handled;
+  });
+
+  command("sm_gk_rail", (cmd) => {
+    if (!rail) { cmd.reply("[cookbook] gamehud: run sm_gk_on first"); return HookResult.Handled; }
+    const cover = cmd.arg(0) !== "float";
+    rail.set(cmd.callerSlot >= 0 ? cmd.callerSlot : "all", { cover });
+    cmd.reply(`[cookbook] gamehud: rail ${cover ? "covers the stock counter" : "floats"}`);
     return HookResult.Handled;
   });
 

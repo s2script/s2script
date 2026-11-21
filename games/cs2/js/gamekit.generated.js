@@ -172,6 +172,7 @@
         "gk-new",
         "gk-mine",
         "gk-off",
+        "gk-float",
         "s2-btn-disabled"
       ],
       "width": "s2-w0..s2-w10"

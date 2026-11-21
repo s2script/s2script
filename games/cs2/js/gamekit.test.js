@@ -104,6 +104,26 @@ test("a region is held by one owner until it is released", () => {
   assert.throws(() => rail.set("all", {}), /released/);
 });
 
+test("rail covers the stock counter by default; cover:false floats per audience", () => {
+  const m = mount();
+  const rail = m.GameHud.rail();
+  rail.set("all", { clock: "1:00" });
+  for (const s of [0, 1, 2]) assert.equal(m.has(s, "gk_rail", "gk-float"), false, "cover is the default");
+  rail.set([1], { cover: false });
+  assert.equal(m.has(1, "gk_rail", "gk-float"), true);
+  assert.equal(m.has(0, "gk_rail", "gk-float"), false);
+  rail.set(1, { clock: "0:59" });
+  assert.equal(m.has(1, "gk_rail", "gk-float"), true, "a left-out cover keeps its last value");
+  rail.set(1, { cover: true });
+  assert.equal(m.has(1, "gk_rail", "gk-float"), false);
+  // A new owner starts every player on the cover again.
+  rail.set("all", { cover: false });
+  rail.release();
+  const next = m.GameHud.rail();
+  for (const s of [0, 1, 2]) assert.equal(m.has(s, "gk_rail", "gk-float"), false, "claim resets the cover");
+  next.release();
+});
+
 test("rail paints sides, tones from leading tags, and pips per audience", () => {
   const m = mount();
   const rail = m.GameHud.rail();

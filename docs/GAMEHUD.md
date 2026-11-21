@@ -18,7 +18,7 @@ a prompt can be an RDM report, a sheet can be JB rules. The worked example is th
 
 | Call | What | Cursor | Claim |
 | --- | --- | --- | --- |
-| `rail()` | top rail: two score blocks with pips, clock, sub line | no | one plugin |
+| `rail()` | top rail: a solid bar over the stock team counter, with two score blocks, pips, clock and sub line | no | one plugin |
 | `status()` | role line, hint, two 10%-step bars | no | one plugin |
 | `feed()` | kill feed, six rows per player, fades after 6 s | no | one plugin |
 | `weapon.claim()` | weapon card: name, clip / reserve, slot list (bottom right) | no | one plugin |
@@ -50,6 +50,32 @@ plugin's own cleanup never runs. A second plugin asking for a held surface gets 
 that is reloaded mid-map gets its surfaces back from `OnPluginStart`: the world is already live, so
 claims and paints made there land at once, and a new claim clears what the previous generation left
 on screen.
+
+## Top rail
+
+No `m_iHideHUD` bit hides CS2's stock team counter and round timer at the top of the screen, so
+the rail covers them. By default it is a solid bar across the full width of the top edge, 116 px
+tall at 1080p, in the kit's panel colour, with the score blocks, clock and sub line inside it. The
+stock counter is centred, starts about 6 px down and is about 106 px tall in a round. It grows
+about 56 px per player on each side, so only the full width is sure to hide it on a big server.
+
+```ts
+const rail = GameHud.rail();
+rail?.set("all", {
+  left: { label: "{red}Prisoners", score: 3, alive: 3, total: 8 },
+  right: { label: "{blue}Guards", score: 2, alive: 2, total: 2 },
+  clock: "1:42",
+  sub: "Round 4",
+});
+rail?.set(slot, { cover: false }); // the floating look for this player: blocks only, stock counter shows
+```
+
+The bar overlaps the top 70 px of the stock radar and the first row of the stock kill feed. A mode
+that keeps the stock radar and does not want that passes `cover: false`, which is the floating look
+(score blocks and clock only). `cover` is per player and sticky like every other field, and a new
+owner of the rail starts everyone on the cover again. While a player is dead or spectating, the
+stock counter adds an equipment row and reaches about 182 px; the part below the bar shows then.
+Like the rest of the rail, the bar collapses under the scoreboard and the buy menu.
 
 ## Weapon card
 
@@ -183,3 +209,12 @@ mounted, from a real client (bots have no HUD). Each line is pass or fail; note 
     one name to the next without blinking, and dips only over the gap. Note how far below the
     crosshair it sits (aim for about 60 px at 1080p). Open the scoreboard and buy menu: it
     collapses. `sm_gk_target off`: it hides.
+14. **Rail cover (screenshots).** `sm_gk_on teal` with bots filling both teams (`bot_quota 10`).
+    Take one screenshot in a round at 16:9 (1920×1080) and one at 4:3 (1440×1080, or 1280×960),
+    each with the default HUD scale and once with `safezoney 0.85`. Pass: no part of the stock team
+    counter, avatars or timer shows around or through the bar, and the rail's scores, pips, clock
+    and sub line read clearly inside it. Note how much of the radar the bar hides. Then die and
+    screenshot while spectating: note whether the stock equipment row shows under the bar. Open the
+    scoreboard and the buy menu: the bar collapses. `sm_gk_rail float` (or `cover: false` from a
+    plugin): the floating blocks return and the stock counter shows around them. Save the shots
+    next to the build number in the PR or live-gate log.
