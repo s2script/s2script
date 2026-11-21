@@ -1239,6 +1239,18 @@
 {
 	width: 100%;
 	height: 100%;
+	z-index: 0;
+}
+
+/* The intro and spectate hub sit under every other panel: a plugin that opens a vote, drawer,
+   prompt or sheet for a player in the hub gets it drawn on top and clicked first. The layout
+   already makes gk_hub the first child; this keeps the order if that ever changes. */
+.gk-vote,
+.gk-drawer,
+.gk-prompt,
+.gk-sheet
+{
+	z-index: 10;
 }
 
 .gk-hub-vig

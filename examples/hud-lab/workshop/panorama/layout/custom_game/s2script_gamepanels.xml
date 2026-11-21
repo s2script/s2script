@@ -15,6 +15,153 @@
 	</styles>
 	<Panel class="gk-root">
 		<Panel id="gk_theme" class="gk-theme gk-theme-amber">
+			<!-- Hub: the intro on first join and the spectate hub. Brand, item list, profile card, player picker, shot label. -->
+			<!-- First child on purpose: every panel after it draws on top and takes the click. -->
+			<Panel id="gk_hub" class="gk-hub s2-hide">
+				<Panel class="gk-hub-vig" />
+				<Panel class="gk-brand">
+					<Label id="gk_hub_eye" class="gk-eyebrow gk-t-accent" text="{s:gk_hub_eye}" />
+					<Label id="gk_hub_title" class="gk-brand-title" text="{s:gk_hub_title}" />
+					<Label id="gk_hub_sub" class="gk-brand-sub" text="{s:gk_hub_sub}" />
+				</Panel>
+				<Panel id="gk_hub_list" class="gk-panel gk-hub-list">
+					<Panel class="gk-hd">
+						<Panel class="gk-tick gk-acc-bg" />
+						<Label id="gk_hub_list_title" class="gk-hd-title" text="{s:gk_hub_list_title}" />
+						<Label id="gk_hub_list_right" class="gk-hd-right" text="{s:gk_hub_list_right}" />
+						<Button id="gk_hub_list_close" class="gk-close">
+							<Label id="gk_hub_list_close_t" class="gk-close-t" text="{s:gk_hub_list_close_t}" />
+						</Button>
+					</Panel>
+					<Button id="gk_hub_i0" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i0_t" class="gk-hub-t" text="{s:gk_hub_i0_t}" />
+						<Label id="gk_hub_i0_m" class="gk-hub-m" text="{s:gk_hub_i0_m}" />
+					</Button>
+					<Button id="gk_hub_i1" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i1_t" class="gk-hub-t" text="{s:gk_hub_i1_t}" />
+						<Label id="gk_hub_i1_m" class="gk-hub-m" text="{s:gk_hub_i1_m}" />
+					</Button>
+					<Button id="gk_hub_i2" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i2_t" class="gk-hub-t" text="{s:gk_hub_i2_t}" />
+						<Label id="gk_hub_i2_m" class="gk-hub-m" text="{s:gk_hub_i2_m}" />
+					</Button>
+					<Button id="gk_hub_i3" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i3_t" class="gk-hub-t" text="{s:gk_hub_i3_t}" />
+						<Label id="gk_hub_i3_m" class="gk-hub-m" text="{s:gk_hub_i3_m}" />
+					</Button>
+					<Button id="gk_hub_i4" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i4_t" class="gk-hub-t" text="{s:gk_hub_i4_t}" />
+						<Label id="gk_hub_i4_m" class="gk-hub-m" text="{s:gk_hub_i4_m}" />
+					</Button>
+					<Button id="gk_hub_i5" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i5_t" class="gk-hub-t" text="{s:gk_hub_i5_t}" />
+						<Label id="gk_hub_i5_m" class="gk-hub-m" text="{s:gk_hub_i5_m}" />
+					</Button>
+					<Button id="gk_hub_i6" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i6_t" class="gk-hub-t" text="{s:gk_hub_i6_t}" />
+						<Label id="gk_hub_i6_m" class="gk-hub-m" text="{s:gk_hub_i6_m}" />
+					</Button>
+					<Button id="gk_hub_i7" class="gk-row gk-hub-row s2-hide">
+						<Label id="gk_hub_i7_t" class="gk-hub-t" text="{s:gk_hub_i7_t}" />
+						<Label id="gk_hub_i7_m" class="gk-hub-m" text="{s:gk_hub_i7_m}" />
+					</Button>
+					<Label id="gk_hub_ft" class="gk-ft" text="{s:gk_hub_ft}" />
+				</Panel>
+				<Panel id="gk_hub_card" class="gk-panel gk-card-pf s2-hide">
+					<Panel class="gk-hd">
+						<Panel class="gk-tick gk-acc-bg" />
+						<Label id="gk_hub_card_h" class="gk-hd-title" text="{s:gk_hub_card_h}" />
+					</Panel>
+					<Panel class="gk-pf-who">
+						<Panel class="gk-pf-av gk-acc-bg" />
+						<Panel class="gk-pf-names">
+							<Label id="gk_hub_card_n" class="gk-pf-n" text="{s:gk_hub_card_n}" />
+							<Label id="gk_hub_card_s" class="gk-pf-s" text="{s:gk_hub_card_s}" />
+						</Panel>
+					</Panel>
+					<Panel class="gk-kv">
+						<Panel id="gk_hub_kv0" class="gk-kv-cell s2-hide">
+							<Label id="gk_hub_kv0_k" class="gk-kv-k" text="{s:gk_hub_kv0_k}" />
+							<Label id="gk_hub_kv0_v" class="gk-kv-v" text="{s:gk_hub_kv0_v}" />
+						</Panel>
+						<Panel id="gk_hub_kv1" class="gk-kv-cell s2-hide">
+							<Label id="gk_hub_kv1_k" class="gk-kv-k" text="{s:gk_hub_kv1_k}" />
+							<Label id="gk_hub_kv1_v" class="gk-kv-v" text="{s:gk_hub_kv1_v}" />
+						</Panel>
+						<Panel id="gk_hub_kv2" class="gk-kv-cell s2-hide">
+							<Label id="gk_hub_kv2_k" class="gk-kv-k" text="{s:gk_hub_kv2_k}" />
+							<Label id="gk_hub_kv2_v" class="gk-kv-v" text="{s:gk_hub_kv2_v}" />
+						</Panel>
+						<Panel id="gk_hub_kv3" class="gk-kv-cell s2-hide">
+							<Label id="gk_hub_kv3_k" class="gk-kv-k" text="{s:gk_hub_kv3_k}" />
+							<Label id="gk_hub_kv3_v" class="gk-kv-v" text="{s:gk_hub_kv3_v}" />
+						</Panel>
+						<Panel id="gk_hub_kv4" class="gk-kv-cell s2-hide">
+							<Label id="gk_hub_kv4_k" class="gk-kv-k" text="{s:gk_hub_kv4_k}" />
+							<Label id="gk_hub_kv4_v" class="gk-kv-v" text="{s:gk_hub_kv4_v}" />
+						</Panel>
+						<Panel id="gk_hub_kv5" class="gk-kv-cell s2-hide">
+							<Label id="gk_hub_kv5_k" class="gk-kv-k" text="{s:gk_hub_kv5_k}" />
+							<Label id="gk_hub_kv5_v" class="gk-kv-v" text="{s:gk_hub_kv5_v}" />
+						</Panel>
+					</Panel>
+				</Panel>
+				<Panel id="gk_hub_pick" class="gk-picker s2-hide">
+					<Button id="gk_hub_p0" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p0_t" class="gk-pcard-t" text="{s:gk_hub_p0_t}" />
+						<Label id="gk_hub_p0_s" class="gk-pcard-s" text="{s:gk_hub_p0_s}" />
+					</Button>
+					<Button id="gk_hub_p1" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p1_t" class="gk-pcard-t" text="{s:gk_hub_p1_t}" />
+						<Label id="gk_hub_p1_s" class="gk-pcard-s" text="{s:gk_hub_p1_s}" />
+					</Button>
+					<Button id="gk_hub_p2" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p2_t" class="gk-pcard-t" text="{s:gk_hub_p2_t}" />
+						<Label id="gk_hub_p2_s" class="gk-pcard-s" text="{s:gk_hub_p2_s}" />
+					</Button>
+					<Button id="gk_hub_p3" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p3_t" class="gk-pcard-t" text="{s:gk_hub_p3_t}" />
+						<Label id="gk_hub_p3_s" class="gk-pcard-s" text="{s:gk_hub_p3_s}" />
+					</Button>
+					<Button id="gk_hub_p4" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p4_t" class="gk-pcard-t" text="{s:gk_hub_p4_t}" />
+						<Label id="gk_hub_p4_s" class="gk-pcard-s" text="{s:gk_hub_p4_s}" />
+					</Button>
+					<Button id="gk_hub_p5" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p5_t" class="gk-pcard-t" text="{s:gk_hub_p5_t}" />
+						<Label id="gk_hub_p5_s" class="gk-pcard-s" text="{s:gk_hub_p5_s}" />
+					</Button>
+					<Button id="gk_hub_p6" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p6_t" class="gk-pcard-t" text="{s:gk_hub_p6_t}" />
+						<Label id="gk_hub_p6_s" class="gk-pcard-s" text="{s:gk_hub_p6_s}" />
+					</Button>
+					<Button id="gk_hub_p7" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p7_t" class="gk-pcard-t" text="{s:gk_hub_p7_t}" />
+						<Label id="gk_hub_p7_s" class="gk-pcard-s" text="{s:gk_hub_p7_s}" />
+					</Button>
+					<Button id="gk_hub_p8" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p8_t" class="gk-pcard-t" text="{s:gk_hub_p8_t}" />
+						<Label id="gk_hub_p8_s" class="gk-pcard-s" text="{s:gk_hub_p8_s}" />
+					</Button>
+					<Button id="gk_hub_p9" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p9_t" class="gk-pcard-t" text="{s:gk_hub_p9_t}" />
+						<Label id="gk_hub_p9_s" class="gk-pcard-s" text="{s:gk_hub_p9_s}" />
+					</Button>
+					<Button id="gk_hub_p10" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p10_t" class="gk-pcard-t" text="{s:gk_hub_p10_t}" />
+						<Label id="gk_hub_p10_s" class="gk-pcard-s" text="{s:gk_hub_p10_s}" />
+					</Button>
+					<Button id="gk_hub_p11" class="gk-pcard gk-e-grey s2-hide">
+						<Label id="gk_hub_p11_t" class="gk-pcard-t" text="{s:gk_hub_p11_t}" />
+						<Label id="gk_hub_p11_s" class="gk-pcard-s" text="{s:gk_hub_p11_s}" />
+					</Button>
+				</Panel>
+				<Panel id="gk_hub_shot" class="gk-shot s2-hide">
+					<Panel class="gk-shot-rec gk-acc-bg" />
+					<Label id="gk_hub_shot_t" class="gk-shot-t" text="{s:gk_hub_shot_t}" />
+					<Label id="gk_hub_shot_w" class="gk-shot-w" text="{s:gk_hub_shot_w}" />
+				</Panel>
+			</Panel>
 			<!-- Pop-up vote: clickable rows that are also numbered, so players can type the number in chat. -->
 			<Panel id="gk_vote" class="gk-panel gk-vote s2-hide">
 				<Panel class="gk-hd">
@@ -615,152 +762,6 @@
 							<Label id="gk_sh_next_t" class="gk-arrow-t" text="{s:gk_sh_next_t}" />
 						</Button>
 					</Panel>
-				</Panel>
-			</Panel>
-			<!-- Hub: the intro on first join and the spectate hub. Brand, item list, profile card, player picker, shot label. -->
-			<Panel id="gk_hub" class="gk-hub s2-hide">
-				<Panel class="gk-hub-vig" />
-				<Panel class="gk-brand">
-					<Label id="gk_hub_eye" class="gk-eyebrow gk-t-accent" text="{s:gk_hub_eye}" />
-					<Label id="gk_hub_title" class="gk-brand-title" text="{s:gk_hub_title}" />
-					<Label id="gk_hub_sub" class="gk-brand-sub" text="{s:gk_hub_sub}" />
-				</Panel>
-				<Panel id="gk_hub_list" class="gk-panel gk-hub-list">
-					<Panel class="gk-hd">
-						<Panel class="gk-tick gk-acc-bg" />
-						<Label id="gk_hub_list_title" class="gk-hd-title" text="{s:gk_hub_list_title}" />
-						<Label id="gk_hub_list_right" class="gk-hd-right" text="{s:gk_hub_list_right}" />
-						<Button id="gk_hub_list_close" class="gk-close">
-							<Label id="gk_hub_list_close_t" class="gk-close-t" text="{s:gk_hub_list_close_t}" />
-						</Button>
-					</Panel>
-					<Button id="gk_hub_i0" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i0_t" class="gk-hub-t" text="{s:gk_hub_i0_t}" />
-						<Label id="gk_hub_i0_m" class="gk-hub-m" text="{s:gk_hub_i0_m}" />
-					</Button>
-					<Button id="gk_hub_i1" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i1_t" class="gk-hub-t" text="{s:gk_hub_i1_t}" />
-						<Label id="gk_hub_i1_m" class="gk-hub-m" text="{s:gk_hub_i1_m}" />
-					</Button>
-					<Button id="gk_hub_i2" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i2_t" class="gk-hub-t" text="{s:gk_hub_i2_t}" />
-						<Label id="gk_hub_i2_m" class="gk-hub-m" text="{s:gk_hub_i2_m}" />
-					</Button>
-					<Button id="gk_hub_i3" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i3_t" class="gk-hub-t" text="{s:gk_hub_i3_t}" />
-						<Label id="gk_hub_i3_m" class="gk-hub-m" text="{s:gk_hub_i3_m}" />
-					</Button>
-					<Button id="gk_hub_i4" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i4_t" class="gk-hub-t" text="{s:gk_hub_i4_t}" />
-						<Label id="gk_hub_i4_m" class="gk-hub-m" text="{s:gk_hub_i4_m}" />
-					</Button>
-					<Button id="gk_hub_i5" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i5_t" class="gk-hub-t" text="{s:gk_hub_i5_t}" />
-						<Label id="gk_hub_i5_m" class="gk-hub-m" text="{s:gk_hub_i5_m}" />
-					</Button>
-					<Button id="gk_hub_i6" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i6_t" class="gk-hub-t" text="{s:gk_hub_i6_t}" />
-						<Label id="gk_hub_i6_m" class="gk-hub-m" text="{s:gk_hub_i6_m}" />
-					</Button>
-					<Button id="gk_hub_i7" class="gk-row gk-hub-row s2-hide">
-						<Label id="gk_hub_i7_t" class="gk-hub-t" text="{s:gk_hub_i7_t}" />
-						<Label id="gk_hub_i7_m" class="gk-hub-m" text="{s:gk_hub_i7_m}" />
-					</Button>
-					<Label id="gk_hub_ft" class="gk-ft" text="{s:gk_hub_ft}" />
-				</Panel>
-				<Panel id="gk_hub_card" class="gk-panel gk-card-pf s2-hide">
-					<Panel class="gk-hd">
-						<Panel class="gk-tick gk-acc-bg" />
-						<Label id="gk_hub_card_h" class="gk-hd-title" text="{s:gk_hub_card_h}" />
-					</Panel>
-					<Panel class="gk-pf-who">
-						<Panel class="gk-pf-av gk-acc-bg" />
-						<Panel class="gk-pf-names">
-							<Label id="gk_hub_card_n" class="gk-pf-n" text="{s:gk_hub_card_n}" />
-							<Label id="gk_hub_card_s" class="gk-pf-s" text="{s:gk_hub_card_s}" />
-						</Panel>
-					</Panel>
-					<Panel class="gk-kv">
-						<Panel id="gk_hub_kv0" class="gk-kv-cell s2-hide">
-							<Label id="gk_hub_kv0_k" class="gk-kv-k" text="{s:gk_hub_kv0_k}" />
-							<Label id="gk_hub_kv0_v" class="gk-kv-v" text="{s:gk_hub_kv0_v}" />
-						</Panel>
-						<Panel id="gk_hub_kv1" class="gk-kv-cell s2-hide">
-							<Label id="gk_hub_kv1_k" class="gk-kv-k" text="{s:gk_hub_kv1_k}" />
-							<Label id="gk_hub_kv1_v" class="gk-kv-v" text="{s:gk_hub_kv1_v}" />
-						</Panel>
-						<Panel id="gk_hub_kv2" class="gk-kv-cell s2-hide">
-							<Label id="gk_hub_kv2_k" class="gk-kv-k" text="{s:gk_hub_kv2_k}" />
-							<Label id="gk_hub_kv2_v" class="gk-kv-v" text="{s:gk_hub_kv2_v}" />
-						</Panel>
-						<Panel id="gk_hub_kv3" class="gk-kv-cell s2-hide">
-							<Label id="gk_hub_kv3_k" class="gk-kv-k" text="{s:gk_hub_kv3_k}" />
-							<Label id="gk_hub_kv3_v" class="gk-kv-v" text="{s:gk_hub_kv3_v}" />
-						</Panel>
-						<Panel id="gk_hub_kv4" class="gk-kv-cell s2-hide">
-							<Label id="gk_hub_kv4_k" class="gk-kv-k" text="{s:gk_hub_kv4_k}" />
-							<Label id="gk_hub_kv4_v" class="gk-kv-v" text="{s:gk_hub_kv4_v}" />
-						</Panel>
-						<Panel id="gk_hub_kv5" class="gk-kv-cell s2-hide">
-							<Label id="gk_hub_kv5_k" class="gk-kv-k" text="{s:gk_hub_kv5_k}" />
-							<Label id="gk_hub_kv5_v" class="gk-kv-v" text="{s:gk_hub_kv5_v}" />
-						</Panel>
-					</Panel>
-				</Panel>
-				<Panel id="gk_hub_pick" class="gk-picker s2-hide">
-					<Button id="gk_hub_p0" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p0_t" class="gk-pcard-t" text="{s:gk_hub_p0_t}" />
-						<Label id="gk_hub_p0_s" class="gk-pcard-s" text="{s:gk_hub_p0_s}" />
-					</Button>
-					<Button id="gk_hub_p1" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p1_t" class="gk-pcard-t" text="{s:gk_hub_p1_t}" />
-						<Label id="gk_hub_p1_s" class="gk-pcard-s" text="{s:gk_hub_p1_s}" />
-					</Button>
-					<Button id="gk_hub_p2" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p2_t" class="gk-pcard-t" text="{s:gk_hub_p2_t}" />
-						<Label id="gk_hub_p2_s" class="gk-pcard-s" text="{s:gk_hub_p2_s}" />
-					</Button>
-					<Button id="gk_hub_p3" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p3_t" class="gk-pcard-t" text="{s:gk_hub_p3_t}" />
-						<Label id="gk_hub_p3_s" class="gk-pcard-s" text="{s:gk_hub_p3_s}" />
-					</Button>
-					<Button id="gk_hub_p4" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p4_t" class="gk-pcard-t" text="{s:gk_hub_p4_t}" />
-						<Label id="gk_hub_p4_s" class="gk-pcard-s" text="{s:gk_hub_p4_s}" />
-					</Button>
-					<Button id="gk_hub_p5" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p5_t" class="gk-pcard-t" text="{s:gk_hub_p5_t}" />
-						<Label id="gk_hub_p5_s" class="gk-pcard-s" text="{s:gk_hub_p5_s}" />
-					</Button>
-					<Button id="gk_hub_p6" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p6_t" class="gk-pcard-t" text="{s:gk_hub_p6_t}" />
-						<Label id="gk_hub_p6_s" class="gk-pcard-s" text="{s:gk_hub_p6_s}" />
-					</Button>
-					<Button id="gk_hub_p7" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p7_t" class="gk-pcard-t" text="{s:gk_hub_p7_t}" />
-						<Label id="gk_hub_p7_s" class="gk-pcard-s" text="{s:gk_hub_p7_s}" />
-					</Button>
-					<Button id="gk_hub_p8" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p8_t" class="gk-pcard-t" text="{s:gk_hub_p8_t}" />
-						<Label id="gk_hub_p8_s" class="gk-pcard-s" text="{s:gk_hub_p8_s}" />
-					</Button>
-					<Button id="gk_hub_p9" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p9_t" class="gk-pcard-t" text="{s:gk_hub_p9_t}" />
-						<Label id="gk_hub_p9_s" class="gk-pcard-s" text="{s:gk_hub_p9_s}" />
-					</Button>
-					<Button id="gk_hub_p10" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p10_t" class="gk-pcard-t" text="{s:gk_hub_p10_t}" />
-						<Label id="gk_hub_p10_s" class="gk-pcard-s" text="{s:gk_hub_p10_s}" />
-					</Button>
-					<Button id="gk_hub_p11" class="gk-pcard gk-e-grey s2-hide">
-						<Label id="gk_hub_p11_t" class="gk-pcard-t" text="{s:gk_hub_p11_t}" />
-						<Label id="gk_hub_p11_s" class="gk-pcard-s" text="{s:gk_hub_p11_s}" />
-					</Button>
-				</Panel>
-				<Panel id="gk_hub_shot" class="gk-shot s2-hide">
-					<Panel class="gk-shot-rec gk-acc-bg" />
-					<Label id="gk_hub_shot_t" class="gk-shot-t" text="{s:gk_hub_shot_t}" />
-					<Label id="gk_hub_shot_w" class="gk-shot-w" text="{s:gk_hub_shot_w}" />
 				</Panel>
 			</Panel>
 		</Panel>
