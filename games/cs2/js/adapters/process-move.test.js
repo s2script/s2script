@@ -118,3 +118,35 @@ test("an unavailable binding warns once and returns null", () => {
   assert.equal(t.post("a", () => {}), null);
   assert.equal(t.host.logs.filter(l => l.includes("this hook is unavailable")).length, 1);
 });
+
+test("the player hop starts at the slot that matched last and is asked once per view", () => {
+  const host = createHost({ name: "processMove", returns: "void", suppression: "none", scratch: [], pre: true, post: true });
+  const mounted = host.mount("a", [adapterSource("process-move.js")]);
+  const players = [0, 1, 2, 3].map(s => ({ ref: { index: 10 + s, id: 100 + s }, controller: { slot: s } }));
+  let built = 0;
+  const all = { maxPlayers: 4, forSlot: s => { built++; return players[s]; } };
+  const seen = [];
+  mounted.sandbox.__s2pkg_cs2_adapters.processMove.subscribe("pre", v => { seen.push(v.player.slot, v.player.slot); }, all);
+  const move = slot => host.dispatch({
+    records: { move: { present: true, values: {}, writable: VELOCITY, storage: {} } }, fields: {},
+    hiddenReferencedBy: (...args) => args[1] === players[slot].ref, original() {},
+  });
+  move(2);
+  assert.equal(built, 3, "the first scan starts at slot 0");
+  built = 0; move(2);
+  assert.equal(built, 1, "the same player's next command matches on the first probe");
+  built = 0; move(3);
+  assert.equal(built, 2);
+  built = 0; move(0);
+  assert.equal(built, 2, "the scan wraps");
+  assert.deepEqual(seen, [2, 2, 2, 2, 3, 3, 0, 0]);
+});
+
+test("a handler that reads nothing asks for no pawn", () => {
+  const host = createHost({ name: "processMove", returns: "void", suppression: "none", scratch: [], pre: true, post: true });
+  const mounted = host.mount("a", [adapterSource("process-move.js")]);
+  let built = 0;
+  mounted.sandbox.__s2pkg_cs2_adapters.processMove.subscribe("pre", () => {}, { maxPlayers: 64, forSlot: () => { built++; return null; } });
+  fire(host);
+  assert.equal(built, 0);
+});

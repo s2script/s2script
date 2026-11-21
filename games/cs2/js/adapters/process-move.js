@@ -49,62 +49,72 @@
     return c;
   }
 
+  // Whose move this is. The receiver is MovementServices*, which is not an entity, so the answer is
+  // the pawn whose m_pMovementServices points at it. This runs for every player on every movement
+  // tick, so the scan starts at the slot that matched last: the same player's next command matches
+  // on the first probe and the next player's shortly after, instead of a pawn built per slot.
+  var hint = 0;
   function hopPlayer(frame, pawns, missed) {
-    for (var s = 0; s < pawns.maxPlayers; s++) {
+    var n = pawns.maxPlayers;
+    if (hint >= n) hint = 0;
+    for (var i = 0; i < n; i++) {
+      var s = hint + i;
+      if (s >= n) s -= n;
       var pawn = pawns.forSlot(s);
       if (!pawn || !pawn.ref) continue;
       var related = false;
       try { related = frame.hiddenReferencedBy("movementServices", pawn.ref, "CBasePlayerPawn", "m_pMovementServices") === true; }
       catch (e) { related = false; }
-      if (related) return pawn.controller;
+      if (related) { hint = s; return pawn.controller; }
     }
     missed();
     return null;
   }
 
-  function moveView(frame, post, lease, env) {
-    function guard() { if (!lease.live) throw new Error(EXPIRED); }
-    function read(name) {
-      guard();
+  // One small object per call and nothing else: the accessors live on the prototype, so a handler
+  // that reads nothing costs no closures and no property definitions.
+  class MoveView {
+    #frame; #post; #env; #live = true; #player;
+    constructor(frame, post, env) { this.#frame = frame; this.#post = post; this.#env = env; }
+    static expire(view) { view.#live = false; }
+    #read(name) {
+      if (!this.#live) throw new Error(EXPIRED);
       try {
-        var move = frame.move;
+        var move = this.#frame.move;
         var v = move ? move[name] : undefined;
         return typeof v === "number" ? v : 0;
       } catch (e) { return 0; }
     }
-    var view = {};
-    Object.defineProperties(view, {
-      player: { get: function () { guard(); return hopPlayer(frame, env.pawns, env.missed); }, enumerable: true },
-      viewAngles: { get: function () { return qangle(read("pitch"), read("yaw"), read("roll")); }, enumerable: true },
-      forwardMove: { get: function () { return read("forwardMove"); }, enumerable: true },
-      sideMove: { get: function () { return read("sideMove"); }, enumerable: true },
-      origin: { get: function () { return vector(read("originX"), read("originY"), read("originZ")); }, enumerable: true },
-      velocity: {
-        get: function () { return vector(read("velocityX"), read("velocityY"), read("velocityZ")); },
-        set: function (v) {
-          guard();
-          if (post) return; // the original already ran: POST assignment is ignored
-          var c = components(v);
-          if (!c) {
-            env.warn(env.api + ": velocity write refused (needs three finite numbers); the velocity keeps its prior value");
-            return;
-          }
-          var move = frame.move;
-          if (!move) return;
-          move.velocityX = c[0]; move.velocityY = c[1]; move.velocityZ = c[2];
-        },
-        enumerable: true
+    get player() {
+      if (!this.#live) throw new Error(EXPIRED);
+      if (this.#player === undefined) this.#player = hopPlayer(this.#frame, this.#env.pawns, this.#env.missed);
+      return this.#player;
+    }
+    get viewAngles() { return qangle(this.#read("pitch"), this.#read("yaw"), this.#read("roll")); }
+    get forwardMove() { return this.#read("forwardMove"); }
+    get sideMove() { return this.#read("sideMove"); }
+    get origin() { return vector(this.#read("originX"), this.#read("originY"), this.#read("originZ")); }
+    get velocity() { return vector(this.#read("velocityX"), this.#read("velocityY"), this.#read("velocityZ")); }
+    set velocity(v) {
+      if (!this.#live) throw new Error(EXPIRED);
+      if (this.#post) return; // the original already ran: POST assignment is ignored
+      var c = components(v);
+      if (!c) {
+        this.#env.warn(this.#env.api + ": velocity write refused (needs three finite numbers); the velocity keeps its prior value");
+        return;
       }
-    });
-    return view;
+      var move = this.#frame.move;
+      if (!move) return;
+      move.velocityX = c[0]; move.velocityY = c[1]; move.velocityZ = c[2];
+    }
   }
 
   function wrapper(handler, post, env) {
     return function (frame) {
-      var lease = { live: true };
-      try { handler(moveView(frame, post, lease, env)); }
+      var view = new MoveView(frame, post, env);
+      try { handler(view); }
       catch (e) { env.warn(env.api + " handler threw: " + (e && e.stack ? e.stack : e)); }
-      finally { lease.live = false; }
+      finally { MoveView.expire(view); }
       return post ? undefined : CONTINUE;
     };
   }

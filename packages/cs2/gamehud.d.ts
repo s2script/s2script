@@ -1,5 +1,5 @@
 // @s2script/cs2 — GameHud: the gamemode HUD kit. In-round pieces (top rail, kill feed, status card,
-// toast, round-end summary) and panels (pop-up vote, drawer, sheet, prompt, intro, spectate hub).
+// weapon card, target label, toast, round-end summary) and panels (pop-up vote, drawer, sheet, prompt, intro, spectate hub).
 //
 // Paints `s2script_gamehud.xml` and `s2script_gamepanels.xml` from the game-kit workshop addon. The layout spawns with
 // `observable: false`, so every paint is per player: each call takes an audience.
@@ -88,6 +88,29 @@ export interface GameHudStatusSpec {
 
 export interface GameHudStatus extends GameHudRegion {
   set(audience: GameHudAudience, spec: GameHudStatusSpec): void;
+  hide(audience?: GameHudAudience): void;
+}
+
+export interface GameHudTargetSpec {
+  /** The name line, such as `"Bob"` or `"{red}Bob"`. Required. */
+  readonly name: GameHudText;
+  /** A small line under the name, such as `"Detective"`. Leave it out or pass `""` to drop it. Its colour comes from its leading tag, else grey. */
+  readonly sub?: GameHudText;
+  /** The name's colour. Defaults to the name's leading tag, then `default` (white). */
+  readonly tone?: GameHudTone;
+}
+
+/**
+ * The crosshair target label: who the player is looking at, centred just under the crosshair.
+ * Passive (no cursor), per player, and it collapses under the scoreboard and buy menu.
+ */
+export interface GameHudTarget extends GameHudRegion {
+  /**
+   * Show the label. Safe to call every tick: a player whose label already says this gets nothing
+   * sent. It fades in over about 0.1 s; a name change while it is up swaps the text at once.
+   */
+  set(audience: GameHudAudience, spec: GameHudTargetSpec): void;
+  /** Fade the label out (about 0.1 s). A `set` straight after brings it back without a blink. */
   hide(audience?: GameHudAudience): void;
 }
 
@@ -599,6 +622,8 @@ export declare const GameHud: {
   status(): GameHudStatus | null;
   /** Claim the kill feed. Null when another plugin holds it. */
   feed(): GameHudFeed | null;
+  /** Claim the crosshair target label. Null when another plugin holds it. Calling again returns the same claim. */
+  target(): GameHudTarget | null;
   /** The weapon card (bottom right), which replaces the stock weapons and ammo HUD. One plugin holds it. */
   readonly weapon: GameHudWeapon;
   /**

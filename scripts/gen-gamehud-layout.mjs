@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Generates the game-kit workshop layouts and the descriptor the server runtime drives them with:
 //
-//   s2script_gamehud.xml     in-round HUD: top rail, kill feed, status card, toast
+//   s2script_gamehud.xml     in-round HUD: top rail, kill feed, status card, weapon card, target
+//                            label, toast
 //   s2script_gamepanels.xml  panels: pop-up vote, drawer list, prompt, sheet, intro/spectate hub
 //   s2script_gamekit.css     one stylesheet for both (hand-written base + generated families)
 //   s2script_gamekit.manifest.json  ids, dialog variables, buttons, meters and pools per layout
@@ -127,7 +128,7 @@ const HEADER = (what) => `<!--
 
 // ---- layout 1: in-round HUD -------------------------------------------------------------------
 const hud = layoutBuilder("hud");
-const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card, weapon card, toast)"), (d) => {
+const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card, weapon card, target label, toast)"), (d) => {
   const b = hud;
   b.raw(d, `<!-- Top rail: two score blocks around a clock, and a round line. The side tone (gk-e-*) is a class on gk_rail_l / gk_rail_r. -->`);
   b.open(d, "Panel", "gk_rail", "gk-rail s2-hide");
@@ -212,6 +213,13 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
   b.label(d + 2, "gk_wpn_clip", "gk-wpn-clip");
   b.label(d + 2, "gk_wpn_res", "gk-wpn-res");
   b.close(d + 1, "Panel");
+  b.close(d, "Panel");
+
+  b.raw(d, `<!-- Target label: who the player is looking at, centred just under the crosshair. A name and an optional sub line.
+       Starts faded and collapsed; the runtime fades it (gk-fade, 0.1 s) before it collapses, so a sweeping aim does not blink. -->`);
+  b.open(d, "Panel", "gk_target", "gk-panel gk-target gk-fade s2-hide");
+  b.label(d + 1, "gk_target_n", "gk-target-n gk-t-default");
+  b.label(d + 1, "gk_target_s", "gk-target-s s2-hide");
   b.close(d, "Panel");
 
   b.raw(d, `<!-- Toast: one line and a small subline, top centre. -->`);
