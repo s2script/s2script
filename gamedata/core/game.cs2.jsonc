@@ -40,7 +40,10 @@
     // 0x50 (Linux) = 80; CONFIRMED live against CS2 build 2000854 in the T7 gate (yields a valid
     // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
     // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
-    "GameEntitySystem": { "linuxsteamrt64": 80 },
+    // win64 0x58 = 88 (Nov 21 2026, build 26798866): CGameResourceService (engine2.dll, found
+    // through MSVC RTTI) slot 34 is `mov [rcx+0x58], rdx; ret`, the same setter that is
+    // `mov [rdi+0x50], rsi; ret` at slot 34 on libengine2.so.
+    "GameEntitySystem": { "linuxsteamrt64": 80, "win64": 88 },
     // CCheckTransmitInfo: byte offset of the which-client int32. s2sdk's CCheckTransmitInfo puts
     // m_nPlayerSlot at 576 too, but the shim reads it through this offset — CSSharp calls it m_nPlayerSlot, Swiftly m_nClientEntityIndex (they DISAGREE on semantics:
     // slot vs entindex=slot+1). Both the offset AND the semantics are validated at FIRST
@@ -154,32 +157,43 @@
     //   INetworkServerService CNetworkServerService     libengine2.so
     //   ICvar                 CCvar                     libtier0.so
     //   IVEngineServer2       CEngineServer             libengine2.so
-    "ISource2Server_vtableSize":                  { "linuxsteamrt64": 104 },
-    "ISource2Server_GameFrame":                   { "linuxsteamrt64": 19 },
-    "ISource2ServerConfig_vtableSize":            { "linuxsteamrt64": 29 },
-    "ISource2ServerConfig_Shutdown":              { "linuxsteamrt64": 4 },
-    "ISource2ServerConfig_PreShutdown":           { "linuxsteamrt64": 5 },
-    "ISource2GameClients_vtableSize":             { "linuxsteamrt64": 46 },
-    "ISource2GameClients_OnClientConnected":      { "linuxsteamrt64": 11 },
-    "ISource2GameClients_ClientPutInServer":      { "linuxsteamrt64": 13 },
-    "ISource2GameClients_ClientActive":           { "linuxsteamrt64": 14 },
-    "ISource2GameClients_ClientFullyConnect":     { "linuxsteamrt64": 15 },
-    "ISource2GameClients_ClientDisconnect":       { "linuxsteamrt64": 16 },
-    "ISource2GameClients_ClientCommand":          { "linuxsteamrt64": 17 },
-    "ISource2GameClients_ClientSettingsChanged":  { "linuxsteamrt64": 19 },
-    "ISource2GameClients_ClientVoice":            { "linuxsteamrt64": 27 },
-    "ISource2GameEntities_vtableSize":            { "linuxsteamrt64": 21 },
-    "ISource2GameEntities_CheckTransmit":         { "linuxsteamrt64": 13 },
-    "IGameEventManager2_vtableSize":              { "linuxsteamrt64": 17 },
-    "IGameEventManager2_FireEvent":               { "linuxsteamrt64": 8 },
-    "IGameEventSystem_vtableSize":                { "linuxsteamrt64": 21 },
-    "IGameEventSystem_PostEventAbstract":         { "linuxsteamrt64": 15 },
-    "INetworkServerService_vtableSize":           { "linuxsteamrt64": 53 },
-    "INetworkServerService_StartupServer":        { "linuxsteamrt64": 27 },
-    "ICvar_vtableSize":                           { "linuxsteamrt64": 46 },
-    "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20 },
-    "IVEngineServer2_vtableSize":                 { "linuxsteamrt64": 123 },
-    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 },
+    //
+    // win64 (Nov 21 2026, build 26798866): indices are the MSVC vftable layout clang-cl gives the
+    // vendored headers (-fdump-vtable-layouts), and each pin is the implementing class's vtable
+    // found through MSVC RTTI (.?AV<class>@@ -> complete object locator -> vftable) in that build's
+    // server.dll / engine2.dll / tier0.dll / networksystem.dll / filesystem_stdio.dll. For every
+    // interface here the header's slot count equals the live vtable, the same agreement the Linux
+    // pins rest on. MSVC differs from Itanium in two ways that move indices: a virtual destructor
+    // takes one slot, not two (FireEvent 8 -> 7, CheckTransmit 13 -> 12, StartupServer 27 -> 26),
+    // and overloads are grouped in reverse (PostEventAbstract(int, const uint64*, ...) 15 -> 16).
+    // The first live boot (Nov 21) read the same live slot counts for every interface it acquired
+    // (all but ISource2GameEntities, IGameEventManager2 and CNetChan, which come later in boot).
+    "ISource2Server_vtableSize":                  { "linuxsteamrt64": 104, "win64": 103 },
+    "ISource2Server_GameFrame":                   { "linuxsteamrt64": 19, "win64": 19 },
+    "ISource2ServerConfig_vtableSize":            { "linuxsteamrt64": 29, "win64": 29 },
+    "ISource2ServerConfig_Shutdown":              { "linuxsteamrt64": 4, "win64": 4 },
+    "ISource2ServerConfig_PreShutdown":           { "linuxsteamrt64": 5, "win64": 5 },
+    "ISource2GameClients_vtableSize":             { "linuxsteamrt64": 46, "win64": 46 },
+    "ISource2GameClients_OnClientConnected":      { "linuxsteamrt64": 11, "win64": 11 },
+    "ISource2GameClients_ClientPutInServer":      { "linuxsteamrt64": 13, "win64": 13 },
+    "ISource2GameClients_ClientActive":           { "linuxsteamrt64": 14, "win64": 14 },
+    "ISource2GameClients_ClientFullyConnect":     { "linuxsteamrt64": 15, "win64": 15 },
+    "ISource2GameClients_ClientDisconnect":       { "linuxsteamrt64": 16, "win64": 16 },
+    "ISource2GameClients_ClientCommand":          { "linuxsteamrt64": 17, "win64": 17 },
+    "ISource2GameClients_ClientSettingsChanged":  { "linuxsteamrt64": 19, "win64": 19 },
+    "ISource2GameClients_ClientVoice":            { "linuxsteamrt64": 27, "win64": 27 },
+    "ISource2GameEntities_vtableSize":            { "linuxsteamrt64": 21, "win64": 18 },
+    "ISource2GameEntities_CheckTransmit":         { "linuxsteamrt64": 13, "win64": 12 },
+    "IGameEventManager2_vtableSize":              { "linuxsteamrt64": 17, "win64": 16 },
+    "IGameEventManager2_FireEvent":               { "linuxsteamrt64": 8, "win64": 7 },
+    "IGameEventSystem_vtableSize":                { "linuxsteamrt64": 21, "win64": 21 },
+    "IGameEventSystem_PostEventAbstract":         { "linuxsteamrt64": 15, "win64": 16 },
+    "INetworkServerService_vtableSize":           { "linuxsteamrt64": 53, "win64": 51 },
+    "INetworkServerService_StartupServer":        { "linuxsteamrt64": 27, "win64": 26 },
+    "ICvar_vtableSize":                           { "linuxsteamrt64": 46, "win64": 46 },
+    "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20, "win64": 20 },
+    "IVEngineServer2_vtableSize":                 { "linuxsteamrt64": 123, "win64": 123 },
+    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92, "win64": 92 },
     // Gates the compiled INetChannelInfo calls behind Client.netStats, checked on the first client
     // net channel. The pin is CNetChan's vtable in libnetworksystem.so (BuildID
     // db675abb166a35d38011b53f85427b5cae65210e, Oct 22 2026 build). Slots 0-24 were checked against
@@ -187,19 +201,19 @@
     // real-time status bytes/s and packets/s fields, so slot 14 is GetPeakJitter as the header says.
     // Nov 11 2026 (build 26598758, libnetworksystem BuildID see binaries/2026-11-11/README.md): CNetChan
     // gained one virtual at slot 88, after every INetChannelInfo method, so the stats slots did not move.
-    "INetChannelInfo_vtableSize":                 { "linuxsteamrt64": 90 },
+    "INetChannelInfo_vtableSize":                 { "linuxsteamrt64": 90, "win64": 89 },
     // Gates every compiled INetworkMessages call (chat print, user messages, client cvar queries). The pin
     // is CNetworkMessages' vtable in libnetworksystem.so. The Nov 11 2026 update (build 26598758) took it
     // from 40 to 37 slots and moved FindNetworkMessagePartial from 14 to 10; s2sdk's header was updated
     // to match (slot test in the s2sdk commit message).
-    "INetworkMessages_vtableSize":                { "linuxsteamrt64": 37 },
+    "INetworkMessages_vtableSize":                { "linuxsteamrt64": 37, "win64": 36 },
     // CFileSystem_Stdio (libfilesystem_stdio.so), the object behind VFileSystem017. The addon
     // mounts call it through the vendored s2sdk ifilesystem.h, so the whole layout is pinned.
     // Verified on build 26598758: FileExists 21 (names itself), AddSearchPath 31 (libengine2 calls
     // +0xf8 with "USRLOCAL"/"DEFAULT_WRITE_PATH"), RemoveSearchPath 32 (+0x100), IsDirectory 50
     // (+0x190 with "GAME"), IsFileInUntrustedAddon 113 (the header's last); 114..127 are the
     // implementation's own.
-    "IFileSystem_vtableSize":                     { "linuxsteamrt64": 128 },
+    "IFileSystem_vtableSize":                     { "linuxsteamrt64": 128, "win64": 128 },
     // Sound event lookups (Sound.duration / Sound.isValid). The object behind SoundOpSystem001 is a
     // CSoundOpSystem (libsoundsystem.so BuildID cc784b92…, Oct 22 2026) whose ISoundEventManager
     // base sits at +8: that vtable (@0x73c7b8) has offset-to-top -8 and the primary's type_info, and
@@ -284,6 +298,17 @@
         "module": "libserver.so",
         "pattern": "55 48 8D 05 ? ? ? ? BA 40 00 00 00 31 F6 48 89 E5 41 56 41 55",
         "resolve": "ctor-body-xref"
+      },
+      // MSVC inlines the constructor into the instance's static initializer (the vptr is
+      // constant-initialized). The initializer loads the instance into rcx and stores it into the
+      // global manager pointer when that is still null: `lea rcx, [rip+instance]; ...;
+      // jne; mov [rip+g_pManager], rcx`. lea-disp reads the instance address from the lea.
+      // Located on build 26798866: instance RVA 0x1e062d0, whose first qword is
+      // CGameEventManager's RTTI vtable.
+      "win64": {
+        "module": "server.dll",
+        "pattern": "48 8D 0D ? ? ? ? C7 05 ? ? ? ? FF FF FF FF 89 05 ? ? ? ? 48 C7 05 ? ? ? ? 00 00 C8 00 75 ? 48 89 0D",
+        "resolve": "lea-disp"
       }
     },
     // Host_Say (Slice 6.11b): the CS2 chat entry point — formats "[%s][%s (%u)]: %s\n" and broadcasts.
@@ -702,6 +727,14 @@
         "module": "libserver.so",
         "pattern": "55 48 89 E5 41 55 49 89 FD 41 54 53 48 89 F3 48 83 EC ? 8B 8F ? ? ? ? 4C 63 E1 85 C9 7E ? 48 8B 97 ? ? ? ? 4C 63 E1 31 C0 EB ? 66 90 48 83 C0 ? 4C 39 E0 74 ? 48 39 1C C2 75 ? 48 83 C4 ? 5B 41 5C 41 5D 5D C3 66 0F 1F 44 00 ? 41 3B 8D ? ? ? ? 74 ? 49 8B 85 ? ? ? ? 83 C1 ? 41 89 8D ? ? ? ? 4A 89 1C E0 48 83 C4",
         "resolve": "direct"
+      },
+      // CEntitySystem::AddListenerEntity (Find, then AddToTail on m_entityListeners at +0x2150 on
+      // both platforms). The tail after the Find loop tells it apart from another CUtlVector
+      // add-unique with the same prologue. Build 26798866.
+      "win64": {
+        "module": "server.dll",
+        "pattern": "48 89 6C 24 18 48 89 7C 24 20 41 56 48 83 EC 20 48 8B F9 48 8B EA 33 C9 4C 63 B7 ? ? ? ? 45 85 F6 7E ? 48 8B 87 ? ? ? ? 44 8B C1 66 90 48 39 28 74 ? FF C1 49 FF C0 48 83 C0 08 4D 3B C6 7C ? EB ? 85 C9 0F 89",
+        "resolve": "direct"
       }
     },
     // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
@@ -709,6 +742,12 @@
       "linuxsteamrt64": {
         "module": "libserver.so",
         "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? 8B BF ? ? ? ?",
+        "resolve": "direct"
+      },
+      // CEntitySystem::RemoveListenerEntity (Find, then shift-down and decrement). Build 26798866.
+      "win64": {
+        "module": "server.dll",
+        "pattern": "40 53 48 83 EC 20 44 8B 91 ? ? ? ? 33 C0 48 8B D9 45 85 D2 7E ? 4C 8B 81",
         "resolve": "direct"
       }
     },

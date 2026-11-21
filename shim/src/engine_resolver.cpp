@@ -3,7 +3,7 @@
 #include "vtable.h"
 #include "../third_party/json.hpp"
 #include <cstring>
-#if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
+#if (defined(__linux__) || defined(_WIN32)) && !defined(S2_RESOLVER_ENGINE_FREE)
 #include <khook.hpp>
 #endif
 
@@ -58,7 +58,7 @@ bool ctor_target(const s2original::Image& image,uintptr_t ctor,uintptr_t& target
     }
     return fail(reason,"ctor-body-xref preceding LEA not found");
 }
-#if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
+#if (defined(__linux__) || defined(_WIN32)) && !defined(S2_RESOLVER_ENGINE_FREE)
 bool production_sources(const std::string& module,Sources& sources,std::string& reason) {
     auto image=s2original::OpenLoadedModule(module.c_str(),reason);
     if (!image) return false;
@@ -196,20 +196,20 @@ bool Evaluate(const TargetRecipe& recipe,const Sources& sources,Resolution& out,
 
 bool Resolve(const TargetRecipe& recipe,Resolution& out,std::string& reason) {
     out={}; reason.clear();
-#if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
+#if (defined(__linux__) || defined(_WIN32)) && !defined(S2_RESOLVER_ENGINE_FREE)
     Sources sources;
     if (!production_sources(recipe.module,sources,reason)) return false;
     return Evaluate(recipe,sources,out,reason);
 #else
     (void)recipe;
-    return fail(reason,"production resolver requires Linux and Metamod (use Evaluate for fixtures)");
+    return fail(reason,"production resolver requires Linux or Windows and Metamod (use Evaluate for fixtures)");
 #endif
 }
 
 bool ResolveVirtualSlot(const std::string& module,const std::string& className,int index,
                         VirtualSlotResolution& out,std::string& reason) {
     out={}; reason.clear();
-#if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
+#if (defined(__linux__) || defined(_WIN32)) && !defined(S2_RESOLVER_ENGINE_FREE)
     if (!c_string(module) || !c_string(className))
         return fail(reason,"virtual slot input contains an interior NUL");
     if (module.empty()) return fail(reason,"virtual module invalid");
@@ -220,7 +220,7 @@ bool ResolveVirtualSlot(const std::string& module,const std::string& className,i
     return EvaluateVirtualSlot(module,className,index,sources,out,reason);
 #else
     (void)module; (void)className; (void)index;
-    return fail(reason,"production resolver requires Linux and Metamod (use EvaluateVirtualSlot for fixtures)");
+    return fail(reason,"production resolver requires Linux or Windows and Metamod (use EvaluateVirtualSlot for fixtures)");
 #endif
 }
 }

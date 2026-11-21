@@ -1,6 +1,7 @@
 // Exercises the shipped evaluator over a verified ELF image and separate live data.
 #include "engine_resolver.h"
 #include "vtable.h"
+#include "pe_fixture.h"
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -200,6 +201,37 @@ void verified_rtti_data() {
     CHECK(s2vtable::GetVTableByName(*f.image,"FixtureClass",deny)==nullptr,
           "RTTI reader refusal fails closed");
 }
+void msvc_rtti_data() {
+    using pefixture::PeFixture; using pefixture::put;
+    PeFixture f; std::string why;
+    auto image=f.open(why);
+    CHECK(image && image->identity().format==s2original::Format::Pe, "PE fixture opens");
+    if (!image) return;
+    const uintptr_t b=PeFixture::base;
+    std::memcpy(f.live.data()+0x3110,".?AVFixtureClass@@",19);       // TypeDescriptor name
+    auto col=[&](size_t at,uint32_t offset) {
+        put(f.live,at,1,4); put(f.live,at+4,offset,4); put(f.live,at+12,0x3100,4);
+        put(f.live,at+20,uint32_t(at),4);
+    };
+    col(0x3200,0); put(f.live,0x3300,b+0x3200,8);                     // primary: meta, slot 0
+    col(0x3240,8); put(f.live,0x3400,b+0x3240,8);                     // secondary (offset 8)
+    auto read=f.reader();
+    CHECK(s2vtable::GetVTableByName(*image,"FixtureClass",read)==reinterpret_cast<void**>(b+0x3308),
+          "MSVC RTTI resolves the offset-0 vftable via TypeDescriptor -> COL -> meta pointer");
+    CHECK(s2vtable::GetVTableByName(*image,"Fixture",read)==nullptr,
+          "MSVC RTTI name match is bounded by the @@ terminator");
+    put(f.live,0x3200+20,0x3204,4);
+    CHECK(s2vtable::GetVTableByName(*image,"FixtureClass",read)==nullptr,
+          "a locator whose self RVA disagrees is not a locator");
+    put(f.live,0x3200+20,0x3200,4);
+    put(f.live,0x3500,b+0x3200,8);
+    CHECK(s2vtable::GetVTableByName(*image,"FixtureClass",read)==nullptr,
+          "two vftables naming the primary locator fail ambiguous");
+    put(f.live,0x3500,0,8);
+    std::memcpy(f.live.data()+0x3110,".?AUFixtureClass@@",19);
+    CHECK(s2vtable::GetVTableByName(*image,"FixtureClass",read)==reinterpret_cast<void**>(b+0x3308),
+          "struct TypeDescriptors (.?AU) resolve too");
+}
 void patched_virtual() {
     Fixture f; f.bytes(0x1200,{0x48,0x89,0x55,0xf8,0xc3}); f.freeze();
     put(f.live,0x3000,0xf00000,8); // live peer JIT pointer outside executable module
@@ -281,7 +313,7 @@ void validators_break_direct_ties() {
 }
 }
 int main() {
-    verified_rtti_data(); direct_and_closed_recipes(); validated_call_sites();
+    verified_rtti_data(); msvc_rtti_data(); direct_and_closed_recipes(); validated_call_sites();
     multiple_segments_and_instruction_bounds(); data_targets(); patched_virtual();
     validators_break_direct_ties();
     if (failures) { std::cerr << "engine_resolver_test: " << failures << " failures\n"; return 1; }

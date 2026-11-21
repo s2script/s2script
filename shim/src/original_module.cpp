@@ -13,6 +13,13 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 #endif
+#ifdef _WIN32
+#include "platform.h"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace s2original {
 namespace {
@@ -200,6 +207,11 @@ std::shared_ptr<const Image> FromElf(
                                                           file.begin()+h.offset+h.filesz)});
     }
     if (segments.empty()) { reason = "ELF has no file-backed executable segments"; return nullptr; }
+    return Image::Intern(expected, std::move(segments), std::move(ranges), reason);
+}
+
+std::shared_ptr<const Image> Image::Intern(const Identity& expected, std::vector<Segment> segments,
+                                           std::vector<ReadableRange> ranges, std::string& reason) {
     std::sort(segments.begin(), segments.end(),
               [](const Segment& a, const Segment& b) { return a.live_begin < b.live_begin; });
     std::sort(ranges.begin(),ranges.end(),[](const ReadableRange& a,const ReadableRange& b) {
@@ -225,7 +237,8 @@ std::shared_ptr<const Image> FromElf(
         ++it;
         const auto& id=old->identity();
         if (id.device!=expected.device || id.inode!=expected.inode || id.load_bias!=expected.load_bias ||
-            id.build_id!=expected.build_id || old->segments_.size()!=segments.size() || old->readable_.size()!=merged.size()) continue;
+            id.build_id!=expected.build_id || id.format!=expected.format ||
+            old->segments_.size()!=segments.size() || old->readable_.size()!=merged.size()) continue;
         bool same=true;
         for (size_t i=0; i<segments.size(); ++i)
             if (old->segments_[i].live_begin!=segments[i].live_begin || old->segments_[i].bytes!=segments[i].bytes) { same=false; break; }
@@ -236,6 +249,137 @@ std::shared_ptr<const Image> FromElf(
     auto image=std::shared_ptr<const Image>(new Image(expected,std::move(segments),std::move(merged)));
     cache.push_back(image);
     return image;
+}
+
+namespace {
+// PE32+ layout, decoded explicitly (no <windows.h>) so the parser and its fixtures are portable.
+constexpr uint32_t kScnExecute = 0x20000000, kScnRead = 0x40000000;
+struct PeSection { uint32_t vaddr, vsize, raw, rawsize, flags; };
+struct PeHeaders {
+    size_t nt = 0, opt = 0, opt_size = 0, table = 0, headers_size = 0;
+    uint64_t image_size = 0;
+    std::vector<PeSection> sections;
+    uint32_t codeview_rva = 0, codeview_size = 0;
+};
+bool parse_pe(const std::vector<uint8_t>& file, PeHeaders& h, std::string& build_id,
+              std::string& reason) {
+    if (file.size() < 0x40 || file[0] != 'M' || file[1] != 'Z')
+        return refuse(reason, "PE DOS header truncated or invalid");
+    h.nt = static_cast<size_t>(le(file, 0x3c, 4));
+    if (!fits(h.nt, 24, file.size()) || std::memcmp(file.data()+h.nt, "PE\0\0", 4) != 0)
+        return refuse(reason, "PE signature missing");
+    if (le(file, h.nt+4, 2) != 0x8664) return refuse(reason, "unsupported PE machine (requires x64)");
+    const uint64_t count = le(file, h.nt+6, 2);
+    h.opt = h.nt + 24;
+    h.opt_size = static_cast<size_t>(le(file, h.nt+20, 2));
+    if (h.opt_size < 112 || !fits(h.opt, h.opt_size, file.size()) || le(file, h.opt, 2) != 0x20b)
+        return refuse(reason, "unsupported PE optional header (requires PE32+)");
+    h.image_size = le(file, h.opt+56, 4);
+    h.headers_size = static_cast<size_t>(le(file, h.opt+60, 4));
+    const uint64_t dirs = le(file, h.opt+108, 4);
+    h.table = h.opt + h.opt_size;
+    if (!count || !fits(h.table, count*40, file.size()) || h.headers_size < h.table + count*40 ||
+        h.headers_size > file.size() || !h.image_size)
+        return refuse(reason, "PE section table invalid or truncated");
+    for (uint64_t i = 0; i < count; ++i) {
+        const size_t p = static_cast<size_t>(h.table + i*40);
+        PeSection s{uint32_t(le(file,p+12,4)), uint32_t(le(file,p+8,4)), uint32_t(le(file,p+20,4)),
+                    uint32_t(le(file,p+16,4)), uint32_t(le(file,p+36,4))};
+        if (!s.vsize) s.vsize = s.rawsize;
+        if (!fits(s.vaddr, s.vsize, h.image_size) || s.vaddr < h.headers_size ||
+            (s.rawsize && !fits(s.raw, s.rawsize, file.size())))
+            return refuse(reason, "PE section bounds invalid");
+        for (const auto& o : h.sections)
+            if (s.vaddr < uint64_t(o.vaddr)+o.vsize && o.vaddr < uint64_t(s.vaddr)+s.vsize)
+                return refuse(reason, "overlapping PE sections");
+        h.sections.push_back(s);
+    }
+    auto file_offset = [&](uint64_t rva, uint64_t length, uint64_t& out) {
+        for (const auto& s : h.sections)
+            if (rva >= s.vaddr && fits(rva-s.vaddr, length, std::min(s.vsize, s.rawsize))) {
+                out = s.raw + (rva-s.vaddr); return true;
+            }
+        return false;
+    };
+    // IMAGE_DIRECTORY_ENTRY_DEBUG (6): the CodeView RSDS record names the build (GUID + age).
+    if (dirs > 6 && h.opt_size >= 112 + 7*8) {
+        const uint64_t rva = le(file, h.opt+112+6*8, 4), size = le(file, h.opt+112+6*8+4, 4);
+        uint64_t at = 0;
+        if (size && (size % 28 || !file_offset(rva, size, at)))
+            return refuse(reason, "PE debug directory invalid");
+        for (uint64_t e = 0; size && e < size; e += 28) {
+            if (le(file, at+e+12, 4) != 2) continue;   // IMAGE_DEBUG_TYPE_CODEVIEW
+            const uint64_t length = le(file, at+e+16, 4), record_rva = le(file, at+e+20, 4);
+            const uint64_t record = le(file, at+e+24, 4);
+            uint64_t mapped_at = 0;
+            if (length < 24 || !fits(record, length, file.size()) ||
+                !file_offset(record_rva, length, mapped_at) || mapped_at != record ||
+                std::memcmp(file.data()+record, "RSDS", 4) != 0)
+                return refuse(reason, "PE CodeView record invalid");
+            std::string id;
+            static constexpr char hex[] = "0123456789abcdef";
+            for (uint64_t j = 4; j < 24; ++j) {
+                uint8_t byte = file[static_cast<size_t>(record+j)];
+                id += hex[byte >> 4]; id += hex[byte & 15];
+            }
+            if (!build_id.empty() && build_id != id) return refuse(reason, "PE CodeView records conflict");
+            build_id = std::move(id);
+            h.codeview_rva = uint32_t(record_rva); h.codeview_size = uint32_t(length);
+        }
+    }
+    if (build_id.empty()) return refuse(reason, "PE CodeView build id missing");
+    return true;
+}
+} // namespace
+
+std::shared_ptr<const Image> FromPe(const std::vector<uint8_t>& file, const Identity& expected,
+                                    const LiveRead& read_live, std::string& reason) {
+    reason.clear();
+    PeHeaders h;
+    std::string build_id;
+    if (!parse_pe(file, h, build_id, reason)) return nullptr;
+    if (!expected.build_id.empty() && expected.build_id != build_id) {
+        reason = "module build-id identity mismatch"; return nullptr;
+    }
+    const uintptr_t base = expected.load_bias;
+    if (!base || !fits(base, h.image_size, UINTPTR_MAX)) {
+        reason = "PE live image arithmetic overflow"; return nullptr;
+    }
+    if (!read_live) { reason = "PE loaded image unverifiable"; return nullptr; }
+    // The loaded headers must be this file's. The loader rewrites only ImageBase (opt+24) when it
+    // relocates the image; every other header byte, and the section table, must match.
+    std::vector<uint8_t> live(h.headers_size);
+    if (!read_live(base, live.data(), live.size())) {
+        reason = "PE loaded headers unreadable"; return nullptr;
+    }
+    const size_t table_end = h.table + h.sections.size()*40;
+    for (size_t i = 0; i < table_end; ++i) {
+        if (i >= h.opt+24 && i < h.opt+32) continue;
+        if (live[i] != file[i]) { reason = "loaded PE header identity mismatch"; return nullptr; }
+    }
+    std::vector<uint8_t> record(h.codeview_size);
+    if (!read_live(base+h.codeview_rva, record.data(), record.size())) {
+        reason = "loaded PE build id unreadable"; return nullptr;
+    }
+    for (const auto& s : h.sections)
+        if (h.codeview_rva >= s.vaddr && h.codeview_rva - s.vaddr < s.vsize &&
+            !std::equal(record.begin(), record.end(), file.begin()+s.raw+(h.codeview_rva-s.vaddr))) {
+            reason = "loaded PE build id identity mismatch"; return nullptr;
+        }
+    Identity identity = expected;
+    identity.build_id = build_id;
+    identity.format = Format::Pe;
+    std::vector<Segment> segments;
+    std::vector<ReadableRange> ranges{{base, base+h.headers_size}};
+    for (const auto& s : h.sections) {
+        const uintptr_t begin = base + s.vaddr;
+        if (s.flags & kScnRead) ranges.push_back({begin, begin+s.vsize});
+        const uint32_t backed = std::min(s.vsize, s.rawsize);
+        if ((s.flags & kScnExecute) && backed)
+            segments.push_back({begin, std::vector<uint8_t>(file.begin()+s.raw, file.begin()+s.raw+backed)});
+    }
+    if (segments.empty()) { reason = "PE has no file-backed executable sections"; return nullptr; }
+    return Image::Intern(identity, std::move(segments), std::move(ranges), reason);
 }
 
 #ifdef __linux__
@@ -295,8 +439,13 @@ bool Image::read_live(uintptr_t live, void* out, size_t length) const noexcept {
 #ifdef __linux__
     Fd memory(open("/proc/self/mem", O_RDONLY | O_CLOEXEC));
     return memory.value >= 0 && read_at(memory.value,live,static_cast<uint8_t*>(out),length);
+#elif defined(_WIN32)
+    // Kernel-mediated like /proc/self/mem: an unmapped or guard page fails the read, never faults.
+    SIZE_T done = 0;
+    return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(live), out, length, &done) &&
+           done == length;
 #else
-    return false; // portable tests inject their own bounded live data; discovery is Linux-only
+    return false; // portable tests inject their own bounded live data
 #endif
 }
 
@@ -375,9 +524,67 @@ std::shared_ptr<const Image> OpenLoadedModule(const char* module, std::string& r
     auto image = FromElf(file, observed, observed, mappings, reason);
     if (!image) return fail(reason);
     return image;
+#elif defined(_WIN32)
+    if (!module || !*module) { reason = "module name empty"; return nullptr; }
+    // Same selection as the platform seam's callers: among modules whose path contains `module`,
+    // the one with the largest executable section wins (Metamod's same-name proxy is tiny).
+    uintptr_t base = 0; size_t largest = 0; std::string path;
+    s2plat::ForEachModule([&](const s2plat::ModuleView& m) {
+        if (!std::strstr(m.path, module)) return false;
+        for (int i = 0; i < m.count; ++i)
+            if (m.segs[i].exec && m.segs[i].fileSize > largest) {
+                largest = m.segs[i].fileSize; base = m.base; path = m.path;
+            }
+        return false;
+    });
+    if (!base) { reason = "module not loaded: " + std::string(module); return nullptr; }
+    auto fail = [&](const std::string& why) -> std::shared_ptr<const Image> {
+        reason = path + ": " + why; return nullptr;
+    };
+    std::vector<wchar_t> wide(32768);
+    const DWORD n = GetModuleFileNameW(reinterpret_cast<HMODULE>(base), wide.data(),
+                                       static_cast<DWORD>(wide.size()));
+    if (!n || n >= wide.size()) return fail("backing file path unavailable");
+    HANDLE backing = CreateFileW(wide.data(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (backing == INVALID_HANDLE_VALUE) return fail("backing file missing or unverifiable");
+    struct Closer { HANDLE h; ~Closer() { CloseHandle(h); } } closer{backing};
+    BY_HANDLE_FILE_INFORMATION before{}, after{};
+    if (!GetFileInformationByHandle(backing, &before) ||
+        (before.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        return fail("backing file unverifiable");
+    const uint64_t size = (uint64_t(before.nFileSizeHigh) << 32) | before.nFileSizeLow;
+    if (size < 0x40 || size > 0x7fffffff) return fail("backing file size invalid");
+    std::vector<uint8_t> file(static_cast<size_t>(size));
+    for (size_t done = 0; done < file.size();) {
+        DWORD got = 0;
+        const DWORD want = static_cast<DWORD>(std::min<size_t>(file.size()-done, 1u << 20));
+        if (!ReadFile(backing, file.data()+done, want, &got, nullptr) || !got)
+            return fail("backing file read failed");
+        done += got;
+    }
+    if (!GetFileInformationByHandle(backing, &after) ||
+        before.dwVolumeSerialNumber != after.dwVolumeSerialNumber ||
+        before.nFileIndexHigh != after.nFileIndexHigh || before.nFileIndexLow != after.nFileIndexLow ||
+        before.nFileSizeHigh != after.nFileSizeHigh || before.nFileSizeLow != after.nFileSizeLow ||
+        CompareFileTime(&before.ftLastWriteTime, &after.ftLastWriteTime) != 0)
+        return fail("backing file changed during verification");
+    Identity observed;
+    observed.device = before.dwVolumeSerialNumber;
+    observed.inode = (uint64_t(before.nFileIndexHigh) << 32) | before.nFileIndexLow;
+    observed.load_bias = base;
+    observed.format = Format::Pe;
+    auto live = [](uintptr_t at, void* out, size_t length) {
+        SIZE_T done = 0;
+        return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(at), out, length,
+                                 &done) && done == length;
+    };
+    auto image = FromPe(file, observed, live, reason);
+    if (!image) return fail(reason);
+    return image;
 #else
     (void)module;
-    reason = "loaded module discovery unsupported on this platform (Linux required)";
+    reason = "loaded module discovery unsupported on this platform";
     return nullptr;
 #endif
 }
