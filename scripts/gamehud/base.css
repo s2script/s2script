@@ -35,6 +35,8 @@
 .HUD_SCOREBOARD_VISIBLE .gk-status,
 .HUD_BUYMENU_VISIBLE .gk-wpn,
 .HUD_SCOREBOARD_VISIBLE .gk-wpn,
+.HUD_BUYMENU_VISIBLE .gk-target,
+.HUD_SCOREBOARD_VISIBLE .gk-target,
 .HUD_BUYMENU_VISIBLE .gk-toast,
 .HUD_SCOREBOARD_VISIBLE .gk-toast,
 .HUD_BUYMENU_VISIBLE .gk-sum
@@ -581,6 +583,48 @@
 	font-size: 20px;
 	font-weight: bold;
 	color: #8c969f;
+}
+
+/* ---- hud: target label ------------------------------------------------------------------------- */
+
+/* Who the player is looking at: centred under the crosshair, compact, never takes the cursor.
+   Centre-aligned panels split their margins, so margin-top 120px sits it about 60px below the
+   crosshair. The fade is short so the label keeps up with aim: gk-fade takes it to 0 in 0.1 s. */
+.gk-target
+{
+	horizontal-align: center;
+	vertical-align: center;
+	margin-top: 120px;
+	padding: 4px 12px 5px 12px;
+	opacity: 1;
+	transition-property: opacity;
+	transition-duration: 0.1s;
+	transition-timing-function: ease-out;
+}
+
+.gk-target.gk-fade
+{
+	opacity: 0;
+}
+
+.gk-target-n
+{
+	horizontal-align: center;
+	font-size: 17px;
+	font-weight: bold;
+	letter-spacing: 1px;
+	text-shadow: 0px 1px 2px 1.0 #000000cc;
+}
+
+.gk-target-s
+{
+	horizontal-align: center;
+	margin-top: 1px;
+	font-size: 11px;
+	font-weight: bold;
+	letter-spacing: 2px;
+	text-transform: uppercase;
+	color: #aeb5bc;
 }
 
 .gk-toast

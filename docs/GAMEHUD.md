@@ -1,7 +1,7 @@
 # GameHud: the gamemode HUD kit
 
 `GameHud` from `@s2script/cs2` gives a gamemode a full HUD without writing Panorama: an in-round
-layer (top rail, kill feed, status card, toast, round-end summary) and a set of panels (pop-up
+layer (top rail, kill feed, status card, weapon card, target label, toast, round-end summary) and a set of panels (pop-up
 vote, drawer, sheet, prompt, intro, spectate hub). Names are generic: a drawer can be a TTT shop,
 a prompt can be an RDM report, a sheet can be JB rules. The worked example is the cookbook recipe
 [`examples/cookbook/src/recipes/gamehud.ts`](../examples/cookbook/src/recipes/gamehud.ts).
@@ -22,6 +22,7 @@ a prompt can be an RDM report, a sheet can be JB rules. The worked example is th
 | `status()` | role line, hint, two 10%-step bars | no | one plugin |
 | `feed()` | kill feed, six rows per player, fades after 6 s | no | one plugin |
 | `weapon.claim()` | weapon card: name, clip / reserve, slot list (bottom right) | no | one plugin |
+| `target()` | crosshair target label: a name and a small sub line under the crosshair | no | one plugin |
 | `toast(audience, spec)` | one line and a sub line | no | shared, newest wins |
 | `summary(audience, spec)` | round-end title, stats and a short table | no | shared, newest wins |
 | `theme(audience, name)` | accent colour for every piece | n/a | shared |
@@ -83,6 +84,35 @@ if (GameHud.weapon.claim()) {
   **`hide(audience)`** hides it. Both take that audience out of `auto` until `auto` names them again.
 - `claim()` answers `true` when this plugin holds the card. Every other call throws until it does.
   `release()`, or unloading the plugin, hides the card and stops `auto`.
+
+## Target label
+
+A small label centred just under the crosshair for "who you are looking at": one name line and an
+optional sub line (a role tag, health, "Detective"). It never takes the cursor and collapses under
+the scoreboard and buy menu.
+
+```ts
+import { GameHud, Player } from "@s2script/cs2";
+
+const target = GameHud.target(); // null when another plugin holds it
+
+export function OnGameFrame(): void {
+  for (const p of Player.all()) {
+    const seen = whoIsAimedAt(p);   // your aim trace (pawn.aimTrace) and rules
+    if (seen) target?.set(p.slot, { name: "{red}" + seen.playerName, sub: "Traitor" });
+    else target?.hide(p.slot);
+  }
+}
+```
+
+- **`set(audience, { name, sub?, tone? })`** shows it. Call it as often as you like: a player whose
+  label already says this gets nothing sent. `tone` (or the name's leading colour tag) colours the
+  name; the sub line takes its own leading tag, else grey. Leaving `sub` out drops the line. A new
+  name while the label is up swaps the text at once.
+- **`hide(audience)`** fades it out. Both directions take about 0.1 s, and the label collapses only
+  after the fade has finished and nothing showed it again, so an aim sweeping across a gap between
+  two players dips and comes back instead of blinking.
+- `release()`, or unloading the plugin, hides it for everyone and frees it for another plugin.
 
 ## Rules with stable numbers
 
@@ -147,3 +177,9 @@ mounted, from a real client (bots have no HUD). Each line is pass or fail; note 
 12. **Reload.** With the rail, status card and weapon card up, `sm plugins reload @example/cookbook`: all three
     come straight back with fresh content (no `world not ready` line in the log), and nothing the old
     generation painted is left behind.
+13. **Target label.** `sm_gk_target` with a few bots (`bot_add`, `bot_stop 1`). Aim at a bot: its name
+    shows under the crosshair in its team colour with its health under it, and fades in rather than
+    popping. Look away: it fades out. Sweep across two bots standing apart: the label follows from
+    one name to the next without blinking, and dips only over the gap. Note how far below the
+    crosshair it sits (aim for about 60 px at 1080p). Open the scoreboard and buy menu: it
+    collapses. `sm_gk_target off`: it hides.

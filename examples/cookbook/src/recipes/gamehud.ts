@@ -1,7 +1,7 @@
 import { command, config, hook, HookResult, Hud } from "@s2script/sdk";
 import { GameHud, HideHud, Player } from "@s2script/cs2";
 import type {
-  GameHudFeed, GameHudRail, GameHudSheetSection, GameHudSpectatePlayer, GameHudStatus, GameHudTheme,
+  GameHudFeed, GameHudRail, GameHudSheetSection, GameHudSpectatePlayer, GameHudStatus, GameHudTarget, GameHudTheme,
 } from "@s2script/cs2";
 
 /**
@@ -14,6 +14,8 @@ import type {
  *   sm_gk_summary         a sample round-end summary (also shown on every round_end while on)
  *   sm_gk_weapon [off]    hide the stock weapons HUD and fill the weapon card from each pawn
  *                         (the deagle is renamed "Hand Cannon" to show options.name)
+ *   sm_gk_target [off]    the crosshair target label: the name of the player you aim at, with
+ *                         their team and health under it
  *
  * Panels:
  *   sm_gk_vote            a pop-up vote for everyone: type 1-3 in chat, or Tab to click
@@ -29,7 +31,24 @@ import type {
  * Every surface falls back to chat for a player whose HUD refuses it.
  */
 export const name = "gamehud";
-export const describe = "the gamemode HUD kit: rail, feed, status, summary, vote, drawer, rules sheet, prompt, intro, spectate hub (sm_gk_*)";
+export const describe = "the gamemode HUD kit: rail, feed, status, target label, summary, vote, drawer, rules sheet, prompt, intro, spectate hub (sm_gk_*)";
+
+// The target label: every 4th frame (about 16 Hz), trace each living player's aim and name the
+// player it hits. set() is called on every read; the label only sends what changed.
+export function OnGameFrame(): void {
+  if (!target || ++targetFrame % 4 !== 0) return;
+  const players = Player.all();
+  const byPawn = new Map<number, (typeof players)[number]>();
+  for (const p of players) { const pw = p.pawn; if (pw && (pw.health ?? 0) > 0) byPawn.set(pw.ref.index, p); }
+  for (const p of players) {
+    const pawn = p.pawn;
+    const hit = pawn && (pawn.health ?? 0) > 0 ? pawn.aimTrace({ distance: 3000 }) : null;
+    const seen = hit?.entity ? byPawn.get(hit.entity.index) : undefined;
+    if (!seen || seen.slot === p.slot) { target.hide(p.slot); continue; }
+    const team = seen.teamNum === T ? "{red}" : "{lightblue}";
+    target.set(p.slot, { name: team + (seen.playerName ?? "?"), sub: (seen.pawn?.health ?? 0) + " HP" });
+  }
+}
 
 const T = 2;
 const CT = 3;
@@ -38,6 +57,8 @@ const SPEC = 1;
 let rail: GameHudRail | null = null;
 let status: GameHudStatus | null = null;
 let feed: GameHudFeed | null = null;
+let target: GameHudTarget | null = null;
+let targetFrame = 0;
 let round = 0;
 let credits: Record<number, number> = {};
 
@@ -270,6 +291,18 @@ export function OnPluginStart(): void {
     for (const p of Player.all()) Hud.hide(p.slot, HideHud.Weapons);
     GameHud.weapon.auto("all", { name: (defIndex) => (defIndex === 1 ? "Hand Cannon" : null) });
     cmd.reply("[cookbook] gamehud: weapon card on (sm_gk_weapon off to undo)");
+    return HookResult.Handled;
+  });
+
+  command("sm_gk_target", (cmd) => {
+    if (cmd.arg(0) === "off") {
+      target?.release();
+      target = null;
+      cmd.reply("[cookbook] gamehud: target label released");
+      return HookResult.Handled;
+    }
+    target = GameHud.target();
+    cmd.reply(target ? "[cookbook] gamehud: target label on (sm_gk_target off to undo)" : "[cookbook] gamehud: the target label is held by another plugin");
     return HookResult.Handled;
   });
 
