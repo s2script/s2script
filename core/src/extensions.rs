@@ -403,12 +403,45 @@ extern "C" fn registrar_native(reg: *mut Registrar, desc: *const NativeDesc) -> 
 // Loading
 // ---------------------------------------------------------------------------------------------
 
-const RTLD_NOW: i32 = 2;
-const RTLD_LOCAL: i32 = 0;
+/// The dynamic-loader calls, behind one seam. Extension ABI 1 is x86-64 System V only, and
+/// `load_one` refuses every extension before reaching these on any other target, so the
+/// non-Unix bodies only exist to keep the crate building there (Windows server port).
+#[cfg(unix)]
+mod dl {
+    use std::ffi::{c_char, c_void};
+    const RTLD_NOW: i32 = 2;
+    const RTLD_LOCAL: i32 = 0;
+    pub(super) unsafe fn open(path: *const c_char) -> *mut c_void {
+        libc::dlopen(path, RTLD_NOW | RTLD_LOCAL)
+    }
+    pub(super) unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
+        libc::dlsym(handle, name)
+    }
+    pub(super) unsafe fn close(handle: *mut c_void) {
+        libc::dlclose(handle);
+    }
+    pub(super) fn error() -> *const c_char {
+        unsafe { libc::dlerror() }
+    }
+}
+
+#[cfg(not(unix))]
+mod dl {
+    use std::ffi::{c_char, c_void};
+    pub(super) unsafe fn open(_path: *const c_char) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    pub(super) unsafe fn sym(_handle: *mut c_void, _name: *const c_char) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    pub(super) unsafe fn close(_handle: *mut c_void) {}
+    pub(super) fn error() -> *const c_char {
+        std::ptr::null()
+    }
+}
 
 fn dl_error() -> String {
-    let e = unsafe { libc::dlerror() };
-    lossy(e).unwrap_or_else(|| "unknown dlopen error".into())
+    lossy(dl::error()).unwrap_or_else(|| "unknown dlopen error".into())
 }
 
 /// Load every `*.so` directly under `dir`, once per process. Later calls are no-ops.
@@ -466,22 +499,22 @@ fn load_one(file: &Path) {
         push(file, String::new(), String::new(), State::Refused("path contains NUL".into()), vec![]);
         return;
     };
-    let handle = unsafe { libc::dlopen(path.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
+    let handle = unsafe { dl::open(path.as_ptr()) };
     if handle.is_null() {
         push(file, String::new(), String::new(), State::Refused(format!("dlopen: {}", dl_error())), vec![]);
         return;
     }
-    let sym = |n: &CStr| unsafe { libc::dlsym(handle, n.as_ptr()) };
+    let sym = |n: &CStr| unsafe { dl::sym(handle, n.as_ptr()) };
     let (info_sym, init_sym) = (sym(c"s2ext_info"), sym(c"s2ext_init"));
     if info_sym.is_null() || init_sym.is_null() {
-        unsafe { libc::dlclose(handle) };
+        unsafe { dl::close(handle) };
         push(file, String::new(), String::new(), State::Refused("does not export s2ext_info and s2ext_init".into()), vec![]);
         return;
     }
     let info_fn: extern "C" fn() -> *const ExtInfo = unsafe { std::mem::transmute(info_sym) };
     let info = info_fn();
     let refuse_before_init = |reason: String, name: String, version: String| {
-        unsafe { libc::dlclose(handle) };
+        unsafe { dl::close(handle) };
         push(file, name, version, State::Refused(reason), vec![]);
     };
     if info.is_null() {

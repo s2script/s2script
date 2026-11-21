@@ -5,6 +5,17 @@
 // byte copies into fixed buffers, then returns false so previously installed handlers run —
 // the process still dies / core-dumps exactly as it would have without us.
 #include "crash_handler.h"
+
+#ifdef _WIN32
+// The capture client is Breakpad's Linux handler (signals + the in-process minidump writer). The
+// Windows client (SEH + its own minidump writer) is a later slice of the Windows port; until then
+// the native-fault path stays disarmed there. The fatal-JS-error and Rust-panic paths are in core
+// and do not depend on this.
+bool S2CrashArm(const char*, const uint8_t*, uint32_t) { return false; }
+void S2CrashDisarm(void) {}
+const char* S2CrashUnavailableReason(void) { return "native crash capture is not yet ported to Windows"; }
+#else
+const char* S2CrashUnavailableReason(void) { return nullptr; }
 // <cstddef> before the Breakpad header: exception_handler.h transitively pulls in
 // common/memory_allocator.h, which uses std::max_align_t but only includes <stddef.h>. Newer host
 // libstdc++ provides std::max_align_t transitively; the Steam-Runtime-3 sniper toolchain (bullseye
@@ -65,3 +76,4 @@ void S2CrashDisarm(void) {
     s_breadcrumb = nullptr;
     s_breadcrumbSize = 0;
 }
+#endif  // _WIN32

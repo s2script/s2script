@@ -6,4 +6,6 @@
 // Returns false on empty dir (fail-off).
 bool S2CrashArm(const char* spoolDir, const uint8_t* breadcrumb, uint32_t breadcrumbSize);
 void S2CrashDisarm(void);
+// Why this platform cannot arm the native-fault path at all, or nullptr when it can.
+const char* S2CrashUnavailableReason(void);
 #endif

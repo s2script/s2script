@@ -9,8 +9,7 @@
 #include <steam/isteamugc.h>
 #include <steam/isteamuser.h>
 
-#include <dlfcn.h>
-#include <link.h>
+#include "platform.h"
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -48,21 +47,10 @@ void Log(const char* line) {
     if (g_SMAPI) META_CONPRINTF("%s", line);
 }
 
-// Find libsteam_api.so among the loaded objects: first by soname, then by path, because the engine
-// loads it from bin/<platform>/ with a full path. RTLD_NOLOAD: never load a second copy.
-void* OpenLoadedSteamApi() {
-    if (void* h = dlopen("libsteam_api.so", RTLD_NOW | RTLD_NOLOAD)) return h;
-    std::string path;
-    dl_iterate_phdr([](dl_phdr_info* info, size_t, void* out) -> int {
-        const char* name = info->dlpi_name;
-        if (!name) return 0;
-        const char* slash = std::strrchr(name, '/');
-        if (std::strcmp(slash ? slash + 1 : name, "libsteam_api.so") != 0) return 0;
-        *static_cast<std::string*>(out) = name;
-        return 1;
-    }, &path);
-    return path.empty() ? nullptr : dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD);
-}
+// The engine's own steam_api exports. platform.h looks them up in the copy already loaded (Linux:
+// RTLD_NOLOAD by soname, then by path; Windows: GetProcAddress on the loaded module), never loading
+// a second copy.
+void* SteamApiExport(const char* name) { return s2plat::FindExport(S2_STEAM_API_MODULE, name); }
 
 // Resolve (or drop) the interfaces for the engine's current game-server session. Caller holds s_ifaceMu.
 void RefreshLocked() {
@@ -161,19 +149,16 @@ void S2Steam_Init(bool (*on_owner_thread)()) {
     s_onOwnerThread = on_owner_thread;
     if (s_initTried) return;
     s_initTried = true;
-    void* lib = OpenLoadedSteamApi();
-    if (!lib) {
-        Log("[s2script] WARN: libsteam_api.so is not loaded; @s2script/sdk/steam OFF\n");
+    s_getUser = reinterpret_cast<GetHSteamUserFn>(SteamApiExport("SteamGameServer_GetHSteamUser"));
+    s_findOrCreate = reinterpret_cast<FindOrCreateGameServerInterfaceFn>(
+        SteamApiExport("SteamInternal_FindOrCreateGameServerInterface"));
+    s_register = reinterpret_cast<RegisterCallbackFn>(SteamApiExport("SteamAPI_RegisterCallback"));
+    s_unregister = reinterpret_cast<UnregisterCallbackFn>(SteamApiExport("SteamAPI_UnregisterCallback"));
+    // The engine keeps steam_api loaded for the process lifetime, so the addresses stay valid.
+    if (!s_getUser && !s_findOrCreate && !s_register && !s_unregister) {
+        Log("[s2script] WARN: " S2_STEAM_API_MODULE " is not loaded; @s2script/sdk/steam OFF\n");
         return;
     }
-    s_getUser = reinterpret_cast<GetHSteamUserFn>(dlsym(lib, "SteamGameServer_GetHSteamUser"));
-    s_findOrCreate = reinterpret_cast<FindOrCreateGameServerInterfaceFn>(
-        dlsym(lib, "SteamInternal_FindOrCreateGameServerInterface"));
-    s_register = reinterpret_cast<RegisterCallbackFn>(dlsym(lib, "SteamAPI_RegisterCallback"));
-    s_unregister = reinterpret_cast<UnregisterCallbackFn>(dlsym(lib, "SteamAPI_UnregisterCallback"));
-    // dlopen(RTLD_NOLOAD) took a reference; the engine keeps the library loaded for the process
-    // lifetime, so dropping ours now leaves the resolved addresses valid.
-    dlclose(lib);
     const char* missing = !s_getUser ? "SteamGameServer_GetHSteamUser"
                         : !s_findOrCreate ? "SteamInternal_FindOrCreateGameServerInterface"
                         : !s_register ? "SteamAPI_RegisterCallback"
