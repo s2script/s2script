@@ -73,6 +73,13 @@ while read -r kind name; do
 done < <(dll_imports build/shim-win64/s2script.dll)
 dll_imports build/shim-win64/s2script.dll | grep -qx "delay s2script_core.dll" || {
   echo "FAIL s2script.dll does not delay-load s2script_core.dll"; fail=1; }
+# The optional core entries are weak on Linux; a weak PE import silently stays null, so they must
+# show up as real (delay-)imports here.
+shim_imports="$("$READOBJ" --coff-imports build/shim-win64/s2script.dll)"
+for sym in s2script_core_dispatch_hook s2script_core_dispatch_usercmd_post; do
+  grep -q "Symbol: $sym " <<<"$shim_imports" || {
+    echo "FAIL s2script.dll does not import $sym from core"; fail=1; }
+done
 "$READOBJ" --coff-exports build/shim-win64/s2script.dll | grep -q "Name: CreateInterface$" || {
   echo "FAIL s2script.dll does not export CreateInterface"; fail=1; }
 [[ $fail == 0 ]] || exit 1

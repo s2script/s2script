@@ -25,8 +25,13 @@ Spec: [2026-11-18-windows-port-design.md](../specs/2026-11-18-windows-port-desig
    `S2_PLATFORM=win64` in `package-addon.sh`, and the `windows` ci-native shard. Done.
 8. **Live gate.** On a CS2 Windows dedicated server with Metamod: s2script loads, V8 boots, a hello
    plugin prints from `OnPluginStart`, `OnGameFrame` ticks, `sm plugins list` answers. Gamedata
-   descriptors without a `win64` entry are expected to log as degraded. **Pending**: needs a Windows
-   server.
+   descriptors without a `win64` entry are expected to log as degraded.
+   **Run 2026-11-21** (CS2 1.42.0.0 / ServerVersion 2000948, Metamod 2.0.0-dev+1491, NUCLEUS25):
+   Metamod loads s2script, V8 starts, `sm` answers, the server ticks for 5.5 minutes with no crash,
+   and every interface resolves. Plugins do not load: the GameFrame hook needs its `win64` vtable
+   slot (`ISource2Server_GameFrame`) and gamedata has no `win64` entries yet (`0 ok, 72 FAILED`), so
+   that half of the gate moves to W2. The run also showed the optional core entries never binding on
+   Windows (a weak PE import stays null), fixed by importing them normally there.
 
 ## Acceptance
 
