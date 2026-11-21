@@ -498,6 +498,21 @@
       _kit: {
         P: P, ok: ok, setText: setText, setClass: setClass, show: show, hide: hide, setRaw: setRaw,
         cursor: cursor, swap: swap, route: route, HANDLED: HANDLED,
+        // forget(slot, roots): drop this context's diff cache and class-family records for one
+        // player's panel trees. A per-player surface (the sheet) is painted from whichever plugin
+        // holds its claim, so on a fresh claim nothing this context remembers is true any more.
+        forget: function (slot, roots) {
+          var h = P();
+          var bySlot = applied[slot];
+          for (var i = 0; i < roots.length; i++) {
+            var root = roots[i];
+            if (typeof h.invalidatePanelTree === "function") h.invalidatePanelTree(root, slot);
+            if (!bySlot) continue;
+            for (var id in bySlot) {
+              if (Object.prototype.hasOwnProperty.call(bySlot, id) && (id === root || id.indexOf(root + "_") === 0)) delete bySlot[id];
+            }
+          }
+        },
         // onChat(fn) runs after the vote's handler; onChat(true, fn) runs before it.
         onChat: function (first, fn) {
           if (typeof first === "function") { fn = first; first = false; }

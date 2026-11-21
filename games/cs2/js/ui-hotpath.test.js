@@ -150,3 +150,14 @@ test('an unchanged repaint after a panel-tree invalidation re-sends its values',
   modal.refresh(1);
   assert.ok(writes().filter(row => !row.host).length > 40);
 });
+test('a per-slot panel-tree invalidation re-sends only that slot', () => {
+  const { w, hud } = world();
+  hud._drive.setText(1, 's2_banner_text', 'one');
+  hud._drive.setText(2, 's2_banner_text', 'two');
+  const before = w.writes.length;
+  hud.invalidatePanelTree('s2_banner', 2);
+  hud._drive.setText(1, 's2_banner_text', 'one');
+  hud._drive.setText(2, 's2_banner_text', 'two');
+  const sent = w.writes.slice(before).filter(row => !row.host);
+  assert.deepEqual(sent.map(row => row.args[1]), [2]);
+});

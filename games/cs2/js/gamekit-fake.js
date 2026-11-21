@@ -9,12 +9,17 @@ function evalFile(name) {
 
 // A fake ui base whose hud() serves both gamekit layouts, records per-slot panel state, cursor
 // grabs and click handlers. `refuse` makes every drive for that slot fail.
+//
+// Two plugins: pass the same `shared` ({ panels: {}, claims: {} }) to two mounts. They then drive
+// one layout entity and one host claim table, each from its own context. `diffCache` gives each
+// hud ui.js's per-context diff cache (a write equal to the last one THIS context sent is dropped),
+// which is what lets one plugin's stale view of the entity hide another plugin's paint.
 function mount(opts = {}) {
-  const panels = {};
+  const panels = opts.shared ? opts.shared.panels : {};
   const meters = {};
   const chat = [];
   const timers = [];
-  const claims = {};
+  const claims = opts.shared ? opts.shared.claims : {};
   const cursors = {};
   const clicks = {};
   const armed = {};
@@ -39,21 +44,47 @@ function mount(opts = {}) {
     return null;
   }
   function makeHud() {
+    const last = {};
+    // Mirrors ui.js: key = slot|kind|panel|name. Returns true when the write may be dropped.
+    function cached(slot, kind, id, name, value) {
+      if (!opts.diffCache) return false;
+      const k = slot + "|" + kind + "|" + id + "|" + name;
+      if (last[k] === value) return true;
+      last[k] = value;
+      return false;
+    }
+    function text(slot, id, v) {
+      if (refuse.has(slot) || !cached(slot, "v", id, id, String(v))) return drive(slot, () => { panel(slot, id).text = String(v); });
+      return null;
+    }
+    function cls(slot, id, c, on) {
+      if (refuse.has(slot) || !cached(slot, "c", id, c, on ? "1" : "0")) {
+        return drive(slot, () => { if (on) panel(slot, id).classes.add(c); else panel(slot, id).classes.delete(c); });
+      }
+      return null;
+    }
     return {
-      setText: (slot, id, v) => drive(slot, () => { panel(slot, id).text = String(v); }),
-      set: (slot, id, v) => drive(slot, () => { panel(slot, id).text = String(v); }),
-      _setRaw: (slot, id, v) => drive(slot, () => { panel(slot, id).text = String(v); }),
-      show: (slot, id, o) => drive(slot, () => {
-        panel(slot, id).classes.delete("s2-hide");
-        if (o && o.cursor) cursors[slot + "|" + id] = true;
-      }),
-      hide: (slot, id) => drive(slot, () => { panel(slot, id).classes.add("s2-hide"); delete cursors[slot + "|" + id]; }),
-      setClass: (slot, id, cls, on) => drive(slot, () => { if (on) panel(slot, id).classes.add(cls); else panel(slot, id).classes.delete(cls); }),
+      setText: text,
+      set: text,
+      _setRaw: text,
+      show: (slot, id, o) => {
+        const r = cls(slot, id, "s2-hide", false);
+        if (!r && o && o.cursor) cursors[slot + "|" + id] = true;
+        return r;
+      },
+      hide: (slot, id) => { const r = cls(slot, id, "s2-hide", true); if (!refuse.has(slot)) delete cursors[slot + "|" + id]; return r; },
+      setClass: cls,
       setMeter: (slot, name, pct) => drive(slot, () => { meters[slot + "|" + name] = pct; }),
       setDisabled: (slot, id, on) => drive(slot, () => { disabled[slot + "|" + id] = !!on; }),
       _cursorForPanel: (slot, root, on) => { if (on) cursors[slot + "|" + root] = true; else delete cursors[slot + "|" + root]; return null; },
       onClick: (id, fn) => { assert.equal(clicks[id], undefined, "one handler per button"); clicks[id] = fn; },
-      invalidatePanelTree: () => {},
+      invalidatePanelTree: (root, slot) => {
+        for (const k of Object.keys(last)) {
+          const [s, , id] = k.split("|");
+          if (slot != null && Number(s) !== slot) continue;
+          if (id === root || id.startsWith(root + "_")) delete last[k];
+        }
+      },
     };
   }
   const huds = {};

@@ -552,10 +552,13 @@
       return legacyResult(api._drive.setClass(slot, panelId, className, on));
     };
     // Internal component-pool handoff: clear only this panel tree's diff cache. Other live
-    // components keep their leases and state. Panel ids occupy field 2 in cacheKey().
-    api.invalidatePanelTree = function (root) {
+    // components keep their leases and state. Panel ids occupy field 2 in cacheKey(). With a
+    // slot, only that player's entries go (a per-player surface another plugin may have painted).
+    api.invalidatePanelTree = function (root, slot) {
+      var prefix = slot == null ? null : slotPrefix(slot);
       for (var key in lastValue) {
         if (!Object.prototype.hasOwnProperty.call(lastValue, key)) continue;
+        if (prefix !== null && key.indexOf(prefix) !== 0) continue;
         var panel = key.split("|")[2];
         if (panel === root || panel.indexOf(root + "_") === 0) delete lastValue[key];
       }
