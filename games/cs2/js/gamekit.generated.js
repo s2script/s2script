@@ -415,6 +415,27 @@
       "observable": false,
       "hideClass": "s2-hide",
       "buttons": [
+        "gk_hub_list_close",
+        "gk_hub_i0",
+        "gk_hub_i1",
+        "gk_hub_i2",
+        "gk_hub_i3",
+        "gk_hub_i4",
+        "gk_hub_i5",
+        "gk_hub_i6",
+        "gk_hub_i7",
+        "gk_hub_p0",
+        "gk_hub_p1",
+        "gk_hub_p2",
+        "gk_hub_p3",
+        "gk_hub_p4",
+        "gk_hub_p5",
+        "gk_hub_p6",
+        "gk_hub_p7",
+        "gk_hub_p8",
+        "gk_hub_p9",
+        "gk_hub_p10",
+        "gk_hub_p11",
         "gk_vo0",
         "gk_vo1",
         "gk_vo2",
@@ -493,28 +514,7 @@
         "gk_sh_tr7_x0",
         "gk_sh_tr7_x1",
         "gk_sh_prev",
-        "gk_sh_next",
-        "gk_hub_list_close",
-        "gk_hub_i0",
-        "gk_hub_i1",
-        "gk_hub_i2",
-        "gk_hub_i3",
-        "gk_hub_i4",
-        "gk_hub_i5",
-        "gk_hub_i6",
-        "gk_hub_i7",
-        "gk_hub_p0",
-        "gk_hub_p1",
-        "gk_hub_p2",
-        "gk_hub_p3",
-        "gk_hub_p4",
-        "gk_hub_p5",
-        "gk_hub_p6",
-        "gk_hub_p7",
-        "gk_hub_p8",
-        "gk_hub_p9",
-        "gk_hub_p10",
-        "gk_hub_p11"
+        "gk_sh_next"
       ],
       "meters": {
         "voteTimer": "gk_vote_timer",
@@ -528,6 +528,194 @@
         "vo7": "gk_vo7_fill"
       },
       "slots": {
+        "hubItems": [
+          {
+            "id": "gk_hub_i0",
+            "vars": [
+              "gk_hub_i0_t",
+              "gk_hub_i0_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i1",
+            "vars": [
+              "gk_hub_i1_t",
+              "gk_hub_i1_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i2",
+            "vars": [
+              "gk_hub_i2_t",
+              "gk_hub_i2_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i3",
+            "vars": [
+              "gk_hub_i3_t",
+              "gk_hub_i3_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i4",
+            "vars": [
+              "gk_hub_i4_t",
+              "gk_hub_i4_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i5",
+            "vars": [
+              "gk_hub_i5_t",
+              "gk_hub_i5_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i6",
+            "vars": [
+              "gk_hub_i6_t",
+              "gk_hub_i6_m"
+            ]
+          },
+          {
+            "id": "gk_hub_i7",
+            "vars": [
+              "gk_hub_i7_t",
+              "gk_hub_i7_m"
+            ]
+          }
+        ],
+        "hubCard": [
+          {
+            "id": "gk_hub_kv0",
+            "vars": [
+              "gk_hub_kv0_k",
+              "gk_hub_kv0_v"
+            ]
+          },
+          {
+            "id": "gk_hub_kv1",
+            "vars": [
+              "gk_hub_kv1_k",
+              "gk_hub_kv1_v"
+            ]
+          },
+          {
+            "id": "gk_hub_kv2",
+            "vars": [
+              "gk_hub_kv2_k",
+              "gk_hub_kv2_v"
+            ]
+          },
+          {
+            "id": "gk_hub_kv3",
+            "vars": [
+              "gk_hub_kv3_k",
+              "gk_hub_kv3_v"
+            ]
+          },
+          {
+            "id": "gk_hub_kv4",
+            "vars": [
+              "gk_hub_kv4_k",
+              "gk_hub_kv4_v"
+            ]
+          },
+          {
+            "id": "gk_hub_kv5",
+            "vars": [
+              "gk_hub_kv5_k",
+              "gk_hub_kv5_v"
+            ]
+          }
+        ],
+        "hubPicker": [
+          {
+            "id": "gk_hub_p0",
+            "vars": [
+              "gk_hub_p0_t",
+              "gk_hub_p0_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p1",
+            "vars": [
+              "gk_hub_p1_t",
+              "gk_hub_p1_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p2",
+            "vars": [
+              "gk_hub_p2_t",
+              "gk_hub_p2_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p3",
+            "vars": [
+              "gk_hub_p3_t",
+              "gk_hub_p3_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p4",
+            "vars": [
+              "gk_hub_p4_t",
+              "gk_hub_p4_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p5",
+            "vars": [
+              "gk_hub_p5_t",
+              "gk_hub_p5_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p6",
+            "vars": [
+              "gk_hub_p6_t",
+              "gk_hub_p6_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p7",
+            "vars": [
+              "gk_hub_p7_t",
+              "gk_hub_p7_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p8",
+            "vars": [
+              "gk_hub_p8_t",
+              "gk_hub_p8_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p9",
+            "vars": [
+              "gk_hub_p9_t",
+              "gk_hub_p9_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p10",
+            "vars": [
+              "gk_hub_p10_t",
+              "gk_hub_p10_s"
+            ]
+          },
+          {
+            "id": "gk_hub_p11",
+            "vars": [
+              "gk_hub_p11_t",
+              "gk_hub_p11_s"
+            ]
+          }
+        ],
         "voteOptions": [
           {
             "id": "gk_vo0",
@@ -1143,194 +1331,6 @@
               "gk_sh_tr7_c3",
               "gk_sh_tr7_c4",
               "gk_sh_tr7_c5"
-            ]
-          }
-        ],
-        "hubItems": [
-          {
-            "id": "gk_hub_i0",
-            "vars": [
-              "gk_hub_i0_t",
-              "gk_hub_i0_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i1",
-            "vars": [
-              "gk_hub_i1_t",
-              "gk_hub_i1_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i2",
-            "vars": [
-              "gk_hub_i2_t",
-              "gk_hub_i2_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i3",
-            "vars": [
-              "gk_hub_i3_t",
-              "gk_hub_i3_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i4",
-            "vars": [
-              "gk_hub_i4_t",
-              "gk_hub_i4_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i5",
-            "vars": [
-              "gk_hub_i5_t",
-              "gk_hub_i5_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i6",
-            "vars": [
-              "gk_hub_i6_t",
-              "gk_hub_i6_m"
-            ]
-          },
-          {
-            "id": "gk_hub_i7",
-            "vars": [
-              "gk_hub_i7_t",
-              "gk_hub_i7_m"
-            ]
-          }
-        ],
-        "hubCard": [
-          {
-            "id": "gk_hub_kv0",
-            "vars": [
-              "gk_hub_kv0_k",
-              "gk_hub_kv0_v"
-            ]
-          },
-          {
-            "id": "gk_hub_kv1",
-            "vars": [
-              "gk_hub_kv1_k",
-              "gk_hub_kv1_v"
-            ]
-          },
-          {
-            "id": "gk_hub_kv2",
-            "vars": [
-              "gk_hub_kv2_k",
-              "gk_hub_kv2_v"
-            ]
-          },
-          {
-            "id": "gk_hub_kv3",
-            "vars": [
-              "gk_hub_kv3_k",
-              "gk_hub_kv3_v"
-            ]
-          },
-          {
-            "id": "gk_hub_kv4",
-            "vars": [
-              "gk_hub_kv4_k",
-              "gk_hub_kv4_v"
-            ]
-          },
-          {
-            "id": "gk_hub_kv5",
-            "vars": [
-              "gk_hub_kv5_k",
-              "gk_hub_kv5_v"
-            ]
-          }
-        ],
-        "hubPicker": [
-          {
-            "id": "gk_hub_p0",
-            "vars": [
-              "gk_hub_p0_t",
-              "gk_hub_p0_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p1",
-            "vars": [
-              "gk_hub_p1_t",
-              "gk_hub_p1_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p2",
-            "vars": [
-              "gk_hub_p2_t",
-              "gk_hub_p2_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p3",
-            "vars": [
-              "gk_hub_p3_t",
-              "gk_hub_p3_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p4",
-            "vars": [
-              "gk_hub_p4_t",
-              "gk_hub_p4_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p5",
-            "vars": [
-              "gk_hub_p5_t",
-              "gk_hub_p5_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p6",
-            "vars": [
-              "gk_hub_p6_t",
-              "gk_hub_p6_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p7",
-            "vars": [
-              "gk_hub_p7_t",
-              "gk_hub_p7_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p8",
-            "vars": [
-              "gk_hub_p8_t",
-              "gk_hub_p8_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p9",
-            "vars": [
-              "gk_hub_p9_t",
-              "gk_hub_p9_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p10",
-            "vars": [
-              "gk_hub_p10_t",
-              "gk_hub_p10_s"
-            ]
-          },
-          {
-            "id": "gk_hub_p11",
-            "vars": [
-              "gk_hub_p11_t",
-              "gk_hub_p11_s"
             ]
           }
         ]

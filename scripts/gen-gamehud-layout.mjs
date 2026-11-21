@@ -274,6 +274,65 @@ const head = (b, d, prefix, closeable) => {
 const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, sheet, intro and spectate hub)"), (d) => {
   const b = pn;
 
+  // The hub is the FIRST child on purpose. It covers the whole screen, and Panorama draws later
+  // siblings on top and hit-tests them first, so the vote, drawer, prompt and sheet after it always
+  // draw over the intro or spectate hub and take the click, whichever opened first. A z-index in
+  // the stylesheet says the same thing. Keep every new overlay after this block.
+  b.raw(d, `<!-- Hub: the intro on first join and the spectate hub. Brand, item list, profile card, player picker, shot label. -->`);
+  b.raw(d, `<!-- First child on purpose: every panel after it draws on top and takes the click. -->`);
+  b.open(d, "Panel", "gk_hub", "gk-hub s2-hide");
+  b.panel(d + 1, null, "gk-hub-vig");
+  b.open(d + 1, "Panel", null, "gk-brand");
+  b.label(d + 2, "gk_hub_eye", "gk-eyebrow gk-t-accent");
+  b.label(d + 2, "gk_hub_title", "gk-brand-title");
+  b.label(d + 2, "gk_hub_sub", "gk-brand-sub");
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", "gk_hub_list", "gk-panel gk-hub-list");
+  head(b, d + 2, "gk_hub_list", true);
+  for (let i = 0; i < S.hub.items; i++) {
+    const r = `gk_hub_i${i}`;
+    b.button(d + 2, r, "gk-row gk-hub-row s2-hide", (dd) => { b.label(dd, `${r}_t`, "gk-hub-t"); b.label(dd, `${r}_m`, "gk-hub-m"); });
+    b.pool("hubItems", { id: r, vars: [`${r}_t`, `${r}_m`] });
+  }
+  b.label(d + 2, "gk_hub_ft", "gk-ft");
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", "gk_hub_card", "gk-panel gk-card-pf s2-hide");
+  b.open(d + 2, "Panel", null, "gk-hd");
+  b.tick(d + 3);
+  b.label(d + 3, "gk_hub_card_h", "gk-hd-title");
+  b.close(d + 2, "Panel");
+  b.open(d + 2, "Panel", null, "gk-pf-who");
+  b.panel(d + 3, null, "gk-pf-av gk-acc-bg");
+  b.open(d + 3, "Panel", null, "gk-pf-names");
+  b.label(d + 4, "gk_hub_card_n", "gk-pf-n");
+  b.label(d + 4, "gk_hub_card_s", "gk-pf-s");
+  b.close(d + 3, "Panel");
+  b.close(d + 2, "Panel");
+  b.open(d + 2, "Panel", null, "gk-kv");
+  for (let i = 0; i < S.hub.card; i++) {
+    const r = `gk_hub_kv${i}`;
+    b.open(d + 3, "Panel", r, "gk-kv-cell s2-hide");
+    b.label(d + 4, `${r}_k`, "gk-kv-k");
+    b.label(d + 4, `${r}_v`, "gk-kv-v");
+    b.close(d + 3, "Panel");
+    b.pool("hubCard", { id: r, vars: [`${r}_k`, `${r}_v`] });
+  }
+  b.close(d + 2, "Panel");
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", "gk_hub_pick", "gk-picker s2-hide");
+  for (let i = 0; i < S.hub.picker; i++) {
+    const r = `gk_hub_p${i}`;
+    b.button(d + 2, r, "gk-pcard gk-e-grey s2-hide", (dd) => { b.label(dd, `${r}_t`, "gk-pcard-t"); b.label(dd, `${r}_s`, "gk-pcard-s"); });
+    b.pool("hubPicker", { id: r, vars: [`${r}_t`, `${r}_s`] });
+  }
+  b.close(d + 1, "Panel");
+  b.open(d + 1, "Panel", "gk_hub_shot", "gk-shot s2-hide");
+  b.panel(d + 2, null, "gk-shot-rec gk-acc-bg");
+  b.label(d + 2, "gk_hub_shot_t", "gk-shot-t");
+  b.label(d + 2, "gk_hub_shot_w", "gk-shot-w");
+  b.close(d + 1, "Panel");
+  b.close(d, "Panel");
+
   b.raw(d, `<!-- Pop-up vote: clickable rows that are also numbered, so players can type the number in chat. -->`);
   b.open(d, "Panel", "gk_vote", "gk-panel gk-vote s2-hide");
   head(b, d + 1, "gk_vote");
@@ -426,59 +485,6 @@ const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, she
   b.close(d + 1, "Panel");
   b.close(d, "Panel");
 
-  b.raw(d, `<!-- Hub: the intro on first join and the spectate hub. Brand, item list, profile card, player picker, shot label. -->`);
-  b.open(d, "Panel", "gk_hub", "gk-hub s2-hide");
-  b.panel(d + 1, null, "gk-hub-vig");
-  b.open(d + 1, "Panel", null, "gk-brand");
-  b.label(d + 2, "gk_hub_eye", "gk-eyebrow gk-t-accent");
-  b.label(d + 2, "gk_hub_title", "gk-brand-title");
-  b.label(d + 2, "gk_hub_sub", "gk-brand-sub");
-  b.close(d + 1, "Panel");
-  b.open(d + 1, "Panel", "gk_hub_list", "gk-panel gk-hub-list");
-  head(b, d + 2, "gk_hub_list", true);
-  for (let i = 0; i < S.hub.items; i++) {
-    const r = `gk_hub_i${i}`;
-    b.button(d + 2, r, "gk-row gk-hub-row s2-hide", (dd) => { b.label(dd, `${r}_t`, "gk-hub-t"); b.label(dd, `${r}_m`, "gk-hub-m"); });
-    b.pool("hubItems", { id: r, vars: [`${r}_t`, `${r}_m`] });
-  }
-  b.label(d + 2, "gk_hub_ft", "gk-ft");
-  b.close(d + 1, "Panel");
-  b.open(d + 1, "Panel", "gk_hub_card", "gk-panel gk-card-pf s2-hide");
-  b.open(d + 2, "Panel", null, "gk-hd");
-  b.tick(d + 3);
-  b.label(d + 3, "gk_hub_card_h", "gk-hd-title");
-  b.close(d + 2, "Panel");
-  b.open(d + 2, "Panel", null, "gk-pf-who");
-  b.panel(d + 3, null, "gk-pf-av gk-acc-bg");
-  b.open(d + 3, "Panel", null, "gk-pf-names");
-  b.label(d + 4, "gk_hub_card_n", "gk-pf-n");
-  b.label(d + 4, "gk_hub_card_s", "gk-pf-s");
-  b.close(d + 3, "Panel");
-  b.close(d + 2, "Panel");
-  b.open(d + 2, "Panel", null, "gk-kv");
-  for (let i = 0; i < S.hub.card; i++) {
-    const r = `gk_hub_kv${i}`;
-    b.open(d + 3, "Panel", r, "gk-kv-cell s2-hide");
-    b.label(d + 4, `${r}_k`, "gk-kv-k");
-    b.label(d + 4, `${r}_v`, "gk-kv-v");
-    b.close(d + 3, "Panel");
-    b.pool("hubCard", { id: r, vars: [`${r}_k`, `${r}_v`] });
-  }
-  b.close(d + 2, "Panel");
-  b.close(d + 1, "Panel");
-  b.open(d + 1, "Panel", "gk_hub_pick", "gk-picker s2-hide");
-  for (let i = 0; i < S.hub.picker; i++) {
-    const r = `gk_hub_p${i}`;
-    b.button(d + 2, r, "gk-pcard gk-e-grey s2-hide", (dd) => { b.label(dd, `${r}_t`, "gk-pcard-t"); b.label(dd, `${r}_s`, "gk-pcard-s"); });
-    b.pool("hubPicker", { id: r, vars: [`${r}_t`, `${r}_s`] });
-  }
-  b.close(d + 1, "Panel");
-  b.open(d + 1, "Panel", "gk_hub_shot", "gk-shot s2-hide");
-  b.panel(d + 2, null, "gk-shot-rec gk-acc-bg");
-  b.label(d + 2, "gk_hub_shot_t", "gk-shot-t");
-  b.label(d + 2, "gk_hub_shot_w", "gk-shot-w");
-  b.close(d + 1, "Panel");
-  b.close(d, "Panel");
 });
 
 // ---- stylesheet: hand-written base + generated families ---------------------------------------

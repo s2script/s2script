@@ -232,3 +232,20 @@ test("a refresh keeps a cursor the player took with Tab", () => {
   m.GameHud.spectate(0, { players });
   assert.equal(m.cursors["0|gk_hub"], true, "still holding the cursor");
 });
+
+// The intro and spectate hub cover the whole screen. Panorama draws later siblings on top and
+// hit-tests them first, so every panel another plugin can open over the hub must come after it.
+test("the hub is the bottom panel of the layout, so a sheet, prompt, drawer or vote opened over it draws on top", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = path.join(__dirname, "../../../examples/hud-lab/workshop/panorama");
+  const xml = fs.readFileSync(path.join(dir, "layout/custom_game/s2script_gamepanels.xml"), "utf8");
+  const at = (id) => { const i = xml.indexOf(`id="${id}"`); assert.ok(i >= 0, id); return i; };
+  assert.ok(at("gk_theme") < at("gk_hub"));
+  const firstChild = xml.slice(at("gk_theme")).match(/<Panel id="gk_[a-z]+"/g)[0];
+  assert.equal(firstChild, '<Panel id="gk_hub"');
+  for (const id of ["gk_vote", "gk_drawer", "gk_prompt", "gk_sheet"]) assert.ok(at("gk_hub") < at(id), id);
+  const css = fs.readFileSync(path.join(dir, "styles/custom_game/s2script_gamekit.css"), "utf8");
+  const z = (cls) => { const m = css.match(new RegExp(`\\.${cls}[,\\s][^{]*\\{[^}]*z-index:\\s*(\\d+)`)); return m ? Number(m[1]) : null; };
+  for (const cls of ["gk-vote", "gk-drawer", "gk-prompt", "gk-sheet"]) assert.ok(z(cls) > z("gk-hub"), cls);
+});
