@@ -122,6 +122,7 @@ jobs:
       - uses: hendrikmuhs/ccache-action@v1
         with:
           key: ${{ matrix.shard }}
+          update-package-index: true
       # libffi configure.ac uses LT_SYS_SYMBOL_USCORE from libltdl-dev's
       # ltdl.m4. This is a bootstrap dependency, not a linked runtime library.
       - name: install pinned libffi bootstrap and native diagnostic dependencies
