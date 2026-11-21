@@ -235,6 +235,25 @@ fn hot_functions_spread_samples_over_the_profile() {
 }
 
 #[test]
+fn top_allocators_sum_each_function_over_the_call_tree() {
+    let frame = |name: &str, line: i64| serde_json::json!({ "functionName": name, "url": "s2s://@a/b/plugin.js", "lineNumber": line });
+    let profile = serde_json::json!({
+        "head": { "id": 1, "selfSize": 0, "callFrame": { "functionName": "(root)", "url": "", "lineNumber": -1 }, "children": [
+            { "id": 2, "selfSize": 100, "callFrame": frame("tick", 4), "children": [
+                { "id": 3, "selfSize": 700, "callFrame": frame("paint", 9), "children": [] },
+            ] },
+            { "id": 4, "selfSize": 200, "callFrame": frame("paint", 9), "children": [] },
+        ] },
+        "samples": []
+    });
+    let (total, top) = js::top_allocators(&profile, 10);
+    assert_eq!(total, 1000);
+    assert_eq!(top[0], (900, "paint".to_string(), "s2s://@a/b/plugin.js:10".to_string()));
+    assert_eq!(top[1], (100, "tick".to_string(), "s2s://@a/b/plugin.js:5".to_string()));
+    assert_eq!(js::top_allocators(&profile, 1).1.len(), 1);
+}
+
+#[test]
 fn control_without_an_engine() {
     shutdown();
     assert_eq!(request(Request::Stop), vec!["[S2S] Profiler is not running. Use \"sm prof start\".".to_string()]);

@@ -136,7 +136,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
                     crate::loader::note_frame();
                     crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
                 }
-                fw::switch(&mut _fw, Part::AsyncDrain);
+                fw::switch(&mut _fw, Part::Housekeeping);
                 let _p = framework("V8 tasks and planned collections");
                 crate::gc_points::frame_post(crate::loader::settled());
             }

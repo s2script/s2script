@@ -907,9 +907,21 @@ const INJECTED_STD_PRELUDE: &str = concat!(
 
 // Game code is supplied by the selected verified package receipt (see game_packages).
 
+/// The environment variable an operator sets to pass flags to V8 (see `docs/PROFILING.md`).
+const V8_FLAGS_ENV: &str = "S2SCRIPT_V8_FLAGS";
+
+fn operator_v8_flags() -> Option<String> {
+    std::env::var(V8_FLAGS_ENV).ok().map(|f| f.trim().to_string()).filter(|f| !f.is_empty())
+}
+
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
 fn ensure_platform() {
     PLATFORM_INIT.call_once(|| {
+        // Operator-supplied V8 flags, for diagnosis and tuning (`--trace-gc` prints every collection
+        // and its cause to the server's standard output). V8 reads flags only before it starts.
+        if let Some(flags) = operator_v8_flags() {
+            v8::V8::set_flags_from_string(&flags);
+        }
         let platform = v8::new_default_platform(0, false).make_shared();
         let _ = PLATFORM.set(platform.clone());
         v8::V8::initialize_platform(platform);
@@ -6241,6 +6253,9 @@ fn resolve_db(
 pub fn init(logger: LogFn) -> Result<(), String> {
     ensure_platform();
     LOGGER.with(|l| l.set(Some(logger)));
+    if let Some(flags) = operator_v8_flags() {
+        log_warn(&format!("[s2script] V8 started with {V8_FLAGS_ENV}: {flags}"));
+    }
     // Slice HTTP Task 2: build the process-global tokio+reqwest engine (idempotent — a OnceLock,
     // survives a Metamod re-init just like `pool()`). Holds no V8 handles; wiring it here (rather
     // than lazily on first `__s2_fetch` call) keeps engine-generic subsystem setup in one place.

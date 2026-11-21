@@ -26,7 +26,9 @@
 //! - `<stamp>.trace.json` — Chrome trace-event format: open in <https://ui.perfetto.dev> or
 //!   `chrome://tracing`;
 //! - `<stamp>.cpuprofile` — only with `sm prof start js`: V8's JS sampling profile, per function and
-//!   line; open in Chrome DevTools (Performance → Load profile) or <https://www.speedscope.app>.
+//!   line; open in Chrome DevTools (Performance → Load profile) or <https://www.speedscope.app>;
+//! - `<stamp>.heapprofile` — also with `js`: V8's allocation sampling profile, which function
+//!   allocated how much; open in Chrome DevTools (Memory → Load profile).
 //!
 //! Engine-generic: no game names, no V8 types in the recorder. The V8 hooks (GC, promise, inspector)
 //! live in `v8host` and [`js`] and only call the plain functions here.
@@ -581,7 +583,7 @@ fn start_now(options: Options) -> Vec<String> {
 
 /// Stop now (V8 must be free), print the report and write the files off-thread.
 pub(crate) fn stop_and_report() -> Vec<String> {
-    let cpuprofile = js::stop();
+    let sampled = js::stop();
     crate::v8host::profiler_hooks(false);
     let Some(finished) = end() else {
         return vec!["[S2S] Profiler is not running.".to_string()];
@@ -593,17 +595,22 @@ pub(crate) fn stop_and_report() -> Vec<String> {
     let paths = dir.as_ref().map(|d| report::Paths {
         text: d.join(format!("prof-{stamp}.txt")),
         trace: d.join(format!("prof-{stamp}.trace.json")),
-        cpuprofile: cpuprofile.as_ref().ok().map(|_| d.join(format!("prof-{stamp}.cpuprofile"))),
+        cpuprofile: sampled.as_ref().ok().map(|_| d.join(format!("prof-{stamp}.cpuprofile"))),
+        heapprofile: sampled
+            .as_ref()
+            .ok()
+            .filter(|s| s.alloc.is_some())
+            .map(|_| d.join(format!("prof-{stamp}.heapprofile"))),
     });
     summary.files = paths.clone();
-    if let Err(e) = &cpuprofile {
+    if let Err(e) = &sampled {
         if !e.is_empty() {
             summary.notes.push(format!("JS sampling: {e}"));
         }
     }
     let lines = report::console_lines(&summary, report::TOP_ROWS);
     match paths {
-        Some(paths) => report::write_files(paths, lines.clone(), finished.trace, cpuprofile.ok()),
+        Some(paths) => report::write_files(paths, lines.clone(), finished.trace, sampled.ok(), summary.wall),
         None => crate::v8host::log_warn("[S2S] Profiler: no data directory (plugin loader not running) — report not written to disk."),
     }
     LAST.with(|l| *l.borrow_mut() = Some(summary));
