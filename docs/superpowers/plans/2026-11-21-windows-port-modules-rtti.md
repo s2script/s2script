@@ -52,3 +52,21 @@ first qword is the CGameEventManager vftable), AddListenerEntity 0xbde0d0, Remov
 
 Engine calls through the declarative bridge (W3, Microsoft x64), detours (W4), the rest of the
 win64 signatures and gdgen PE support (W5), Breakpad on Windows (W6).
+
+## Live result (2026-11-21, commit cee2f3c)
+
+CS2 1.42.0.0 (ServerVersion 2000948), Metamod 2.0.0-dev+1491, de_dust2, 8 bots, 6.4 minutes,
+no crash and no `[s2script] ERROR`/FATAL lines. Exit gate met:
+
+- `GAMEDATA VALIDATION: 19 ok, 55 FAILED`. Every new entry is OK: all hook slots of
+  ISource2ServerConfig, ISource2Server (GameFrame), ISource2GameClients (8/8), ICvar,
+  IVEngineServer2, IGameEventSystem, INetworkServerService and IGameEventManager2, plus
+  GameEventManager, AddListenerEntity and RemoveListenerEntity. The 55 failures are entries with
+  no `win64` key yet (W5).
+- `interface OK: GameEventManager`; the entity-system offset 88 is cached.
+- `[hello] loaded`, `sm plugins list` lists it, 39 `[hello] spawn #N` lines with bot names (the
+  first two at map start log "unknown"), and `sm_hello` answers.
+- The W1 "inbound-hook dispatch ... version mismatch" warning is gone.
+
+Open for later slices: INetworkStringTableContainer pin (no win64 yet), `IGameEventManager2`
+DuplicateEvent/FreeEvent deferral, and every signature and game-class offset without `win64`.
