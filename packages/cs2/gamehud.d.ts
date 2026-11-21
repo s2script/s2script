@@ -53,6 +53,12 @@ export interface GameHudRailSpec {
   readonly clock?: GameHudText;
   /** The line under the rail, such as "Round 4 of 12". */
   readonly sub?: GameHudText;
+  /**
+   * Cover CS2's stock team counter and round timer with a solid bar across the top of the screen
+   * (default `true`). No `HideHud` bit hides them, so the bar is drawn over them. `false` is the
+   * floating look: score blocks and clock only, with the stock counter showing around them.
+   */
+  readonly cover?: boolean;
 }
 
 /** A claimed region. Released on `release()` or when the plugin unloads. */

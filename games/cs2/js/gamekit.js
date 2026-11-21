@@ -48,7 +48,7 @@
   // is still faded and drops the fade a moment later, so the fade-in plays too.
   var TARGET_FADE_IN_MS = 20;
   var TARGET_COLLAPSE_MS = 200;
-  var STATE = { mine: "gk-mine", off: "gk-off", fade: "gk-fade" };
+  var STATE = { mine: "gk-mine", off: "gk-off", fade: "gk-fade", float: "gk-float" };
 
   function log(msg) { if (globalThis.console) console.log("[s2script/gamehud] " + msg); }
 
@@ -296,8 +296,24 @@
       }
     }
 
+    // The rail covers the stock team counter and round timer by default: no m_iHideHUD bit hides
+    // them, so an opaque full-width bar is drawn over them. `cover: false` is the floating look
+    // (score blocks and clock only), a class on gk_rail.
+    function setCover(slot, cover) {
+      return setClass(slot, "gk_rail", STATE.float, cover === false);
+    }
+
     function rail() {
       return claimRegion("rail", "gk_rail", function (isLive) {
+        // A previous owner painted from its own context, so our diff cache may think the float
+        // class is off when that owner turned it on. Drop the cache for the rail and start every
+        // player on the default cover.
+        var h = hud();
+        var slots = activeSlots();
+        for (var i = 0; i < slots.length; i++) {
+          if (typeof h.invalidatePanelTree === "function") h.invalidatePanelTree("gk_rail", slots[i]);
+          setCover(slots[i], true);
+        }
         return {
           set: function (audience, spec) {
             guard(isLive, "rail.set");
@@ -309,6 +325,7 @@
               paintSide(s, "r", spec.right);
               if (spec.clock !== undefined) setText(s, "gk_rail_clock", spec.clock);
               if (spec.sub !== undefined) setText(s, "gk_rail_sub", spec.sub);
+              if (spec.cover !== undefined) setCover(s, spec.cover);
               show(s, "gk_rail");
             }
           },

@@ -556,7 +556,7 @@ const descriptor = {
     text: Object.keys(S.tones).map((t) => `gk-t-${t}`),
     fill: Object.keys(S.tones).map((t) => `gk-f-${t}`),
     edge: Object.keys(S.tones).map((t) => `gk-e-${t}`),
-    state: ["s2-hide", "gk-sel", "gk-on", "gk-hl", "gk-grp", "gk-fade", "gk-new", "gk-mine", "gk-off", "s2-btn-disabled"],
+    state: ["s2-hide", "gk-sel", "gk-on", "gk-hl", "gk-grp", "gk-fade", "gk-new", "gk-mine", "gk-off", "gk-float", "s2-btn-disabled"],
     width: "s2-w0..s2-w10",
   },
   hud: describe(hud, "s2script_gamehud.xml"),
