@@ -2,6 +2,10 @@
 //! `Profiler` domain (rusty_v8 binds the inspector, not `v8::CpuProfiler`). Spans say which plugin
 //! callback was slow; the `.cpuprofile` says which function and line inside it.
 //!
+//! The same session runs V8's sampling heap profiler (the `HeapProfiler` domain), keeping the samples
+//! of objects that have since been collected: the `.heapprofile` says which function allocated how
+//! much while the session ran, which is what decides how often the garbage collector has to run.
+//!
 //! The inspector exists only while a session samples: created at start, dropped at stop (V8 is free
 //! at both — the console command path or the top of a frame), so a server that never profiles never
 //! carries one. The profile JSON is extracted and written on the report writer thread, never parsed
@@ -16,6 +20,17 @@ use v8::inspector::{
 
 /// Sampling interval, µs. V8's default is 1000; finer resolves sub-millisecond handlers.
 const SAMPLING_INTERVAL_US: u32 = 250;
+/// Average bytes allocated between two allocation samples. V8's default is 32768; finer names the
+/// smaller allocators of a 30-second session without a measurable cost per allocation.
+const ALLOC_SAMPLING_INTERVAL_BYTES: u32 = 8192;
+
+/// What a session sampled: the raw protocol responses, parsed on the writer thread.
+pub(crate) struct Sampled {
+    /// `Profiler.stop`.
+    pub cpu: String,
+    /// `HeapProfiler.stopSampling`; `None` when allocation sampling did not start.
+    pub alloc: Option<String>,
+}
 
 type Responses = Rc<RefCell<Vec<(i32, String)>>>;
 
@@ -40,6 +55,8 @@ struct Sampler {
     _inspector: V8Inspector,
     responses: Responses,
     next_id: i32,
+    /// Whether allocation sampling started (it is extra: CPU sampling goes on without it).
+    alloc: bool,
 }
 
 thread_local! {
@@ -75,10 +92,20 @@ pub(crate) fn start() -> Result<(), String> {
             StringView::empty(),
             V8InspectorClientTrustLevel::FullyTrusted,
         );
-        let mut sampler = Sampler { session, _inspector: inspector, responses, next_id: 0 };
+        let mut sampler = Sampler { session, _inspector: inspector, responses, next_id: 0, alloc: false };
         sampler.call("Profiler.enable", "{}")?;
         sampler.call("Profiler.setSamplingInterval", &format!("{{\"interval\":{SAMPLING_INTERVAL_US}}}"))?;
         sampler.call("Profiler.start", "{}")?;
+        // Collected objects stay in the profile: the question is what allocated, not what is live.
+        sampler.alloc = sampler.call("HeapProfiler.enable", "{}").is_ok()
+            && sampler
+                .call(
+                    "HeapProfiler.startSampling",
+                    &format!(
+                        "{{\"samplingInterval\":{ALLOC_SAMPLING_INTERVAL_BYTES},\"includeObjectsCollectedByMajorGC\":true,\"includeObjectsCollectedByMinorGC\":true}}"
+                    ),
+                )
+                .is_ok();
         Ok(sampler)
     })
     .map_err(|_| "the JavaScript engine is busy".to_string())??;
@@ -86,20 +113,22 @@ pub(crate) fn start() -> Result<(), String> {
     Ok(())
 }
 
-/// Stop sampling and return the raw `Profiler.stop` response (the writer thread extracts the
-/// profile). `Err("")` when no sampler was running — not an error worth printing.
-pub(crate) fn stop() -> Result<String, String> {
+/// Stop sampling and return the raw responses (the writer thread extracts the profiles).
+/// `Err("")` when no sampler was running — not an error worth printing.
+pub(crate) fn stop() -> Result<Sampled, String> {
     let Some(mut sampler) = SAMPLER.with(|s| s.borrow_mut().take()) else {
         return Err(String::new());
     };
     let result = crate::v8host::with_host_isolate(|_isolate| {
-        let profile = sampler.call("Profiler.stop", "{}");
+        let alloc = if sampler.alloc { sampler.call("HeapProfiler.stopSampling", "{}").ok() } else { None };
+        let _ = sampler.call("HeapProfiler.disable", "{}");
+        let cpu = sampler.call("Profiler.stop", "{}");
         let _ = sampler.call("Profiler.disable", "{}");
         drop(sampler);
-        profile
+        cpu.map(|cpu| Sampled { cpu, alloc })
     });
     match result {
-        Ok(profile) => profile,
+        Ok(sampled) => sampled,
         Err(_) => Err("the JavaScript engine was busy at stop".to_string()),
     }
 }
@@ -147,4 +176,34 @@ pub(crate) fn hot_functions(profile: &serde_json::Value, limit: usize) -> Vec<(u
     rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     rows.truncate(limit);
     rows
+}
+
+/// Bytes allocated per JS function from a `.heapprofile` (V8's sampling heap profile: a call tree
+/// whose nodes carry the sampled bytes they allocated themselves), heaviest first:
+/// `(bytes, function, url:line)`. Sampled, so small allocators are estimates.
+pub(crate) fn top_allocators(profile: &serde_json::Value, limit: usize) -> (u64, Vec<(u64, String, String)>) {
+    let mut bytes: std::collections::HashMap<(String, String), u64> = std::collections::HashMap::new();
+    let mut total = 0u64;
+    let mut stack: Vec<&serde_json::Value> = profile.get("head").into_iter().collect();
+    while let Some(node) = stack.pop() {
+        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            stack.extend(children.iter());
+        }
+        let own = node.get("selfSize").and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
+        if own == 0 {
+            continue;
+        }
+        total += own;
+        let frame = &node["callFrame"];
+        let func = frame["functionName"].as_str().unwrap_or("");
+        let func = if func.is_empty() { "(anonymous)" } else { func };
+        let url = frame["url"].as_str().unwrap_or("");
+        let line = frame["lineNumber"].as_i64().unwrap_or(-1) + 1;
+        let place = if url.is_empty() { String::new() } else { format!("{url}:{line}") };
+        *bytes.entry((func.to_string(), place)).or_default() += own;
+    }
+    let mut rows: Vec<(u64, String, String)> = bytes.into_iter().map(|((f, p), b)| (b, f, p)).collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    rows.truncate(limit);
+    (total, rows)
 }

@@ -30,8 +30,12 @@ pub(crate) enum Part {
     Command,
     Client,
     Other,
+    /// V8's own posted work, run at the end of the frame (`gc_points`): incremental-marking steps
+    /// and the pause that finishes a full collection. Apart from the plugins' code, so a collection
+    /// V8 scheduled is not read as a slow timer.
+    Housekeeping,
 }
-const PARTS: usize = 12;
+const PARTS: usize = 13;
 const LABELS: [&str; PARTS] = [
     "OnGameFrame pre",
     "OnGameFrame post",
@@ -45,6 +49,7 @@ const LABELS: [&str; PARTS] = [
     "commands and chat",
     "client events",
     "other dispatch",
+    "V8 housekeeping",
 ];
 
 /// The default threshold: a frame is reported when s2script used at least this much of it.
@@ -391,6 +396,18 @@ mod tests {
         spend(Part::FramePost, Duration::from_millis(5));
         let line = end_frame().unwrap();
         assert!(line.contains("[+1 slow frame(s) since the last line]"), "{line}");
+    }
+
+    /// The task V8 posts to finish a full collection runs in the end-of-frame pump: the line names
+    /// that apart from the plugins' timers, so the pause is not read as a slow timer.
+    #[test]
+    fn v8s_own_work_is_named_apart_from_the_plugins_timers() {
+        test_reset();
+        spend(Part::Housekeeping, Duration::from_millis(5));
+        let line = end_frame().unwrap();
+        assert!(line.contains("V8 housekeeping 5."), "{line}");
+        assert!(!line.contains("timers and async results"), "{line}");
+        test_reset();
     }
 
     /// End to end: a collection a frame handler forces is timed by the isolate's GC callbacks and

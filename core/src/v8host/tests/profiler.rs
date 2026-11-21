@@ -129,8 +129,8 @@ fn js_sampling_names_plugin_functions_by_their_bundle() {
     for _ in 0..5 {
         frame();
     }
-    let response = profiler::js::stop().expect("Profiler.stop answers");
-    let profile = profiler::js::extract_profile(&response).expect("a profile object");
+    let sampled = profiler::js::stop().expect("Profiler.stop answers");
+    let profile = profiler::js::extract_profile(&sampled.cpu).expect("a profile object");
     let hot = profiler::js::hot_functions(&profile, 50);
     let url = crate::v8host::lifecycle::plugin_script_url("@t/js");
     assert!(
@@ -138,6 +138,32 @@ fn js_sampling_names_plugin_functions_by_their_bundle() {
         "{hot:#?}"
     );
     assert!(profiler::js::stop().is_err(), "the inspector is gone after stop");
+    shutdown();
+}
+
+/// The allocation profile names the function that allocated, and keeps what was collected since:
+/// nothing this handler allocates is still alive when sampling stops.
+#[test]
+fn js_sampling_names_the_functions_that_allocate() {
+    init(dummy_logger()).unwrap();
+    load_body("@t/alloc", r#"
+        function makeGarbage() { let n = 0; for (let i = 0; i < 20000; i++) { n += [i, "s" + i, { i }].length; } return n; }
+        ctx.server.onGameFrame(function () { makeGarbage(); });
+    "#, "{}");
+    profiler::js::start().expect("inspector sampling starts");
+    for _ in 0..20 {
+        frame();
+    }
+    crate::v8host::eval_in_context("@t/alloc", "__s2_v8_gc()").unwrap();
+    let sampled = profiler::js::stop().expect("Profiler.stop answers");
+    let profile = profiler::js::extract_profile(&sampled.alloc.expect("allocation sampling ran")).expect("a profile object");
+    let (total, top) = profiler::js::top_allocators(&profile, 50);
+    let url = crate::v8host::lifecycle::plugin_script_url("@t/alloc");
+    let (bytes, _, _) = top
+        .iter()
+        .find(|(_, f, place)| f == "makeGarbage" && place.starts_with(&url))
+        .unwrap_or_else(|| panic!("{top:#?}"));
+    assert!(*bytes > 1_000_000 && *bytes <= total, "makeGarbage allocated {bytes} of {total}");
     shutdown();
 }
 

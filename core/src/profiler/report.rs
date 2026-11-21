@@ -18,6 +18,7 @@ pub(crate) struct Paths {
     pub text: PathBuf,
     pub trace: PathBuf,
     pub cpuprofile: Option<PathBuf>,
+    pub heapprofile: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -283,7 +284,7 @@ pub(crate) fn console_lines(s: &Summary, rows: usize) -> Vec<String> {
     }
     out.extend(s.notes.iter().map(|n| format!("[S2S] {n}")));
     if let Some(js) = js_hot_for(s) {
-        out.extend(js.into_iter().take(rows + 1));
+        out.extend(top_of_each_table(js, rows));
     } else if s.files.as_ref().is_some_and(|f| f.cpuprofile.is_some()) {
         out.push("[S2S] JS function breakdown: being written — \"sm prof dump\" shows it in a moment.".to_string());
     }
@@ -299,6 +300,9 @@ pub(crate) fn console_lines(s: &Summary, rows: usize) -> Vec<String> {
                 "[S2S] JS:     {}  (Chrome DevTools > Performance > Load profile, or https://www.speedscope.app)",
                 p.display()
             ));
+        }
+        if let Some(p) = &files.heapprofile {
+            out.push(format!("[S2S] Memory: {}  (Chrome DevTools > Memory > Load profile)", p.display()));
         }
     }
     if let Some(e) = take_write_error() {
@@ -325,6 +329,45 @@ fn js_lines(profile: &serde_json::Value, rows: usize) -> Vec<String> {
     out
 }
 
+/// The allocation table: which functions allocated the most while the session sampled. `wall` is
+/// the session's length, for the rate.
+fn alloc_lines(profile: &serde_json::Value, rows: usize, wall: u64) -> Vec<String> {
+    let (total, top) = super::js::top_allocators(profile, rows);
+    let mb = |b: u64| b as f64 / 1048576.0;
+    let rate = if wall == 0 { 0.0 } else { mb(total) / (wall as f64 / 1e9) };
+    let mut out = vec![format!(
+        "[S2S] JS allocation (sampled): {:.1} MB in total, {:.2} MB per second. By allocating function:",
+        mb(total),
+        rate
+    )];
+    if top.is_empty() {
+        out.push("[S2S]   (no allocation samples)".to_string());
+    }
+    for (bytes, func, place) in top {
+        out.push(format!("[S2S]   {:>8.2} MB  {:>5}  {}  {}", mb(bytes), pct_of(bytes, total), func, place));
+    }
+    out
+}
+
+/// The JS tables hold up to `JS_ROWS` rows each for the report file; the console shows the first
+/// `rows` of each (a table is a heading line and the indented rows under it).
+fn top_of_each_table(lines: Vec<String>, rows: usize) -> Vec<String> {
+    let mut shown = 0;
+    let mut out = Vec::new();
+    for line in lines {
+        if line.starts_with("[S2S]   ") {
+            shown += 1;
+            if shown > rows {
+                continue;
+            }
+        } else {
+            shown = 0;
+        }
+        out.push(line);
+    }
+    out
+}
+
 fn js_hot_for(s: &Summary) -> Option<Vec<String>> {
     let g = match JS_HOT.lock() {
         Ok(g) => g,
@@ -343,7 +386,17 @@ fn take_write_error() -> Option<String> {
 /// Write the report files on a thread of their own: a trace can be tens of MB, and serializing it on
 /// the game thread would cause exactly the hitch the profiler exists to find. Failures surface on the
 /// next `sm prof` report (the console belongs to the game thread).
-pub(crate) fn write_files(paths: Paths, lines: Vec<String>, trace: TraceData, cpuprofile: Option<String>) {
+pub(crate) fn write_files(
+    paths: Paths,
+    lines: Vec<String>,
+    trace: TraceData,
+    sampled: Option<super::js::Sampled>,
+    wall: u64,
+) {
+    let (cpuprofile, alloc) = match sampled {
+        Some(s) => (Some(s.cpu), s.alloc),
+        None => (None, None),
+    };
     let spawned = std::thread::Builder::new().name("s2s-profiler-write".into()).spawn(move || {
         let result = (|| -> std::io::Result<()> {
             if let Some(dir) = paths.text.parent() {
@@ -354,7 +407,23 @@ pub(crate) fn write_files(paths: Paths, lines: Vec<String>, trace: TraceData, cp
                 let profile = super::js::extract_profile(response)
                     .ok_or_else(|| std::io::Error::other("Profiler.stop returned no profile"))?;
                 std::fs::write(path, serde_json::to_vec(&profile).map_err(std::io::Error::other)?)?;
-                let hot = js_lines(&profile, JS_ROWS);
+                let mut hot = js_lines(&profile, JS_ROWS);
+                // The allocation profile is extra: a failure here costs its own table and file, never
+                // the report, the trace or the CPU table.
+                if let (Some(path), Some(response)) = (&paths.heapprofile, &alloc) {
+                    match super::js::extract_profile(response) {
+                        Some(profile) => {
+                            hot.extend(alloc_lines(&profile, JS_ROWS, wall));
+                            let written = serde_json::to_vec(&profile)
+                                .map_err(std::io::Error::other)
+                                .and_then(|bytes| std::fs::write(path, bytes));
+                            if let Err(e) = written {
+                                hot.push(format!("[S2S] Allocation profile not written to {}: {e}", path.display()));
+                            }
+                        }
+                        None => hot.push("[S2S] Allocation profile: V8 returned none.".to_string()),
+                    }
+                }
                 lines.extend(hot.iter().cloned());
                 let mut g = match JS_HOT.lock() {
                     Ok(g) => g,

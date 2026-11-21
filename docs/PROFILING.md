@@ -16,7 +16,7 @@ player's `sm prof` prints the version banner, like any other `sm` command a play
 |---|---|
 | `sm prof start` | Start recording. Runs until `sm prof stop`. |
 | `sm prof start 120` | Record for 120 seconds, then stop and print the report. |
-| `sm prof start js` | Also sample JavaScript, to see the slow *function* and line in a plugin. Combine with a duration: `sm prof start 60 js`. |
+| `sm prof start js` | Also sample JavaScript, to see the slow *function* and line in a plugin, and which functions allocate the memory the garbage collector has to clear. Combine with a duration: `sm prof start 60 js`. |
 | `sm prof stop` | Stop, print the report and write the files. |
 | `sm prof status` | Show whether a session is running, how long it has run and how many frames it has seen. |
 | `sm prof dump [rows]` | Print the last report again, with `rows` lines per table (default 15). |
@@ -43,8 +43,13 @@ the server log gets one line saying where that time went:
 
 The parts are the kinds of entry from the engine (`OnGameFrame pre`/`post`, timers and async
 results, game events, usercmd hooks, entity and engine hooks, entity lifecycle, commands and chat,
-client events, the plugin loader). A collection is charged to the part it interrupted, and the GC
-total says how much of the frame it was. At most one line a second is printed; the rest are counted
+client events, the plugin loader, V8 housekeeping). A collection is charged to the part it
+interrupted, and the GC total says how much of the frame it was.
+
+`V8 housekeeping` is not plugin code. V8 marks the heap for a full collection in the background and
+posts the last step, a short pause, as a task; the runtime runs one such task at the end of each
+frame. A full collection under `V8 housekeeping` is that pause. A collection under any other part
+ran because the code there allocated when the heap was full. At most one line a second is printed; the rest are counted
 in the next line. A slow server frame with no such line was not s2script's: look at the engine, the
 map or the host.
 
@@ -60,6 +65,21 @@ the map loads, and logs `[s2script] garbage collected after map start: …` with
 That one is expected and is not a slow-frame line.
 
 Use `sm prof` to find which plugin and callback once the line says s2script was the cause.
+
+### When the line says garbage collection
+
+How often V8 collects depends on how much the plugins allocate, and how long a collection pauses
+depends mostly on how much recently allocated memory is still in use at that moment. Two tools show
+both:
+
+- `sm prof start 60 js` adds an allocation table to the report and writes a `.heapprofile`: the
+  functions that allocated the most during the session, collected or not.
+- The `S2SCRIPT_V8_FLAGS` environment variable passes flags to V8 when the server starts. With
+  `S2SCRIPT_V8_FLAGS="--trace-gc"` V8 prints one line per collection to the server's standard
+  output: the kind, the heap before and after, the pause and the cause. `--trace-gc-nvp` prints the
+  pause broken into phases. The server log confirms the flags with
+  `[s2script] V8 started with S2SCRIPT_V8_FLAGS: …`. The variable is for diagnosis and tuning: a
+  flag V8 does not know is reported on standard error and ignored, and no flag is needed to run.
 
 ## Reading the report
 
@@ -101,7 +121,7 @@ Top callbacks by self time:
 
 ## The files
 
-When a session stops, s2script writes three files to `addons/s2script/data/profiles/`. A separate
+When a session stops, s2script writes up to four files to `addons/s2script/data/profiles/`. A separate
 thread writes them, so writing never stalls the server.
 
 | File | Open it with |
@@ -110,11 +130,13 @@ thread writes them, so writing never stalls the server.
 | `prof-<time>.trace.json` | <https://ui.perfetto.dev> (drag the file in) or `chrome://tracing`. A timeline of every span, nested as a flame chart, with tracks for frame interval and s2script time per frame, and markers on long frames. |
 | `prof-<time>.cpuprofile` | Only with `js`. Chrome DevTools → Performance → *Load profile*, or <https://www.speedscope.app>. V8's sampling profile: the functions that ran, with file and line. |
 
+| `prof-<time>.heapprofile` | Only with `js`. Chrome DevTools → Memory → *Load profile*. V8's allocation sampling profile: which functions allocated how much during the session, including what has been collected since. |
+
 Plugin functions in the `.cpuprofile` are listed under `s2s://<plugin id>/plugin.js`, so you can
 tell which plugin a function belongs to. Stack traces in error messages use the same name.
 
-`sm prof dump` also prints the hottest JS functions once the writer has finished (a moment after
-`sm prof stop`).
+`sm prof dump` also prints the hottest JS functions and the functions that allocated the most, once
+the writer has finished (a moment after `sm prof stop`).
 
 ## What it costs
 
@@ -123,7 +145,8 @@ tell which plugin a function belongs to. Stack traces in error messages use the 
   garbage collection and every async continuation is also timed, which slows promise-heavy code a
   little.
 - **`js`:** V8 interrupts the game thread every 250 µs to take a sample. Use it for a short
-  session (a minute or two) once the span report has shown which plugin to look at.
+  session (a minute or two) once the span report has shown which plugin to look at. It also takes
+  an allocation sample about every 8 KB allocated and keeps each one until the session stops.
 - **Memory:** the timeline for the trace file keeps up to 1,000,000 spans (about 32 MB). After that
   the totals keep counting and the ten worst frames are still kept in full, but the trace stops
   growing. The report says when that happened.
