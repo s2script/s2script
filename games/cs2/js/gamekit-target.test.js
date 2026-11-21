@@ -197,3 +197,25 @@ test("a refused reveal or fade-out is retried", () => {
   t.hide(0);
   assert.equal(m.has(0, "gk_target", FADE), true, "the failed fade-out is redone");
 });
+
+test("hide still collapses a panel left up by a refused reveal or collapse", () => {
+  const m = mount({ files: [] });
+  const t = m.GameHud.target();
+  t.set(0, { name: "Bob" });
+  m.refuse.add(0);
+  m.tick();             // reveal refused: uncollapsed, faded, not shown
+  m.refuse.delete(0);
+  t.hide(0);
+  m.tick();
+  assert.equal(m.hidden(0, "gk_target"), true, "collapsed despite the refused reveal");
+
+  t.set(0, { name: "Bob" });
+  m.tick();
+  t.hide(0);
+  m.refuse.add(0);
+  m.tick();             // collapse refused
+  m.refuse.delete(0);
+  t.hide(0);
+  m.tick();
+  assert.equal(m.hidden(0, "gk_target"), true, "the refused collapse is retried");
+});

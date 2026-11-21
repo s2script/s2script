@@ -365,7 +365,7 @@
     // crosshair. A plugin may call set() every tick; only a change reaches the HUD, because each
     // player's last paint is kept here and compared first.
     function targetState(slot) {
-      return targets[slot] || (targets[slot] = { name: null, sub: null, tone: null, shown: false, collapsed: true, epoch: 0 });
+      return targets[slot] || (targets[slot] = { name: null, sub: null, tone: null, shown: false, collapsed: true, hiding: false, epoch: 0 });
     }
 
     // State moves only on a drive that landed, so a refused paint (layout entity not ready yet, a
@@ -373,7 +373,7 @@
     function targetShow(slot, st) {
       if (st.shown) return;
       if (!st.collapsed) {
-        if (ok(setClass(slot, "gk_target", STATE.fade, false))) { st.shown = true; st.epoch++; }
+        if (ok(setClass(slot, "gk_target", STATE.fade, false))) { st.shown = true; st.hiding = false; st.epoch++; }
         return;
       }
       // Collapsed: un-collapse while still faded, then drop the fade so it plays.
@@ -392,12 +392,16 @@
 
     function targetHide(slot) {
       var st = targets[slot];
-      if (!st || !st.shown) return;
+      // Nothing to do once collapsed, or while a fade-out is already on its way to collapsing.
+      // A panel left uncollapsed by a refused reveal or collapse is not "hiding", so it is retried.
+      if (!st || st.collapsed || (!st.shown && st.hiding)) return;
       if (!ok(setClass(slot, "gk_target", STATE.fade, true))) return;
       st.shown = false;
+      st.hiding = true;
       var mine = ++st.epoch;
       var collapse = function () {
         if (targets[slot] !== st || st.epoch !== mine || st.shown) return;
+        st.hiding = false;
         if (ok(hide(slot, "gk_target"))) st.collapsed = true;
       };
       if (!afterSeconds(TARGET_COLLAPSE_MS / 1000, collapse)) collapse();
