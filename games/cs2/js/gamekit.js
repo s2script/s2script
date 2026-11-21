@@ -368,32 +368,39 @@
       return targets[slot] || (targets[slot] = { name: null, sub: null, tone: null, shown: false, collapsed: true, epoch: 0 });
     }
 
+    // State moves only on a drive that landed, so a refused paint (layout entity not ready yet, a
+    // failed drive) is retried by the next set() or hide() instead of being skipped as unchanged.
     function targetShow(slot, st) {
       if (st.shown) return;
+      if (!st.collapsed) {
+        if (ok(setClass(slot, "gk_target", STATE.fade, false))) { st.shown = true; st.epoch++; }
+        return;
+      }
+      // Collapsed: un-collapse while still faded, then drop the fade so it plays.
+      if (!ok(setClass(slot, "gk_target", STATE.fade, true))) return;
+      if (!ok(show(slot, "gk_target"))) return;
+      st.collapsed = false;
       st.shown = true;
       var mine = ++st.epoch;
-      if (!st.collapsed) { setClass(slot, "gk_target", STATE.fade, false); return; }
-      // Collapsed: un-collapse while still faded, then drop the fade so it plays.
-      setClass(slot, "gk_target", STATE.fade, true);
-      show(slot, "gk_target");
-      st.collapsed = false;
-      var scheduled = afterSeconds(TARGET_FADE_IN_MS / 1000, function () {
-        var cur = targets[slot];
-        if (cur === st && st.epoch === mine && st.shown) setClass(slot, "gk_target", STATE.fade, false);
-      });
-      if (!scheduled) setClass(slot, "gk_target", STATE.fade, false);
+      var reveal = function () {
+        if (targets[slot] !== st || st.epoch !== mine || !st.shown) return;
+        // A refused reveal leaves it faded: mark it not shown so the next set() tries again.
+        if (!ok(setClass(slot, "gk_target", STATE.fade, false))) st.shown = false;
+      };
+      if (!afterSeconds(TARGET_FADE_IN_MS / 1000, reveal)) reveal();
     }
 
     function targetHide(slot) {
       var st = targets[slot];
       if (!st || !st.shown) return;
+      if (!ok(setClass(slot, "gk_target", STATE.fade, true))) return;
       st.shown = false;
       var mine = ++st.epoch;
-      setClass(slot, "gk_target", STATE.fade, true);
-      var scheduled = afterSeconds(TARGET_COLLAPSE_MS / 1000, function () {
-        if (targets[slot] === st && st.epoch === mine && !st.shown) { hide(slot, "gk_target"); st.collapsed = true; }
-      });
-      if (!scheduled) { hide(slot, "gk_target"); st.collapsed = true; }
+      var collapse = function () {
+        if (targets[slot] !== st || st.epoch !== mine || st.shown) return;
+        if (ok(hide(slot, "gk_target"))) st.collapsed = true;
+      };
+      if (!afterSeconds(TARGET_COLLAPSE_MS / 1000, collapse)) collapse();
     }
 
     function target() {

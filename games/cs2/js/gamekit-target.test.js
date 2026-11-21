@@ -167,3 +167,33 @@ test("release forgets every label, so a new claim paints from scratch", () => {
   m.tick();
   assert.equal(shown(m, 0), true);
 });
+
+test("a refused paint is retried by the next set, not skipped as unchanged", () => {
+  const m = mount({ files: [] });
+  const t = m.GameHud.target();
+  m.refuse.add(0);
+  t.set(0, { name: "Bob" });
+  assert.equal(m.timers.length, 0, "nothing landed, nothing scheduled");
+  m.refuse.delete(0);
+  t.set(0, { name: "Bob" });
+  assert.equal(m.text(0, "gk_target_n"), "Bob");
+  assert.equal(m.hidden(0, "gk_target"), false);
+  m.tick();
+  assert.equal(shown(m, 0), true);
+});
+
+test("a refused reveal or fade-out is retried", () => {
+  const m = mount({ files: [] });
+  const t = m.GameHud.target();
+  t.set(0, { name: "Bob" });
+  m.refuse.add(0);
+  m.tick();
+  m.refuse.delete(0);
+  t.set(0, { name: "Bob" });
+  assert.equal(shown(m, 0), true, "the failed reveal is redone");
+  m.refuse.add(0);
+  t.hide(0);
+  m.refuse.delete(0);
+  t.hide(0);
+  assert.equal(m.has(0, "gk_target", FADE), true, "the failed fade-out is redone");
+});
