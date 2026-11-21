@@ -75,6 +75,9 @@ unsigned int MurmurHash2LowerCase(char const* pString, unsigned int nSeed) {
 // and the shim deliberately does not link mathlib.a (it would cascade like tier1). Quaternion is a
 // POD `{ float x, y, z, w; }`; identity is (0,0,0,1). We need only the 16-byte symbol, so a
 // layout-compatible stand-in avoids pulling all of mathlib into this TU. Re-check on any hl2sdk bump.
+// MSVC mangles a variable's type into its name, so on Windows these stand-ins would not satisfy the
+// references; win_link_stubs.cpp defines them there with the real SDK types.
+#ifndef _WIN32
 struct s2_QuatLayout { float x, y, z, w; };
 extern const s2_QuatLayout quat_identity;
 const s2_QuatLayout quat_identity = { 0.0f, 0.0f, 0.0f, 1.0f };
@@ -90,6 +93,7 @@ extern const s2_Vec3Layout vec3_angle;
 const s2_Vec3Layout vec3_angle = { 0.0f, 0.0f, 0.0f };
 extern const s2_Vec3Layout vec3_invalid;
 const s2_Vec3Layout vec3_invalid = { 3.402823466e+38f, 3.402823466e+38f, 3.402823466e+38f };
+#endif  // !_WIN32
 
 // ---------------------------------------------------------------------------------------------------
 // EKV slice (Task 1) — leaf self-shims for entity2/entitykeyvalues.cpp + tier1/keyvalues3.cpp (the
@@ -120,6 +124,9 @@ const s2_Vec3Layout vec3_invalid = { 3.402823466e+38f, 3.402823466e+38f, 3.40282
 
 extern "C" {
 
+// On Windows the shim links tier0.lib, which exports the real logging and string leaves below, so
+// only the ones tier0.dll does not export (Plat_ExitProcess, Plat_NonFatalErrorFunc) stay defined.
+#ifndef _WIN32
 // LoggingChannelID_t LOG_GENERAL — a plain global (not mangled either way in C++); referenced by
 // Log_Msg(LOG_GENERAL, ...) call sites in CEntityKeyValues::AddRef/Release. Its value is inert since
 // LoggingSystem_IsChannelEnabled below always returns false (Log_Msg's InternalMsg macro checks it
@@ -154,6 +161,8 @@ void Warning(const char* pMsg, ...) {
     va_end(args);
 }
 
+#endif  // !_WIN32
+
 // Plat_ExitProcess(nCode) — the real implementation behind the (macro-neutered-to-empty)
 // Plat_FatalErrorFunc / the Plat_FatalError macro's terminate step; KV3's genuinely-fatal invariant
 // violations (e.g. CKV3Arena::Root() called on a rootless pool arena — never hit by this slice's
@@ -172,6 +181,7 @@ void Plat_NonFatalErrorFunc(const char* pMsg, ...) {
     va_end(args);
 }
 
+#ifndef _WIN32
 // V_StringToBool/V_StringToInt32/V_StringToFloat32 — KeyValues3::FromString<T> template
 // specializations (inline in keyvalues3.h) call these when a value is read back as a DIFFERENT type
 // than it was stored as (e.g. GetInt() on a string-typed value). Never exercised by this slice (every
@@ -229,6 +239,8 @@ void _V_strncpy(char* dest, const char* src, int maxLen) {
 void V_tier0_memmove(void* dest, const void* src, size_t count) {
     std::memmove(dest, src, count);
 }
+
+#endif  // !_WIN32
 
 }  // extern "C"
 

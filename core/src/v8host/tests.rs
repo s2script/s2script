@@ -2868,6 +2868,32 @@
         shutdown();
     }
 
+    /// A consumer unloading on its own (its providers stay Active) can still call them from
+    /// onUnload: unload marks it Unloading first, which used to expire every attachment.
+    #[test]
+    fn owned_interop_attachment_stays_callable_in_consumer_onunload() {
+        optional_interop_setup();
+        dispose_plugin_context("prod");
+        load_body("prod","globalThis.calls=0;ctx.publish('@x/counter',{getCount:()=>++calls});","{}");
+        dispose_plugin_context("cons");
+        load_body("cons",r#"
+          ctx.watchOptional('@x/counter',(service,scope)=>{globalThis.saved=service;globalThis.savedScope=scope;});
+          return { onUnload(){
+            saved.getCount();
+            // Registration authority still ends with the attach callback.
+            try { savedScope.own({dispose(){}}); saved.getCount(); } catch (e) {}
+            try { saved.on('OnCountChanged',()=>{}); saved.getCount(); } catch (e) {}
+          } };
+        "#,"{}");
+        assert_eq!(plugin_phase("cons"), Some(plugin::Phase::Active));
+        assert_eq!(interop_lifetime::counts().2, 1, "attached before unload");
+        unload_plugin("cons");
+        assert_eq!(eval_in_context_string("prod","String(calls)"), "1");
+        assert_eq!(interop_lifetime::counts(),(0,0,0,0,0));
+        assert_eq!(plugin_phase("prod"), Some(plugin::Phase::Active));
+        shutdown();
+    }
+
     #[test]
     fn owned_interop_attachment_authority_does_not_escape_into_late_nested_or_thenable_calls() {
         optional_interop_setup();

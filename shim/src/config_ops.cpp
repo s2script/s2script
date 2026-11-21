@@ -1,7 +1,6 @@
 #include "config_ops.h"
 
-#include <dlfcn.h>
-#include <libgen.h>
+#include "platform.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -25,17 +24,8 @@ static std::string ConfigPath(const char* id) {
             safe_id += '_';
         }
     }
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&ConfigPath), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir + "/configs/" + safe_id + ".json";
-    }
+    std::string root = s2plat::AddonRoot();
+    if (!root.empty()) return root + "/configs/" + safe_id + ".json";
     // Fallback: relative to the server's cwd.
     return "addons/s2script/configs/" + safe_id + ".json";
 }
@@ -78,15 +68,8 @@ static std::string ConfigFilePath(const char* name) {
         safe += ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
                  || c == '.' || c == '_' || c == '-') ? c : '_';
     }
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&ConfigFilePath), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf); snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);             snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);
-        return dir + "/configs/" + safe;
-    }
+    std::string root = s2plat::AddonRoot();
+    if (!root.empty()) return root + "/configs/" + safe;
     return "addons/s2script/configs/" + safe;
 }
 static std::string s_configFileReadBuf;

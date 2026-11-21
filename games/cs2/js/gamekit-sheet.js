@@ -32,6 +32,9 @@
   var DISABLED = "s2-btn-disabled";
   var LIST_PAGE = 6;
   var BODY_IDS = { list: "gk_sh_list", text: "gk_sh_para", toggles: "gk_sh_tog", grid: "gk_sh_grid", table: "gk_sh_table" };
+  // Every panel id of the sheet starts with one of these (cache invalidation on a fresh claim).
+  var SHEET_ROOTS = ["gk_sheet", "gk_sh"];
+  var TONES = Object.keys(SPEC.tones || {});
 
   function str(v) { return v == null ? "" : String(v); }
   function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
@@ -141,7 +144,10 @@
       for (var i = 0; i < SH.side; i++) {
         var id = "gk_sh_s" + i;
         var e = entries[i];
-        if (!e) { note(acc, kit.hide(slot, id)); continue; }
+        if (!e) {
+          if (st.shown[id]) emptyRow(st, "side", id, acc); else note(acc, kit.hide(slot, id));
+          continue;
+        }
         var label = "";
         var meta = "";
         if (e.kind === "group") { label = e.group; }
@@ -152,13 +158,117 @@
         note(acc, kit.setText(slot, id + "_m", meta));
         note(acc, kit.setClass(slot, id, GRP, e.kind === "group"));
         note(acc, kit.setClass(slot, id, SEL, e.kind === "tab" && e.index === st.section));
-        note(acc, kit.show(slot, id));
+        showRow(st, "side", id, acc);
       }
       note(acc, kit.setClass(slot, "gk_sh_more", HIDE, true));
     }
 
-    function hideBodies(slot, keep, acc) {
-      for (var k in BODY_IDS) if (has(BODY_IDS, k)) note(acc, kit.setClass(slot, BODY_IDS[k], HIDE, k !== keep));
+    // ── body rows ────────────────────────────────────────────────────────────────────────────
+    // The row ids of each body kind, and the text and state each row carries.
+    function rowsOf(kind) {
+      var out = [];
+      var i;
+      if (kind === "list") for (i = 0; i < SH.list; i++) out.push("gk_sh_li" + i);
+      else if (kind === "text") for (i = 0; i < SH.paragraphs; i++) out.push("gk_sh_p" + i);
+      else if (kind === "toggles") for (i = 0; i < SH.toggles; i++) out.push("gk_sh_tg" + i);
+      else if (kind === "grid") for (i = 0; i < SH.grid; i++) out.push("gk_sh_g" + i);
+      else if (kind === "table") for (i = 0; i < SH.tableRows; i++) out.push("gk_sh_tr" + i);
+      else if (kind === "side") for (i = 0; i < SH.side; i++) out.push("gk_sh_s" + i);
+      return out;
+    }
+
+    /** Hide a row and drop everything painted on it: its text, its state classes, its buttons. */
+    function emptyRow(st, kind, id, acc) {
+      var slot = st.slot;
+      var c;
+      note(acc, kit.hide(slot, id));
+      if (kind === "list") {
+        note(acc, kit.setText(slot, id + "_n", ""));
+        note(acc, kit.setText(slot, id + "_t", ""));
+        note(acc, kit.setClass(slot, id, HL, false));
+      } else if (kind === "text") {
+        note(acc, kit.setText(slot, id, ""));
+      } else if (kind === "toggles" || kind === "grid") {
+        var vars = kind === "toggles" ? ["_t", "_v"] : ["_t", "_p", "_d"];
+        for (c = 0; c < vars.length; c++) note(acc, kit.setText(slot, id + vars[c], ""));
+        note(acc, kit.setClass(slot, id, kind === "toggles" ? ON : SEL, false));
+        note(acc, kit.setClass(slot, id, DISABLED, false));
+        note(acc, kit.P().setDisabled(slot, id, false));
+      } else if (kind === "table") {
+        for (c = 0; c < SH.tableCols; c++) note(acc, kit.setText(slot, id + "_c" + c, ""));
+        for (var a = 0; a < SH.rowActions; a++) {
+          var x = id + "_x" + a;
+          note(acc, kit.hide(slot, x));
+          note(acc, kit.setText(slot, x + "_t", ""));
+          note(acc, kit.setClass(slot, x, DISABLED, false));
+          note(acc, kit.P().setDisabled(slot, x, false));
+        }
+      } else if (kind === "side") {
+        note(acc, kit.setText(slot, id + "_t", ""));
+        note(acc, kit.setText(slot, id + "_m", ""));
+        note(acc, kit.setClass(slot, id, GRP, false));
+        note(acc, kit.setClass(slot, id, SEL, false));
+      }
+      delete st.shown[id];
+    }
+
+    function showRow(st, kind, id, acc) {
+      st.shown[id] = kind;
+      note(acc, kit.show(st.slot, id));
+    }
+
+    // Show the body in use and hide every other kind's container AND its rows, so nothing an
+    // earlier body painted (this sheet's or another plugin's) can stay on screen under the new one.
+    // Rows this sheet showed are emptied as well; the rest are only hidden, which the diff cache
+    // answers locally once they are.
+    function hideBodies(st, keep, acc) {
+      var slot = st.slot;
+      for (var k in BODY_IDS) {
+        if (!has(BODY_IDS, k)) continue;
+        note(acc, kit.setClass(slot, BODY_IDS[k], HIDE, k !== keep));
+        if (k === keep) continue;
+        var rows = rowsOf(k);
+        for (var i = 0; i < rows.length; i++) {
+          if (st.shown[rows[i]]) emptyRow(st, k, rows[i], acc);
+          else note(acc, kit.hide(slot, rows[i]));
+        }
+        if (k === "table") for (var c = 0; c < SH.tableCols; c++) note(acc, kit.setClass(slot, "gk_sh_th" + c, HIDE, true));
+      }
+    }
+
+    /** Empty the whole sheet panel (on close), so the next sheet for this player starts clean. */
+    function emptySheet(st) {
+      var acc = { first: null };
+      var slot = st.slot;
+      hideBodies(st, null, acc);
+      var side = rowsOf("side");
+      for (var i = 0; i < side.length; i++) {
+        if (st.shown[side[i]]) emptyRow(st, "side", side[i], acc);
+        else note(acc, kit.hide(slot, side[i]));
+      }
+      var texts = ["gk_sh_title", "gk_sh_right", "gk_sh_ft", "gk_sh_h", "gk_sh_k"];
+      for (i = 0; i < texts.length; i++) note(acc, kit.setText(slot, texts[i], ""));
+      note(acc, kit.setClass(slot, "gk_sh_k", HIDE, true));
+      note(acc, kit.setClass(slot, "gk_sh_pager", HIDE, true));
+      st.shown = {};
+      return acc.first;
+    }
+
+    /** Set an action label's tone. The first time a label is toned in this claim, clear every
+     *  other tone: whatever painted this panel before may have left one this context never
+     *  recorded. After that, swap's own record knows the previous tone. */
+    function toneOf(st, id, cls, acc) {
+      if (!st.toned[id]) {
+        var clean = true;
+        for (var t = 0; t < TONES.length; t++) {
+          if ("gk-t-" + TONES[t] === cls) continue;
+          var err = kit.setClass(st.slot, id, "gk-t-" + TONES[t], false);
+          if (!kit.ok(err)) clean = false;
+          note(acc, err);
+        }
+        if (clean) st.toned[id] = true;
+      }
+      note(acc, kit.swap(st.slot, id, "text", cls));
     }
 
     function pageSlice(st, body) {
@@ -180,44 +290,48 @@
       note(acc, kit.setText(slot, "gk_sh_h", heading));
       note(acc, kit.setText(slot, "gk_sh_k", kicker));
       note(acc, kit.setClass(slot, "gk_sh_k", HIDE, kicker === ""));
-      hideBodies(slot, body.kind, acc);
+      hideBodies(st, body.kind, acc);
       var page = pageSlice(st, body);
       var i;
       var id;
       var item;
+      // A row past the page's items: empty it if it showed something, else just keep it hidden.
+      function clearRow(rowId) {
+        if (st.shown[rowId]) emptyRow(st, body.kind, rowId, acc); else note(acc, kit.hide(slot, rowId));
+      }
       if (body.kind === "list") {
         for (i = 0; i < SH.list; i++) {
           id = "gk_sh_li" + i;
-          if (i >= page.items.length) { note(acc, kit.hide(slot, id)); continue; }
+          if (i >= page.items.length) { clearRow(id); continue; }
           item = page.items[i];
           note(acc, kit.setText(slot, id + "_n", listNumber(item, page.start + i)));
           note(acc, kit.setText(slot, id + "_t", listText(item)));
           note(acc, kit.setClass(slot, id, HL, st.highlight === page.start + i));
-          note(acc, kit.show(slot, id));
+          showRow(st, "list", id, acc);
         }
       } else if (body.kind === "text") {
         for (i = 0; i < SH.paragraphs; i++) {
           id = "gk_sh_p" + i;
-          if (i >= page.items.length) { note(acc, kit.hide(slot, id)); continue; }
+          if (i >= page.items.length) { clearRow(id); continue; }
           note(acc, kit.setText(slot, id, page.items[i]));
-          note(acc, kit.show(slot, id));
+          showRow(st, "text", id, acc);
         }
       } else if (body.kind === "toggles") {
         for (i = 0; i < SH.toggles; i++) {
           id = "gk_sh_tg" + i;
-          if (i >= page.items.length) { note(acc, kit.hide(slot, id)); continue; }
+          if (i >= page.items.length) { clearRow(id); continue; }
           item = page.items[i] || {};
           note(acc, kit.setText(slot, id + "_t", item.label));
           note(acc, kit.setText(slot, id + "_v", item.value != null ? item.value : (item.on ? "On" : "Off")));
           note(acc, kit.setClass(slot, id, ON, !!item.on));
           note(acc, kit.setClass(slot, id, DISABLED, !!item.disabled));
           note(acc, kit.P().setDisabled(slot, id, !!item.disabled));
-          note(acc, kit.show(slot, id));
+          showRow(st, "toggles", id, acc);
         }
       } else if (body.kind === "grid") {
         for (i = 0; i < SH.grid; i++) {
           id = "gk_sh_g" + i;
-          if (i >= page.items.length) { note(acc, kit.hide(slot, id)); continue; }
+          if (i >= page.items.length) { clearRow(id); continue; }
           item = page.items[i] || {};
           note(acc, kit.setText(slot, id + "_t", item.title));
           note(acc, kit.setText(slot, id + "_p", item.price == null ? "" : item.price));
@@ -225,7 +339,7 @@
           note(acc, kit.setClass(slot, id, SEL, !!item.selected));
           note(acc, kit.setClass(slot, id, DISABLED, !!item.disabled));
           note(acc, kit.P().setDisabled(slot, id, !!item.disabled));
-          note(acc, kit.show(slot, id));
+          showRow(st, "grid", id, acc);
         }
       } else {
         var cols = Array.isArray(body.src.columns) ? body.src.columns : [];
@@ -236,7 +350,7 @@
         }
         for (i = 0; i < SH.tableRows; i++) {
           id = "gk_sh_tr" + i;
-          if (i >= page.items.length) { note(acc, kit.hide(slot, id)); continue; }
+          if (i >= page.items.length) { clearRow(id); continue; }
           item = page.items[i] || {};
           var cells = Array.isArray(item.cells) ? item.cells : [];
           for (c = 0; c < SH.tableCols; c++) {
@@ -248,13 +362,13 @@
             var x = id + "_x" + a;
             var act = acts[a];
             if (!act) { note(acc, kit.hide(slot, x)); continue; }
-            note(acc, kit.swap(slot, x + "_t", "text", "gk-t-" + U.pickTone(act.tone, act.label, "default")));
+            toneOf(st, x + "_t", "gk-t-" + U.pickTone(act.tone, act.label, "default"), acc);
             note(acc, kit.setText(slot, x + "_t", act.label));
             note(acc, kit.setClass(slot, x, DISABLED, !!act.disabled));
             note(acc, kit.P().setDisabled(slot, x, !!act.disabled));
             note(acc, kit.show(slot, x));
           }
-          note(acc, kit.show(slot, id));
+          showRow(st, "table", id, acc);
         }
       }
       // Pager.
@@ -357,11 +471,13 @@
       focus(st, spec.section, spec.highlight);
     }
 
-    function closeSheet(st, fromPlayer) {
+    // `gone`: the player left or the map changed, so there is no panel left to empty.
+    function closeSheet(st, fromPlayer, gone) {
       if (!st.live) return;
       st.live = false;
       if (sheets[st.slot] === st) delete sheets[st.slot];
       kit.hide(st.slot, "gk_sheet");
+      if (!gone) emptySheet(st);
       U.hostRelease("gamekit:sheet:" + st.slot);
       if (typeof st.onClose === "function") guard("sheet onClose", function () { st.onClose(fromPlayer); });
     }
@@ -373,10 +489,17 @@
       var existing = sheets[slot];
       if (existing && existing.live) { applySheetSpec(existing, spec); repaintSheet(existing); return existing.handle; }
       if (U.hostClaim("gamekit:sheet:" + slot) < 0) return null;
-      var st = { slot: slot, live: true, section: 0, page: 0, highlight: -1, sideOffset: 0, sideFollow: true, title: "", right: "", footer: "", sections: [] };
+      var st = {
+        slot: slot, live: true, section: 0, page: 0, highlight: -1, sideOffset: 0, sideFollow: true,
+        title: "", right: "", footer: "", sections: [], shown: {}, toned: {}
+      };
       applySheetSpec(st, spec);
       sheets[slot] = st;
       kit.P();
+      // A fresh claim: the panel was last painted by whoever held it before (another plugin, or
+      // this one before a close), from a context whose diff cache this one cannot see. Forget
+      // ours so the first paint sends every value instead of skipping the ones it thinks match.
+      kit.forget(slot, SHEET_ROOTS);
       st.handle = {
         isOpen: function () { return st.live; },
         update: function (next) { if (st.live) { applySheetSpec(st, next || {}); repaintSheet(st); } },
@@ -625,13 +748,13 @@
 
     kit.onForget(function (slot) {
       var sh = sheets[slot];
-      if (sh) closeSheet(sh, false);
+      if (sh) closeSheet(sh, false, true);
       var pr = prompts[slot];
       if (pr) endPrompt(pr, null, "cancelled");
     });
     kit.onReset(function () {
       var s;
-      for (s in sheets) if (has(sheets, s)) closeSheet(sheets[s], false);
+      for (s in sheets) if (has(sheets, s)) closeSheet(sheets[s], false, true);
       for (s in prompts) if (has(prompts, s)) endPrompt(prompts[s], null, "cancelled");
     });
 

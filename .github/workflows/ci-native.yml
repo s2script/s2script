@@ -43,6 +43,8 @@ on:
       - 'scripts/*khook*'
       - 'scripts/*metamod*'
       - 'scripts/cloud/*metamod*'
+      - 'scripts/build-windows.sh'
+      - 'scripts/package-addon.sh'
       - '.github/workflows/ci-native.yml'
   push:
     branches: [main]
@@ -76,6 +78,8 @@ on:
       - 'scripts/*khook*'
       - 'scripts/*metamod*'
       - 'scripts/cloud/*metamod*'
+      - 'scripts/build-windows.sh'
+      - 'scripts/package-addon.sh'
       - '.github/workflows/ci-native.yml'
 
 concurrency:
@@ -98,7 +102,7 @@ jobs:
       # Report every shard's verdict on a failing PR instead of the first one to finish.
       fail-fast: false
       matrix:
-        shard: [rust, fixtures, engine-function, runtime]
+        shard: [rust, fixtures, engine-function, runtime, windows]
     steps:
       - uses: useblacksmith/checkout@v1
         with: { submodules: recursive }   # gen-licenses.sh reads the vendored third_party/ submodules
@@ -110,8 +114,9 @@ jobs:
           # rust and engine-function build the same debug/test profile, so they share the original
           # entry, and only the rust shard (the superset) saves it. The runtime shard's Docker
           # build fills target/release with Bullseye-compiled deps instead, so it keeps its own
-          # entry under the shared key `sniper`, which release.yml restores for the tag build.
-          shared-key: ${{ matrix.shard == 'runtime' && 'sniper' || '' }}
+          # entry under the shared key `sniper`, which release.yml restores for the tag build. The
+          # windows shard builds only the x86_64-pc-windows-msvc target, under its own key `windows`.
+          shared-key: ${{ matrix.shard == 'runtime' && 'sniper' || matrix.shard == 'windows' && 'windows' || '' }}
           # Restore-only on PRs. Returns the ~11s save step, and stops every branch minting
           # its own ~383MB entry — the predecessor repo reached 77 entries / 4.34GB against a
           # 10GB quota, and LRU eviction of a rust-cache entry is exactly what turns a 13s
@@ -122,12 +127,29 @@ jobs:
       - uses: hendrikmuhs/ccache-action@v1
         with:
           key: ${{ matrix.shard }}
+          update-package-index: true
       # libffi configure.ac uses LT_SYS_SYMBOL_USCORE from libltdl-dev's
       # ltdl.m4. This is a bootstrap dependency, not a linked runtime library.
       - name: install pinned libffi bootstrap and native diagnostic dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends autoconf automake libtool libltdl-dev gdb
+      # The windows shard cross-builds with clang-cl/lld-link against the MSVC CRT that cargo-xwin
+      # downloads (xwin), so it needs the LLVM Windows tools and cargo-xwin itself.
+      - name: install Windows cross-build tools
+        if: matrix.shard == 'windows'
+        run: |
+          sudo apt-get install -y --no-install-recommends clang-18 clang-tools-18 lld-18 llvm-18
+          rustup target add x86_64-pc-windows-msvc
+      - uses: taiki-e/install-action@v2
+        if: matrix.shard == 'windows'
+        with: { tool: cargo-xwin }
+      # The splatted MSVC CRT + Windows SDK (~1 GB unpacked) only changes when xwin's manifest does.
+      - uses: actions/cache@v4
+        if: matrix.shard == 'windows'
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-msvc-crt-v1
       - name: native gate suite (${{ matrix.shard }} shard)
         run: |
           # Only a disposable CI runner may change the kernel core policy: a GitHub-hosted
@@ -150,6 +172,14 @@ jobs:
           trap restore_core_pattern EXIT
           sudo sysctl -w "kernel.core_pattern=$diagnostic_dir/cores/core.%p.%t"
           S2FN_V8_DIAGNOSTICS=1 S2FN_V8_DIAGNOSTIC_RUNS=32 bash scripts/ci-native.sh "${{ matrix.shard }}"
+      # The cross-built win64 addon (plus the hello example), for a live check on a Windows server.
+      - name: upload win64 addon package
+        if: matrix.shard == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2script-win64-addon
+          path: dist/addons/
+          retention-days: 14
       - name: retain compact V8 diagnostics and matching binaries
         if: always()
         uses: actions/upload-artifact@v4

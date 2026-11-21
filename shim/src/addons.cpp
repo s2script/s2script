@@ -22,7 +22,7 @@ PLUGIN_GLOBALVARS();
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
+#include "platform.h"
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -110,17 +110,29 @@ struct Tier0 {
 };
 Tier0 g_tier0;
 
+// The exports by their mangled names, which differ by ABI: Itanium on Linux, MSVC on Windows (the
+// MSVC names were read off CS2's Windows tier0.dll export table, build 26748068). A mangled name
+// encodes the parameter types, so a match is also a signature check.
+#ifdef _WIN32
+#define S2_SYM_UTLSTRING_SET   "?Set@CUtlString@@QEAAXPEBD@Z"
+#define S2_SYM_KV_GETNAME      "?GetName@KeyValues@@QEBAPEBDXZ"
+#define S2_SYM_KV_FINDKEY      "?FindKey@KeyValues@@QEAAPEAV1@PEBD_N@Z"
+#define S2_SYM_KV_GETSTRING    "?Internal_GetString@CKeyValues_Data@@IEAAPEBDPEBDPEAD_K@Z"
+#else
+#define S2_SYM_UTLSTRING_SET   "_ZN10CUtlString3SetEPKc"
+#define S2_SYM_KV_GETNAME      "_ZNK9KeyValues7GetNameEv"
+#define S2_SYM_KV_FINDKEY      "_ZN9KeyValues7FindKeyEPKcb"
+#define S2_SYM_KV_GETSTRING    "_ZN15CKeyValues_Data18Internal_GetStringEPKcPcm"
+#endif
+
 bool ResolveTier0() {
-    void* h = dlopen("libtier0.so", RTLD_NOW | RTLD_NOLOAD);
-    if (!h) return false;
-    g_tier0.utlStringSet = reinterpret_cast<decltype(g_tier0.utlStringSet)>(dlsym(h, "_ZN10CUtlString3SetEPKc"));
-    g_tier0.kvGetName = reinterpret_cast<decltype(g_tier0.kvGetName)>(dlsym(h, "_ZNK9KeyValues7GetNameEv"));
-    g_tier0.kvFindKey = reinterpret_cast<decltype(g_tier0.kvFindKey)>(dlsym(h, "_ZN9KeyValues7FindKeyEPKcb"));
+    auto sym = [](const char* name) { return s2plat::FindExport(S2_MODULE("tier0"), name); };
+    g_tier0.utlStringSet = reinterpret_cast<decltype(g_tier0.utlStringSet)>(sym(S2_SYM_UTLSTRING_SET));
+    g_tier0.kvGetName = reinterpret_cast<decltype(g_tier0.kvGetName)>(sym(S2_SYM_KV_GETNAME));
+    g_tier0.kvFindKey = reinterpret_cast<decltype(g_tier0.kvFindKey)>(sym(S2_SYM_KV_FINDKEY));
     // KeyValues::GetString is an inline FindKey + CKeyValues_Data::Internal_GetString; KeyValues
     // derives from CKeyValues_Data first, so the key pointer is the data pointer.
-    g_tier0.kvGetString = reinterpret_cast<decltype(g_tier0.kvGetString)>(
-        dlsym(h, "_ZN15CKeyValues_Data18Internal_GetStringEPKcPcm"));
-    dlclose(h);   // RTLD_NOLOAD took a reference; the engine keeps its own
+    g_tier0.kvGetString = reinterpret_cast<decltype(g_tier0.kvGetString)>(sym(S2_SYM_KV_GETSTRING));
     return g_tier0.utlStringSet != nullptr;
 }
 

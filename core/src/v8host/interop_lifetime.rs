@@ -41,7 +41,25 @@ fn active(id: &str, generation: u64) -> bool {
     REGISTRY.with(|r| r.borrow().is_live(id, generation))
         && plugin_phase(id) == Some(plugin::Phase::Active)
 }
+/// A consumer keeps using its attachments through its own unload hooks. `unload_plugin` marks it
+/// Unloading before `state()`/`onUnload`, and its context is dropped synchronously right after,
+/// so this never outlives the generation. Registration authority (`authorized`) still needs
+/// Active, and the provider must always be Active.
+fn consumer_usable(id: &str, generation: u64) -> bool {
+    REGISTRY.with(|r| r.borrow().is_live(id, generation))
+        && matches!(
+            plugin_phase(id),
+            Some(plugin::Phase::Active | plugin::Phase::Unloading)
+        )
+}
 fn attachment_live(scope: &mut v8::PinScope, token: u64) -> bool {
+    attachment_matches(scope, token, consumer_usable)
+}
+fn attachment_matches(
+    scope: &mut v8::PinScope,
+    token: u64,
+    consumer_ok: fn(&str, u64) -> bool,
+) -> bool {
     let Some((consumer, generation)) = origin(scope) else {
         return false;
     };
@@ -58,7 +76,7 @@ fn attachment_live(scope: &mut v8::PinScope, token: u64) -> bool {
     snapshot.is_some_and(|(owner, owner_gen, name, provider)| {
         owner == consumer
             && owner_gen == generation
-            && active(&consumer, generation)
+            && consumer_ok(&consumer, generation)
             && active(&provider.0, provider.1)
             && IFACES.with(|r| r.borrow().producer_of(&name)) == Some(provider)
     })
@@ -66,7 +84,7 @@ fn attachment_live(scope: &mut v8::PinScope, token: u64) -> bool {
 fn authorized(scope: &mut v8::PinScope, token: u64) -> bool {
     ATTACH_AUTH.with(|a| a.get() == Some(token))
         && interop_wire::at_interop_boundary()
-        && attachment_live(scope, token)
+        && attachment_matches(scope, token, active)
 }
 
 /// Protocol 2 raw natives obey the same registration boundary as the public API.

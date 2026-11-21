@@ -87,9 +87,12 @@ def rust_const(name):
 MAX_GP_ARGS = rust_const('MAX_GP_ARGS')
 MAX_FP_ARGS = rust_const('MAX_FP_ARGS')
 
-m = re.search(r'const PLATFORM: &str = "([^"]+)"', CORE_SRC)
+# The descriptors validated here are the SysV (Linux) ones, so the key is core's non-Windows
+# GAMEDATA_PLATFORM (core/src/lib.rs); gamedata_calls.rs's PLATFORM aliases it.
+LIB_SRC = pathlib.Path('core/src/lib.rs').read_text()
+m = re.search(r'#\[cfg\(not\(windows\)\)\]\s*pub\(crate\) const GAMEDATA_PLATFORM: &str = "([^"]+)"', LIB_SRC)
 if not m:
-    bad.append('cannot find `const PLATFORM` in core/src/gamedata_calls.rs')
+    bad.append('cannot find the non-Windows `const GAMEDATA_PLATFORM` in core/src/lib.rs')
 PLATFORM = m.group(1) if m else None
 
 m = re.search(r'kVocabulary\[\]\s*=\s*\{([^}]*)\}', VALIDATE_SRC)

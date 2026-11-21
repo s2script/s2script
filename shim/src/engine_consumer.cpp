@@ -1,4 +1,5 @@
 #include "engine_consumer.h"
+#include "platform.h"
 
 #include <algorithm>
 #include <limits>
@@ -58,7 +59,7 @@ bool ResolveEngineTarget(const char* kind, const char* module, const char* patte
         return false;
     }
     recipe.use = s2resolve::TargetUse::Executable;
-    recipe.module = module && module[0] ? module : "libserver.so";
+    recipe.module = module && module[0] ? module : S2_MODULE("server");
     recipe.pattern = text(pattern);
     recipe.strategy = strategy && strategy[0] ? strategy : "direct";
     recipe.class_name = text(class_name);
