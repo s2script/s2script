@@ -203,6 +203,13 @@ test("auto shows a grenade count and picks up new weapons", () => {
   for (let i = 0; i < 4; i++) poll(m);
   assert.equal(m.text(2, "gk_wpn_s0_i0_ic"), ICON + "awp.svg");
   assert.equal(m.hidden(2, "gk_wpn_s0"), false);
+  // Icons are sized by CSS to their own shape: one width class per icon, the old one removed.
+  assert.equal(m.has(2, "gk_wpn_s0_i0_ic", "gk-ar-27"), true, "awp is 109.5 x 32");
+  assert.equal(m.has(2, "gk_wpn_s3_i1_ic", "gk-ar-6"), true, "hegrenade is 25 x 33");
+  pawn.weapons = [weapon(7, { clip: 30, reserve: 90, max: 30 }), glock, flash, he];
+  for (let i = 0; i < 4; i++) poll(m);
+  assert.equal(m.has(2, "gk_wpn_s0_i0_ic", "gk-ar-22"), true, "ak47 is 88.5 x 32");
+  assert.equal(m.has(2, "gk_wpn_s0_i0_ic", "gk-ar-27"), false);
 });
 
 test("auto hides the card while dead and shows it again on respawn", () => {

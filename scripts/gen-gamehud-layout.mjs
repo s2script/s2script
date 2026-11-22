@@ -64,7 +64,7 @@ export const SPEC = {
   // Weapon card rows, in CS2's slot-key order: primary, secondary, knife, grenades, other (C4 and the rest).
   // Each row holds up to `items` items (knife and Zeus share a row, grenades share a row) and a "+N"
   // label. An item is an icon, a label, or both.
-  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"], items: 4, iconHeight: 16, headIconHeight: 22 },
+  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"], items: 4, iconHeight: 16, headIconHeight: 22, aspect: [3, 28] },
 };
 const S = SPEC;
 
@@ -492,9 +492,12 @@ const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, she
 const css = [];
 css.push(`/* ---- GENERATED below this line by scripts/gen-gamehud-layout.mjs ---- */`);
 css.push(``);
-css.push(`/* Weapon icons: a fixed height, the width left to the image (Image takes no size attribute). */`);
-css.push(`.gk-wslot-ic { height: ${S.weapon.iconHeight}px; width: fit-children; }`);
-css.push(`.gk-wpn-icon { height: ${S.weapon.headIconHeight}px; width: fit-children; }`);
+css.push(`/* Weapon icons. A custom HUD Image takes no size attribute and CSS stretches the texture to the`);
+css.push(`   box, so the box keeps the icon's own shape: a fixed height, and a width the runtime picks per icon`);
+css.push(`   as gk-ar-<width/height in eighths> (gamekit-weapon.js ASPECT). Unlisted icons get a 2:1 box. */`);
+css.push(`.gk-wslot-ic { height: ${S.weapon.iconHeight}px; width: height-percentage(200%); }`);
+css.push(`.gk-wpn-icon { height: ${S.weapon.headIconHeight}px; width: height-percentage(200%); }`);
+for (let n = S.weapon.aspect[0]; n <= S.weapon.aspect[1]; n++) css.push(`.gk-wslot-ic.gk-ar-${n}, .gk-wpn-icon.gk-ar-${n} { width: height-percentage(${n * 12.5}%); }`);
 css.push(``);
 css.push(`/* Meter steps, shared with hudkit's s2script_hud.css: 0%..100% in 10% steps. */`);
 for (let i = 0; i <= 10; i++) css.push(`.s2-w${i} { width: ${i * 10}%; }`);
@@ -563,6 +566,7 @@ const descriptor = {
     edge: Object.keys(S.tones).map((t) => `gk-e-${t}`),
     state: ["s2-hide", "gk-sel", "gk-on", "gk-hl", "gk-grp", "gk-fade", "gk-new", "gk-mine", "gk-off", "gk-float", "s2-btn-disabled"],
     width: "s2-w0..s2-w10",
+    aspect: `gk-ar-${S.weapon.aspect[0]}..gk-ar-${S.weapon.aspect[1]}`,
   },
   hud: describe(hud, "s2script_gamehud.xml"),
   panels: describe(pn, "s2script_gamepanels.xml"),

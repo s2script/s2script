@@ -86,7 +86,11 @@
         ],
         "items": 4,
         "iconHeight": 16,
-        "headIconHeight": 22
+        "headIconHeight": 22,
+        "aspect": [
+          3,
+          28
+        ]
       }
     },
     "classes": {
@@ -175,7 +179,8 @@
         "gk-float",
         "s2-btn-disabled"
       ],
-      "width": "s2-w0..s2-w10"
+      "width": "s2-w0..s2-w10",
+      "aspect": "gk-ar-3..gk-ar-28"
     },
     "hud": {
       "resource": "panorama/layout/custom_game/s2script_gamehud.xml",

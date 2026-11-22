@@ -1497,9 +1497,37 @@
 
 /* ---- GENERATED below this line by scripts/gen-gamehud-layout.mjs ---- */
 
-/* Weapon icons: a fixed height, the width left to the image (Image takes no size attribute). */
-.gk-wslot-ic { height: 16px; width: fit-children; }
-.gk-wpn-icon { height: 22px; width: fit-children; }
+/* Weapon icons. A custom HUD Image takes no size attribute and CSS stretches the texture to the
+   box, so the box keeps the icon's own shape: a fixed height, and a width the runtime picks per icon
+   as gk-ar-<width/height in eighths> (gamekit-weapon.js ASPECT). Unlisted icons get a 2:1 box. */
+.gk-wslot-ic { height: 16px; width: height-percentage(200%); }
+.gk-wpn-icon { height: 22px; width: height-percentage(200%); }
+.gk-wslot-ic.gk-ar-3, .gk-wpn-icon.gk-ar-3 { width: height-percentage(37.5%); }
+.gk-wslot-ic.gk-ar-4, .gk-wpn-icon.gk-ar-4 { width: height-percentage(50%); }
+.gk-wslot-ic.gk-ar-5, .gk-wpn-icon.gk-ar-5 { width: height-percentage(62.5%); }
+.gk-wslot-ic.gk-ar-6, .gk-wpn-icon.gk-ar-6 { width: height-percentage(75%); }
+.gk-wslot-ic.gk-ar-7, .gk-wpn-icon.gk-ar-7 { width: height-percentage(87.5%); }
+.gk-wslot-ic.gk-ar-8, .gk-wpn-icon.gk-ar-8 { width: height-percentage(100%); }
+.gk-wslot-ic.gk-ar-9, .gk-wpn-icon.gk-ar-9 { width: height-percentage(112.5%); }
+.gk-wslot-ic.gk-ar-10, .gk-wpn-icon.gk-ar-10 { width: height-percentage(125%); }
+.gk-wslot-ic.gk-ar-11, .gk-wpn-icon.gk-ar-11 { width: height-percentage(137.5%); }
+.gk-wslot-ic.gk-ar-12, .gk-wpn-icon.gk-ar-12 { width: height-percentage(150%); }
+.gk-wslot-ic.gk-ar-13, .gk-wpn-icon.gk-ar-13 { width: height-percentage(162.5%); }
+.gk-wslot-ic.gk-ar-14, .gk-wpn-icon.gk-ar-14 { width: height-percentage(175%); }
+.gk-wslot-ic.gk-ar-15, .gk-wpn-icon.gk-ar-15 { width: height-percentage(187.5%); }
+.gk-wslot-ic.gk-ar-16, .gk-wpn-icon.gk-ar-16 { width: height-percentage(200%); }
+.gk-wslot-ic.gk-ar-17, .gk-wpn-icon.gk-ar-17 { width: height-percentage(212.5%); }
+.gk-wslot-ic.gk-ar-18, .gk-wpn-icon.gk-ar-18 { width: height-percentage(225%); }
+.gk-wslot-ic.gk-ar-19, .gk-wpn-icon.gk-ar-19 { width: height-percentage(237.5%); }
+.gk-wslot-ic.gk-ar-20, .gk-wpn-icon.gk-ar-20 { width: height-percentage(250%); }
+.gk-wslot-ic.gk-ar-21, .gk-wpn-icon.gk-ar-21 { width: height-percentage(262.5%); }
+.gk-wslot-ic.gk-ar-22, .gk-wpn-icon.gk-ar-22 { width: height-percentage(275%); }
+.gk-wslot-ic.gk-ar-23, .gk-wpn-icon.gk-ar-23 { width: height-percentage(287.5%); }
+.gk-wslot-ic.gk-ar-24, .gk-wpn-icon.gk-ar-24 { width: height-percentage(300%); }
+.gk-wslot-ic.gk-ar-25, .gk-wpn-icon.gk-ar-25 { width: height-percentage(312.5%); }
+.gk-wslot-ic.gk-ar-26, .gk-wpn-icon.gk-ar-26 { width: height-percentage(325%); }
+.gk-wslot-ic.gk-ar-27, .gk-wpn-icon.gk-ar-27 { width: height-percentage(337.5%); }
+.gk-wslot-ic.gk-ar-28, .gk-wpn-icon.gk-ar-28 { width: height-percentage(350%); }
 
 /* Meter steps, shared with hudkit's s2script_hud.css: 0%..100% in 10% steps. */
 .s2-w0 { width: 0%; }
