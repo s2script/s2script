@@ -59,7 +59,7 @@
 				<Panel id="gk_kf0" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf0_tag" class="gk-kill-tag" text="{s:gk_kf0_tag}" />
 					<Label id="gk_kf0_a" class="gk-kill-name" text="{s:gk_kf0_a}" />
-					<Image id="gk_kf0_wi" class="gk-kill-icon" src="{s:gk_kf0_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf0_wi" class="gk-kill-icon" src="{s:gk_kf0_wi}" />
 					<Label id="gk_kf0_w" class="gk-kill-wtext" text="{s:gk_kf0_w}" />
 					<Panel id="gk_kf0_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf0_v" class="gk-kill-name" text="{s:gk_kf0_v}" />
@@ -67,7 +67,7 @@
 				<Panel id="gk_kf1" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf1_tag" class="gk-kill-tag" text="{s:gk_kf1_tag}" />
 					<Label id="gk_kf1_a" class="gk-kill-name" text="{s:gk_kf1_a}" />
-					<Image id="gk_kf1_wi" class="gk-kill-icon" src="{s:gk_kf1_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf1_wi" class="gk-kill-icon" src="{s:gk_kf1_wi}" />
 					<Label id="gk_kf1_w" class="gk-kill-wtext" text="{s:gk_kf1_w}" />
 					<Panel id="gk_kf1_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf1_v" class="gk-kill-name" text="{s:gk_kf1_v}" />
@@ -75,7 +75,7 @@
 				<Panel id="gk_kf2" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf2_tag" class="gk-kill-tag" text="{s:gk_kf2_tag}" />
 					<Label id="gk_kf2_a" class="gk-kill-name" text="{s:gk_kf2_a}" />
-					<Image id="gk_kf2_wi" class="gk-kill-icon" src="{s:gk_kf2_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf2_wi" class="gk-kill-icon" src="{s:gk_kf2_wi}" />
 					<Label id="gk_kf2_w" class="gk-kill-wtext" text="{s:gk_kf2_w}" />
 					<Panel id="gk_kf2_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf2_v" class="gk-kill-name" text="{s:gk_kf2_v}" />
@@ -83,7 +83,7 @@
 				<Panel id="gk_kf3" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf3_tag" class="gk-kill-tag" text="{s:gk_kf3_tag}" />
 					<Label id="gk_kf3_a" class="gk-kill-name" text="{s:gk_kf3_a}" />
-					<Image id="gk_kf3_wi" class="gk-kill-icon" src="{s:gk_kf3_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf3_wi" class="gk-kill-icon" src="{s:gk_kf3_wi}" />
 					<Label id="gk_kf3_w" class="gk-kill-wtext" text="{s:gk_kf3_w}" />
 					<Panel id="gk_kf3_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf3_v" class="gk-kill-name" text="{s:gk_kf3_v}" />
@@ -91,7 +91,7 @@
 				<Panel id="gk_kf4" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf4_tag" class="gk-kill-tag" text="{s:gk_kf4_tag}" />
 					<Label id="gk_kf4_a" class="gk-kill-name" text="{s:gk_kf4_a}" />
-					<Image id="gk_kf4_wi" class="gk-kill-icon" src="{s:gk_kf4_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf4_wi" class="gk-kill-icon" src="{s:gk_kf4_wi}" />
 					<Label id="gk_kf4_w" class="gk-kill-wtext" text="{s:gk_kf4_w}" />
 					<Panel id="gk_kf4_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf4_v" class="gk-kill-name" text="{s:gk_kf4_v}" />
@@ -99,7 +99,7 @@
 				<Panel id="gk_kf5" class="gk-kill gk-e-grey s2-hide">
 					<Label id="gk_kf5_tag" class="gk-kill-tag" text="{s:gk_kf5_tag}" />
 					<Label id="gk_kf5_a" class="gk-kill-name" text="{s:gk_kf5_a}" />
-					<Image id="gk_kf5_wi" class="gk-kill-icon" src="{s:gk_kf5_wi}" scaling="stretch-to-fit-preserve-aspect" />
+					<Image id="gk_kf5_wi" class="gk-kill-icon" src="{s:gk_kf5_wi}" />
 					<Label id="gk_kf5_w" class="gk-kill-wtext" text="{s:gk_kf5_w}" />
 					<Panel id="gk_kf5_hs" class="gk-kill-hs s2-hide" />
 					<Label id="gk_kf5_v" class="gk-kill-name" text="{s:gk_kf5_v}" />
@@ -134,19 +134,19 @@
 						<Label class="gk-wslot-k" text="1" />
 						<Panel class="gk-wslot-items">
 							<Panel id="gk_wpn_s0_i0" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s0_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i0_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s0_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i0_ic}" />
 								<Label id="gk_wpn_s0_i0_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s0_i0_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s0_i1" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s0_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i1_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s0_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i1_ic}" />
 								<Label id="gk_wpn_s0_i1_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s0_i1_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s0_i2" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s0_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i2_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s0_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i2_ic}" />
 								<Label id="gk_wpn_s0_i2_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s0_i2_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s0_i3" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s0_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i3_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s0_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s0_i3_ic}" />
 								<Label id="gk_wpn_s0_i3_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s0_i3_t}" />
 							</Panel>
 							<Label id="gk_wpn_s0_more" class="gk-wslot-t gk-wslot-more s2-hide" text="{s:gk_wpn_s0_more}" />
@@ -156,19 +156,19 @@
 						<Label class="gk-wslot-k" text="2" />
 						<Panel class="gk-wslot-items">
 							<Panel id="gk_wpn_s1_i0" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s1_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i0_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s1_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i0_ic}" />
 								<Label id="gk_wpn_s1_i0_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s1_i0_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s1_i1" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s1_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i1_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s1_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i1_ic}" />
 								<Label id="gk_wpn_s1_i1_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s1_i1_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s1_i2" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s1_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i2_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s1_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i2_ic}" />
 								<Label id="gk_wpn_s1_i2_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s1_i2_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s1_i3" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s1_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i3_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s1_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s1_i3_ic}" />
 								<Label id="gk_wpn_s1_i3_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s1_i3_t}" />
 							</Panel>
 							<Label id="gk_wpn_s1_more" class="gk-wslot-t gk-wslot-more s2-hide" text="{s:gk_wpn_s1_more}" />
@@ -178,19 +178,19 @@
 						<Label class="gk-wslot-k" text="3" />
 						<Panel class="gk-wslot-items">
 							<Panel id="gk_wpn_s2_i0" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s2_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i0_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s2_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i0_ic}" />
 								<Label id="gk_wpn_s2_i0_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s2_i0_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s2_i1" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s2_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i1_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s2_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i1_ic}" />
 								<Label id="gk_wpn_s2_i1_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s2_i1_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s2_i2" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s2_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i2_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s2_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i2_ic}" />
 								<Label id="gk_wpn_s2_i2_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s2_i2_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s2_i3" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s2_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i3_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s2_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s2_i3_ic}" />
 								<Label id="gk_wpn_s2_i3_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s2_i3_t}" />
 							</Panel>
 							<Label id="gk_wpn_s2_more" class="gk-wslot-t gk-wslot-more s2-hide" text="{s:gk_wpn_s2_more}" />
@@ -200,19 +200,19 @@
 						<Label class="gk-wslot-k" text="4" />
 						<Panel class="gk-wslot-items">
 							<Panel id="gk_wpn_s3_i0" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s3_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i0_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s3_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i0_ic}" />
 								<Label id="gk_wpn_s3_i0_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s3_i0_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s3_i1" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s3_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i1_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s3_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i1_ic}" />
 								<Label id="gk_wpn_s3_i1_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s3_i1_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s3_i2" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s3_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i2_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s3_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i2_ic}" />
 								<Label id="gk_wpn_s3_i2_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s3_i2_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s3_i3" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s3_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i3_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s3_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s3_i3_ic}" />
 								<Label id="gk_wpn_s3_i3_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s3_i3_t}" />
 							</Panel>
 							<Label id="gk_wpn_s3_more" class="gk-wslot-t gk-wslot-more s2-hide" text="{s:gk_wpn_s3_more}" />
@@ -222,19 +222,19 @@
 						<Label class="gk-wslot-k" text="5" />
 						<Panel class="gk-wslot-items">
 							<Panel id="gk_wpn_s4_i0" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s4_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i0_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s4_i0_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i0_ic}" />
 								<Label id="gk_wpn_s4_i0_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s4_i0_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s4_i1" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s4_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i1_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s4_i1_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i1_ic}" />
 								<Label id="gk_wpn_s4_i1_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s4_i1_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s4_i2" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s4_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i2_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s4_i2_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i2_ic}" />
 								<Label id="gk_wpn_s4_i2_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s4_i2_t}" />
 							</Panel>
 							<Panel id="gk_wpn_s4_i3" class="gk-wslot-i s2-hide">
-								<Image id="gk_wpn_s4_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i3_ic}" textureheight="16" texturewidth="-1" />
+								<Image id="gk_wpn_s4_i3_ic" class="gk-wslot-ic s2-hide" src="{s:gk_wpn_s4_i3_ic}" />
 								<Label id="gk_wpn_s4_i3_t" class="gk-wslot-t s2-hide" text="{s:gk_wpn_s4_i3_t}" />
 							</Panel>
 							<Label id="gk_wpn_s4_more" class="gk-wslot-t gk-wslot-more s2-hide" text="{s:gk_wpn_s4_more}" />
@@ -242,7 +242,7 @@
 					</Panel>
 				</Panel>
 				<Panel class="gk-wpn-hd">
-					<Image id="gk_wpn_icon" class="gk-wpn-icon s2-hide" src="{s:gk_wpn_icon}" textureheight="22" texturewidth="-1" />
+					<Image id="gk_wpn_icon" class="gk-wpn-icon s2-hide" src="{s:gk_wpn_icon}" />
 					<Label id="gk_wpn_name" class="gk-wpn-name" text="{s:gk_wpn_name}" />
 					<Label id="gk_wpn_count" class="gk-wpn-count s2-hide" text="{s:gk_wpn_count}" />
 				</Panel>

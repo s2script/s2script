@@ -1497,6 +1497,10 @@
 
 /* ---- GENERATED below this line by scripts/gen-gamehud-layout.mjs ---- */
 
+/* Weapon icons: a fixed height, the width left to the image (Image takes no size attribute). */
+.gk-wslot-ic { height: 16px; width: fit-children; }
+.gk-wpn-icon { height: 22px; width: fit-children; }
+
 /* Meter steps, shared with hudkit's s2script_hud.css: 0%..100% in 10% steps. */
 .s2-w0 { width: 0%; }
 .s2-w1 { width: 10%; }
