@@ -24,9 +24,14 @@ name: cs2-update
 # s2sdk against the new one; its patch goes in the report and the issue, so the Claude session
 # applies it and only works on what gdgen listed as unresolved.
 #
+# The build is read straight from Steam's PICS (tools/gamedata-offline/steam-build.cjs, anonymous
+# login); api.steamcmd.net is only the fallback, because its cache can lag a new build by hours.
+#
 # The previous build's modules come from this workflow's own cache (saved when that build was
-# new). If the cache expired, the baseline manifest is downloaded instead; if that fails too the
-# run still checks signatures and pins, just without the old-vs-new diffs.
+# new). Steam does not serve a superseded manifest to anonymous logins, so that cache is the only
+# copy: once a day a scheduled run restores it, which keeps GitHub from evicting it (7 days unused).
+# If it is gone anyway, the issue says the run is INCOMPLETE (no old-vs-new diffs, no gdgen), never
+# "clean"; then run tools/gamedata-offline/update-day.sh by hand against a saved copy.
 #
 # Steam's binaries never leave the runner: they live only in the Actions cache. The uploaded
 # artifact holds the report and the regenerated schema catalog, which are our own data.
@@ -73,6 +78,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Poll Steam for the public build
         id: poll
         env:
@@ -83,7 +92,12 @@ jobs:
           INPUT_FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          if info=$(curl -fsS --retry 4 --retry-delay 15 https://api.steamcmd.net/v1/info/730); then
+          npm install --silent --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/steam" steam-user@5.3.0 >/dev/null 2>&1 || true
+          if pics=$(node tools/gamedata-offline/steam-build.cjs "$RUNNER_TEMP/steam/node_modules" 730 "$DEPOT" public); then
+            read -r buildid manifest updated <<<"$pics"
+            echo "Steam PICS: build $buildid manifest $manifest"
+          elif info=$(curl -fsS --retry 4 --retry-delay 15 https://api.steamcmd.net/v1/info/730); then
+            echo "::warning::Steam PICS read failed; using api.steamcmd.net, which can lag a new build."
             read -r buildid manifest updated < <(python3 -I -c '
           import json, sys
           d = json.loads(sys.stdin.read())["data"]["730"]["depots"]
@@ -121,9 +135,12 @@ jobs:
             echo "base_build=$base_build"
           } >> "$GITHUB_OUTPUT"
           run=true
+          warm=false
           if [ "$manifest" = "$base_manifest" ]; then
             echo "Baseline is current."
             run=false
+            # Once a day, touch the baseline build's cache so GitHub never evicts the only copy.
+            if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$((10#$(date -u +%H%M)))" -lt 15 ]; then warm=true; fi
           elif [ "$INPUT_FORCE" != "true" ]; then
             existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label cs2-update --state all \
               --search "\"manifest $manifest\" in:body" --json number --jq '.[0].number // empty')
@@ -133,6 +150,14 @@ jobs:
             fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "warm=$warm" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the baseline build's modules cached
+        if: steps.poll.outputs.warm == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: depot/cur
+          key: cs2-depot-${{ env.DEPOT }}-${{ steps.poll.outputs.base_manifest }}
 
       - name: Restore the baseline build's modules
         if: steps.poll.outputs.run == 'true'
@@ -249,7 +274,12 @@ jobs:
         run: |
           set -euo pipefail
           case "${CODE:-2}" in
-            0) verdict='clean: no signature, pin or tracked vtable change'; tag='clean' ;;
+            0) if [ "${OLD_FROM:-none}" = none ]; then
+                 verdict='INCOMPLETE: the previous build was not available, so nothing was compared old-vs-new and gdgen did not run. Signatures and pins resolve on the new build, but run update-day.sh by hand against a saved copy of the previous build'
+                 tag='incomplete'
+               else
+                 verdict='clean: no signature, pin or tracked vtable change'; tag='clean'
+               fi ;;
             1) verdict='needs attention'; tag='needs attention' ;;
             *) verdict='the checker failed, see the run log'; tag='checker failed' ;;
           esac
@@ -263,6 +293,11 @@ jobs:
             if [ -s report/gamedata.patch ]; then
               echo "gdgen regenerated part of the gamedata: \`git apply\` the patch below first (it is also \`gamedata.patch\` in the artifact),"
               echo "then fix only what the report still lists."
+              echo
+            fi
+            if [ "$tag" = incomplete ]; then
+              echo "**Do not bump the baseline from this run.** First run \`tools/gamedata-offline/update-day.sh --new <this build> --old <a saved copy of build $BASE_BUILD>\` with \`GDGEN\` set;"
+              echo "the update-day Claude task is not started for an incomplete run."
               echo
             fi
             echo "To close this out: fix whatever the report flags, regenerate the schema catalog"
@@ -293,13 +328,15 @@ jobs:
             --title "CS2 update: build $BUILDID ($tag)" --body-file issue.md)
           echo "$url"
           echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       # Wake the update-day Claude scheduled task through its API trigger (a webhook). The run is a
       # normal Claude Code cloud session on the owner's account (subscription usage, visible in the
       # Claude app); it re-downloads the modules itself, fixes what the issue reports and opens the
       # draft PR. Without the two secrets the issue is the hand-off.
       - name: Wake Claude
-        if: steps.issue.outputs.number != '' && steps.check.outputs.code != '' && steps.check.outputs.code != '2'
+        # Not for an incomplete run: with no previous build there is nothing for the session to finish.
+        if: steps.issue.outputs.number != '' && steps.issue.outputs.tag != 'incomplete' && steps.check.outputs.code != '' && steps.check.outputs.code != '2'
         env:
           FIRE_URL: ${{ secrets.CLAUDE_FIRE_URL }}
           FIRE_TOKEN: ${{ secrets.CLAUDE_FIRE_TOKEN }}
