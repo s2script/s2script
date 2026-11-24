@@ -18,7 +18,7 @@
   },
   "scripts": {
     "changeset": "changeset",
-    "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts",
+    "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts && node scripts/progress.mjs fold",
     "release": "changeset publish"
   },
   "devDependencies": {

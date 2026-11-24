@@ -29,6 +29,8 @@ on:
       - 'tsconfig.base.json'
       - '.gitignore'
       - '.github/workflows/ci-js.yml'
+      - 'docs/progress/**'
+      - 'docs/PROGRESS.md'
   push:
     branches: [main]
     paths:
@@ -46,6 +48,8 @@ on:
       - 'tsconfig.base.json'
       - '.gitignore'
       - '.github/workflows/ci-js.yml'
+      - 'docs/progress/**'
+      - 'docs/PROGRESS.md'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
