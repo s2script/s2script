@@ -69,6 +69,26 @@
     61: "usp_silencer", 63: "cz75a", 64: "revolver"
   };
   var ICON_BASE = "file://{images}/icons/equipment/";
+  // Each icon's width over its height, in eighths (the viewBox of the game's own SVG, CS2 build
+  // 11259529). An Image takes no size attribute on a custom HUD, so CSS sizes it: a fixed height and
+  // a width class gk-ar-<eighths> (height-percentage). An icon not listed here (a gamemode's own)
+  // gets the default 2:1 box.
+  var ASPECT = {
+    deagle: 13, elite: 17, fiveseven: 10, glock: 11, ak47: 22, aug: 19, awp: 27, famas: 19,
+    g3sg1: 23, galilar: 23, m249: 24, m4a1: 20, mac10: 11, p90: 17, mp5sd: 19, ump45: 21,
+    xm1014: 24, bizon: 22, mag7: 17, negev: 20, sawedoff: 21, tec9: 13, taser: 10, hkp2000: 8,
+    mp7: 12, mp9: 18, nova: 25, p250: 9, scar20: 24, sg556: 22, ssg08: 25, knifegg: 24,
+    knife: 19, flashbang: 8, hegrenade: 6, smokegrenade: 4, molotov: 6, decoy: 8, incgrenade: 4, c4: 8,
+    healthshot: 11, knife_t: 20, m4a1_silencer: 24, usp_silencer: 17, cz75a: 12, revolver: 13
+  };
+  var ASPECT_MIN = 3, ASPECT_MAX = 28;
+
+  /** The width class for an icon path, or null for the default box. */
+  function aspectClass(path) {
+    if (!path || path.indexOf(ICON_BASE) !== 0) return null;
+    var n = ASPECT[path.slice(ICON_BASE.length).replace(/\.svg$/, "")];
+    return n === undefined ? null : "gk-ar-" + Math.max(ASPECT_MIN, Math.min(ASPECT_MAX, n));
+  }
 
   function itemIcon(def) {
     var n = ICONS[def] || (def >= 500 && def < 600 ? "knife" : null);
@@ -213,7 +233,10 @@
         note(I.setText(slot, "gk_wpn_name", v.name));
       }
       if (full || v.icon !== last.icon) {
-        if (v.icon) note(I.setRaw(slot, "gk_wpn_icon", v.icon));
+        if (v.icon) {
+          note(I.swap(slot, "gk_wpn_icon", "aspect", aspectClass(v.icon)));
+          note(I.setRaw(slot, "gk_wpn_icon", v.icon));
+        }
         note(I.setClass(slot, "gk_wpn_icon", HIDE, !v.icon));
       }
       if (full || v.count !== last.count) {
@@ -261,7 +284,10 @@
               if (hadT === undefined || (item.t === null) !== (hadT === null)) note(I.setClass(slot, cell + "_t", HIDE, item.t === null));
             }
             if (item.ic !== hadIc) {
-              if (item.ic !== null) note(I.setRaw(slot, cell + "_ic", item.ic));
+              if (item.ic !== null) {
+                note(I.swap(slot, cell + "_ic", "aspect", aspectClass(item.ic)));
+                note(I.setRaw(slot, cell + "_ic", item.ic));
+              }
               if (hadIc === undefined || (item.ic === null) !== (hadIc === null)) note(I.setClass(slot, cell + "_ic", HIDE, item.ic === null));
             }
           }

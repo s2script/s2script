@@ -77,6 +77,10 @@ bash scripts/check-cs2-adapters-test.sh
 echo "== check-modals-markup-sync.sh (MODALS matches the s2_m* trees the layout ships) =="
 bash scripts/check-modals-markup-sync.sh
 
+echo "== check-custom-hud-layout (every workshop layout passes CS2's CustomHud whitelist) =="
+node --test scripts/check-custom-hud-layout.test.mjs
+node scripts/check-custom-hud-layout.mjs
+
 echo "== check-colors-test.sh (colour-tag expander) =="
 bash scripts/check-colors-test.sh
 

@@ -64,7 +64,7 @@ export const SPEC = {
   // Weapon card rows, in CS2's slot-key order: primary, secondary, knife, grenades, other (C4 and the rest).
   // Each row holds up to `items` items (knife and Zeus share a row, grenades share a row) and a "+N"
   // label. An item is an icon, a label, or both.
-  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"], items: 4, iconHeight: 16, headIconHeight: 22 },
+  weapon: { slots: ["primary", "secondary", "knife", "grenades", "other"], items: 4, iconHeight: 16, headIconHeight: 22, aspect: [3, 28] },
 };
 const S = SPEC;
 
@@ -82,10 +82,11 @@ function layoutBuilder(name) {
     // A Label with fixed text and no id: nothing for the server to drive.
     text: (d, cls, value) => st.lines.push(`${T(d)}<Label class="${cls}" text="${value}" />`),
     label: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Label id="${id}" class="${cls}" text="{s:${id}}" />`); return id; },
-    image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" scaling="stretch-to-fit-preserve-aspect" />`); return id; },
-    // An icon sized by its texture, not by CSS: a fixed height and a width that follows the image's
-    // own aspect (texturewidth -1). Both attributes are on CustomHud's Image whitelist.
-    icon: (d, id, cls, height) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" textureheight="${height}" texturewidth="-1" />`); return id; },
+    // CustomHud's validator rejects any attribute outside its per-tag list, and a rejected layout
+    // never loads (scripts/check-custom-hud-layout.mjs is the list, run in CI). On Image only id,
+    // class, hittest and src pass on the live client, so no scaling and no texture size: CSS sizes
+    // every image.
+    image: (d, id, cls) => { reg(id); st.vars.push(id); st.lines.push(`${T(d)}<Image id="${id}" class="${cls}" src="{s:${id}}" />`); return id; },
     button: (d, id, cls, kids) => { b.open(d, "Button", id, cls); st.buttons.push(id); kids(d + 1); b.close(d, "Button"); },
     meter: (d, meterName, fillId, trackCls, fillCls) => {
       b.open(d, "Panel", null, trackCls);
@@ -194,7 +195,7 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
     for (let j = 0; j < S.weapon.items; j++) {
       const c = `${r}_i${j}`;
       b.open(d + 4, "Panel", c, "gk-wslot-i s2-hide");
-      vars.push(b.icon(d + 5, `${c}_ic`, "gk-wslot-ic s2-hide", S.weapon.iconHeight));
+      vars.push(b.image(d + 5, `${c}_ic`, "gk-wslot-ic s2-hide"));
       vars.push(b.label(d + 5, `${c}_t`, "gk-wslot-t s2-hide"));
       b.close(d + 4, "Panel");
     }
@@ -205,7 +206,7 @@ const hudXml = wrap(hud, HEADER("in-round HUD (top rail, kill feed, status card,
   });
   b.close(d + 1, "Panel");
   b.open(d + 1, "Panel", null, "gk-wpn-hd");
-  b.icon(d + 2, "gk_wpn_icon", "gk-wpn-icon s2-hide", S.weapon.headIconHeight);
+  b.image(d + 2, "gk_wpn_icon", "gk-wpn-icon s2-hide");
   b.label(d + 2, "gk_wpn_name", "gk-wpn-name");
   b.label(d + 2, "gk_wpn_count", "gk-wpn-count s2-hide");
   b.close(d + 1, "Panel");
@@ -491,6 +492,13 @@ const panelsXml = wrap(pn, HEADER("panels (pop-up vote, drawer list, prompt, she
 const css = [];
 css.push(`/* ---- GENERATED below this line by scripts/gen-gamehud-layout.mjs ---- */`);
 css.push(``);
+css.push(`/* Weapon icons. A custom HUD Image takes no size attribute and CSS stretches the texture to the`);
+css.push(`   box, so the box keeps the icon's own shape: a fixed height, and a width the runtime picks per icon`);
+css.push(`   as gk-ar-<width/height in eighths> (gamekit-weapon.js ASPECT). Unlisted icons get a 2:1 box. */`);
+css.push(`.gk-wslot-ic { height: ${S.weapon.iconHeight}px; width: height-percentage(200%); }`);
+css.push(`.gk-wpn-icon { height: ${S.weapon.headIconHeight}px; width: height-percentage(200%); }`);
+for (let n = S.weapon.aspect[0]; n <= S.weapon.aspect[1]; n++) css.push(`.gk-wslot-ic.gk-ar-${n}, .gk-wpn-icon.gk-ar-${n} { width: height-percentage(${n * 12.5}%); }`);
+css.push(``);
 css.push(`/* Meter steps, shared with hudkit's s2script_hud.css: 0%..100% in 10% steps. */`);
 for (let i = 0; i <= 10; i++) css.push(`.s2-w${i} { width: ${i * 10}%; }`);
 css.push(``);
@@ -558,6 +566,7 @@ const descriptor = {
     edge: Object.keys(S.tones).map((t) => `gk-e-${t}`),
     state: ["s2-hide", "gk-sel", "gk-on", "gk-hl", "gk-grp", "gk-fade", "gk-new", "gk-mine", "gk-off", "gk-float", "s2-btn-disabled"],
     width: "s2-w0..s2-w10",
+    aspect: `gk-ar-${S.weapon.aspect[0]}..gk-ar-${S.weapon.aspect[1]}`,
   },
   hud: describe(hud, "s2script_gamehud.xml"),
   panels: describe(pn, "s2script_gamepanels.xml"),
