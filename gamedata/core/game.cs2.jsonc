@@ -168,8 +168,8 @@
     // and overloads are grouped in reverse (PostEventAbstract(int, const uint64*, ...) 15 -> 16).
     // The first live boot (Nov 21) read the same live slot counts for every interface it acquired
     // (all but ISource2GameEntities, IGameEventManager2 and CNetChan, which come later in boot).
-    "ISource2Server_vtableSize":                  { "linuxsteamrt64": 104, "win64": 103 },
-    "ISource2Server_GameFrame":                   { "linuxsteamrt64": 19, "win64": 19 },
+    "ISource2Server_vtableSize":                  { "linuxsteamrt64": 105, "win64": 104 },
+    "ISource2Server_GameFrame":                   { "linuxsteamrt64": 20, "win64": 20 },
     "ISource2ServerConfig_vtableSize":            { "linuxsteamrt64": 29, "win64": 29 },
     "ISource2ServerConfig_Shutdown":              { "linuxsteamrt64": 4, "win64": 4 },
     "ISource2ServerConfig_PreShutdown":           { "linuxsteamrt64": 5, "win64": 5 },
