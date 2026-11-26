@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 /// What distinguishes one shape from another. Everything a builder reads must be in the key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Shape {
+pub(crate) enum Shape {
     /// A callback's view of the native frame.
     Frame { binding: u64, post: bool, skipped: bool, authority: bool },
     /// A borrowed record position's fields.
@@ -26,13 +26,17 @@ pub(super) enum Shape {
     Cursor,
     /// What a package adapter's callback is handed: the frame view, the phase and the cursor.
     Facade { post: bool },
+    /// A gamedata-declared hook's argument view (`v8host::build_hook_view`). `layout` is a digest of
+    /// the param names and which are writable, so a redeclared hook never reuses an old shape. The
+    /// internal field holds the dispatch's epoch rather than a lease.
+    Hook { hook: i32, layout: u64 },
 }
 
 impl Shape {
     fn binding(&self) -> Option<u64> {
         match self {
             Shape::Frame { binding, .. } | Shape::Record { binding, .. } => Some(*binding),
-            Shape::Cursor | Shape::Facade { .. } => None,
+            Shape::Cursor | Shape::Facade { .. } | Shape::Hook { .. } => None,
         }
     }
     /// Internal fields of an instance: the lease, then whatever the shape's slot getters return.
@@ -89,12 +93,12 @@ pub(super) fn forget_binding(id: u64) {
 }
 
 #[cfg(test)]
-pub(super) fn cached() -> usize {
+pub(crate) fn cached() -> usize {
     SHAPES.with(|s| s.borrow().len())
 }
 
 /// A shape under construction.
-pub(super) struct Builder<'a, 's, 'i> {
+pub(crate) struct Builder<'a, 's, 'i> {
     scope: &'a mut v8::PinScope<'s, 'i>,
     instance: v8::Local<'s, v8::ObjectTemplate>,
     signature: v8::Local<'s, v8::Signature>,
@@ -120,7 +124,7 @@ impl<'s> Builder<'_, 's, '_> {
         template
     }
     /// A read-write accessor property. `data` reaches both callbacks as `args.data()`.
-    pub(super) fn accessor(
+    pub(crate) fn accessor(
         &mut self,
         name: &str,
         getter: impl v8::MapFnTo<v8::FunctionCallback>,
@@ -131,6 +135,18 @@ impl<'s> Builder<'_, 's, '_> {
         let getter = self.function(getter, Some(data));
         let setter = self.function(setter, Some(data));
         self.instance.set_accessor_property(key, Some(getter), Some(setter), FIXED | v8::PropertyAttribute::DONT_ENUM);
+        Ok(())
+    }
+    /// A read-only accessor property whose callback is handed `data`.
+    pub(crate) fn read_only(
+        &mut self,
+        name: &str,
+        getter: impl v8::MapFnTo<v8::FunctionCallback>,
+        data: v8::Local<'s, v8::Value>,
+    ) -> Result<(), String> {
+        let key = self.key(name)?;
+        let getter = self.function(getter, Some(data));
+        self.instance.set_accessor_property(key, Some(getter), None, FIXED | v8::PropertyAttribute::DONT_ENUM);
         Ok(())
     }
     /// A read-only accessor property.
@@ -166,7 +182,7 @@ impl<'s> Builder<'_, 's, '_> {
     }
     /// Callback data must be a primitive: a shape outlives every context, and an object (an array
     /// of selectors, say) would keep the context it was made in alive after its plugin unloads.
-    pub(super) fn integer(&mut self, value: i32) -> v8::Local<'s, v8::Value> {
+    pub(crate) fn integer(&mut self, value: i32) -> v8::Local<'s, v8::Value> {
         v8::Integer::new(self.scope, value).into()
     }
     pub(super) fn boolean(&mut self, value: bool) -> v8::Local<'s, v8::Primitive> {
@@ -176,7 +192,7 @@ impl<'s> Builder<'_, 's, '_> {
 
 /// A new instance of `shape` in the current context, bound to `lease`. `build` describes the shape
 /// and runs only the first time the shape is asked for.
-pub(super) fn instance<'s, 'i>(
+pub(crate) fn instance<'s, 'i>(
     scope: &mut v8::PinScope<'s, 'i>,
     shape: Shape,
     lease: u64,
@@ -226,7 +242,7 @@ fn illegal_constructor(scope: &mut v8::PinScope, _: v8::FunctionCallbackArgument
 
 /// The lease the receiver was stamped with. The signature guarantees the receiver is an instance of
 /// the shape the callback belongs to; anything else never reaches the callback.
-pub(super) fn lease_id(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> Result<u64, String> {
+pub(crate) fn lease_id(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> Result<u64, String> {
     let this = args.this();
     let field = this.get_internal_field(scope, 0).ok_or("invalid receiver")?;
     let value = v8::Local::<v8::Value>::try_from(field).map_err(|_| "invalid receiver")?;
