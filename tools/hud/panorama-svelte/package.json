@@ -1,0 +1,16 @@
+{
+  "name": "panorama-svelte-prototype",
+  "private": true,
+  "type": "module",
+  "description": "Prototype: author custom_hud_layout files as Svelte components and build them to CustomHud-valid XML + CSS.",
+  "scripts": {
+    "build": "node --conditions=svelte-custom-renderer src/build.mjs example/Hud.svelte out",
+    "test": "node --conditions=svelte-custom-renderer --test test/build.test.mjs",
+    "check": "svelte-check --tsconfig ./tsconfig.json --diagnostic-sources js,svelte"
+  },
+  "devDependencies": {
+    "svelte": "5.59.2",
+    "svelte-check": "^4.7.8",
+    "typescript": "^6.0.3"
+  }
+}

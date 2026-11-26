@@ -1,0 +1,10 @@
+{
+  "name": "panorama-preview-prototype",
+  "private": true,
+  "type": "module",
+  "description": "Prototype: lay out and paint a custom_hud_layout in a browser with Panorama's own layout rules.",
+  "scripts": {
+    "build": "node src/build-preview.mjs scenarios/gamehud.json out/gamehud.html",
+    "test": "node --test test/engine.test.mjs"
+  }
+}
