@@ -1,7 +1,8 @@
 # panorama-svelte (prototype)
 
 Author a `custom_hud_layout` as Svelte components and build it to the XML, CSS and manifest the
-workshop addon ships. Not wired into CI or the addon yet: this is a feasibility prototype.
+workshop addon ships. It sits one level below `tools/` because the plugin typecheck gate treats
+every `tools/*/package.json` as a plugin. Not wired into CI or the addon yet: this is a feasibility prototype.
 
 ```bash
 npm ci
