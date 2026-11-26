@@ -22,6 +22,13 @@ test("the example builds to whitelist-only markup", async () => {
   assert.doesNotMatch(r.xml, /<(?!\/?(root|styles|include|Panel|Label|Image|Button)\b)/);
 });
 
+test("scoped styles come out without :where()", async () => {
+  const r = await build(fx("Scoped.svelte"));
+  assert.match(r.css, /\.root\.svelte-[\w-]+ \.t\.svelte-[\w-]+ \{/);
+  assert.doesNotMatch(r.css, /:where\(/);
+  assert.match(checkCss(".a :where(.b) { color: #ffffff; }")[0], /syntax Panorama ignores/);
+});
+
 const rejects = [
   ["BadAttr.svelte", /disallowed attribute textureheight for panel type 'Image'/],
   ["BadTag.svelte", /<div> is not a CustomHud panel type/],

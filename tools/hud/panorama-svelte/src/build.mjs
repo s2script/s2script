@@ -42,7 +42,9 @@ export async function build(entry, { props = {} } = {}) {
       `${kw}${q}${pathToFileURL(compileFile(resolve(dirname(file), spec))).href}${q}`);
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, code);
-    if (result.css?.code) css.push({ file, code: result.css.code });
+    // Svelte scopes every selector after the first with :where(.svelte-hash) to keep specificity
+    // flat. Panorama has no :where(), so write the plain compound selector it stands for.
+    if (result.css?.code) css.push({ file, code: result.css.code.replace(/:where\((\.svelte-[\w-]+)\)/g, "$1") });
     return out;
   };
 

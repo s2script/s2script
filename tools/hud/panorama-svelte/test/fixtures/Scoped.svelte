@@ -3,6 +3,6 @@
 </hud-panel>
 <style>
   .root { flow-children: down; }
-  .t { font-size: 14px; }
+  .root .t { font-size: 14px; }
   :global(.s2-hide) { visibility: collapse; }
 </style>

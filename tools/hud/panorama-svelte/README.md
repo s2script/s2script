@@ -19,8 +19,10 @@ can render into any tree, not only the DOM. `src/renderer.mjs` is such a tree fo
 `src/build.mjs` compiles the components, mounts the entry once in Node, and writes the tree out.
 
 `{#each}` expands a pool at build time, components split a layout into files, props carry the
-numbers the runtime must agree with, and `<style>` blocks become the stylesheet (scoped classes
-work: Panorama matches `.a.svelte-hash` like any compound selector).
+numbers the runtime must agree with, and `<style>` blocks become the stylesheet. Scoped classes
+come out as plain compound selectors (`.a.svelte-hash`): Svelte's `:where(.svelte-hash)` wrapper,
+which Panorama does not have, is unwrapped by the build. Import kit components by their `.svelte`
+file; the build compiles `.svelte` imports only.
 
 ## What cannot be built
 
@@ -33,7 +35,7 @@ work: Panorama matches `.a.svelte-hash` like any compound selector).
 | A dialog variable not named after its panel id | serialiser |
 | More than 1024 ids in one layout | serialiser |
 | Loose text outside a Label, children under a Label or Image | serialiser |
-| CSS the client ignores (`display`, `flex`, `calc()`, `rgba()`, `:not()`, `@media`) | `src/css.mjs` |
+| CSS the client ignores (`display`, `flex`, `calc()`, `rgba()`, `:not()`, `:where()`, `@media`) | `src/css.mjs` |
 
 The whitelist is one table, `src/rules.mjs`.
 

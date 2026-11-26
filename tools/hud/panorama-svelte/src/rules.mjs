@@ -22,5 +22,5 @@ export const CSS_DEAD_PROPERTIES = new Set([
   "filter", "object-fit", "aspect-ratio", "clip-path", "mask", "pointer-events", "user-select", "mix-blend-mode",
 ]);
 export const CSS_DEAD_VALUES = [/\bcalc\(/, /\bvar\(/, /\brgba?\(/, /\bhsla?\(/];
-export const CSS_DEAD_SELECTORS = [/:not\(/, /::(before|after)/, /\[[^\]]+\]/, /:nth-of-type/];
+export const CSS_DEAD_SELECTORS = [/:not\(/, /:where\(/, /:is\(/, /:has\(/, /::(before|after)/, /\[[^\]]+\]/, /:nth-of-type/];
 export const CSS_DEAD_AT_RULES = ["@media", "@supports", "@container"];
