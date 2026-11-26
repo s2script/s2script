@@ -151,6 +151,12 @@ pub(crate) fn clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Context
     PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
 }
 
+/// The plugin's context as a handle in `scope`, without the `Global` clone a caller that only
+/// wants to enter it would make and drop.
+pub(crate) fn plugin_context_local<'s>(scope: &v8::PinScope<'s, '_, ()>, owner: &str) -> Option<v8::Local<'s, v8::Context>> {
+    PLUGINS.with(|p| p.borrow().get(owner).map(|pi| v8::Local::new(scope, &pi.context)))
+}
+
 static PLATFORM_INIT: Once = Once::new();
 /// The process's V8 platform, kept so the frame loop can run V8's posted foreground tasks
 /// (`gc_points`).
@@ -284,8 +290,8 @@ thread_local! {
     /// ALONGSIDE `HOST` for this task: the existing single-context path is untouched.  Dropped
     /// (per id in `dispose_plugin_context`, or all in `shutdown`) while the isolate is still alive
     /// — same discipline as the Jobs resolver map / `CONCOMMANDS`.
-    static PLUGINS: std::cell::RefCell<std::collections::HashMap<String, PluginInstance>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
+    static PLUGINS: std::cell::RefCell<crate::fasthash::FastMap<String, PluginInstance>>
+        = std::cell::RefCell::new(crate::fasthash::FastMap::default());
     /// Plugin registry (Task 2): generation counter + per-plugin teardown ledger, keyed by the
     /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
     static REGISTRY: std::cell::RefCell<plugin::Registry>
@@ -1637,7 +1643,7 @@ fn s2require(
                             pi.package_exports
                                 .iter()
                                 .find(|e| {
-                                    e.instance.package_owner.id == id
+                                    *e.instance.package_owner.id == *id
                                         && e.instance.parent.generation == generation
                                 })
                                 .and_then(|e| e.modules.get(&subpath))

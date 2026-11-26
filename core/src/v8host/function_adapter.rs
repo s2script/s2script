@@ -636,7 +636,7 @@ pub(super) fn instance(
             .ok_or("missing parent generation")?,
     )?;
     let parent = current_owner(scope)?;
-    if entered_owner(scope).as_ref().map(|(id, g)| (id.as_str(), *g)) != Some((parent.id.as_str(), parent.generation)) {
+    if entered_owner(scope).as_ref().map(|(id, g)| (id.as_str(), *g)) != Some((&*parent.id, parent.generation)) {
         return Err("package token used from another context".into());
     }
     let expected_id = data
@@ -650,7 +650,7 @@ pub(super) fn instance(
     if state == 2 {
         return Err("package instance revoked".into());
     }
-    if parent.generation != expected_parent || parent.id != expected_id {
+    if parent.generation != expected_parent || *parent.id != *expected_id {
         return Err("package token belongs to another parent generation".into());
     }
     let package = PACKAGES
@@ -1454,7 +1454,16 @@ impl Drop for LeaseGuard {
     }
 }
 fn lease(scope: &mut v8::PinScope, id: u64) -> Result<Lease, String> {
-    let owner = current_owner(scope)?;
+    // `current_owner`, compared in place: this runs on every field access of every hooked call.
+    let ctx = scope.get_current_context();
+    let plugin = ctx.get_slot::<PluginId>().ok_or("plugin context required")?;
+    let generation = ctx.get_slot::<InteropGeneration>().ok_or("context generation required")?.0;
+    if !owner_is_live(&plugin.0, generation) {
+        return Err("owner generation unavailable".into());
+    }
+    if plugin_phase(&plugin.0) == Some(plugin::Phase::Unloading) {
+        return Err("parent unloading".into());
+    }
     LEASES
         .with(|s| {
             s.borrow()
@@ -1462,7 +1471,9 @@ fn lease(scope: &mut v8::PinScope, id: u64) -> Result<Lease, String> {
                 .filter(|l| {
                     l.enabled
                         && l.id == id
-                        && l.owner == owner
+                        && l.owner.kind == OwnerKind::Plugin
+                        && l.owner.generation == generation
+                        && *l.owner.id == *plugin.0
                         && l.binding.is_live()
                         && (!l.binding.function.trusted() || registry::binding(l.binding.id,&l.binding.owner).is_ok())
                         && (!l.binding.function.trusted() || (l.map_epoch!=0 && l.map_epoch==crate::entity_live::map_epoch()))
@@ -1961,7 +1972,7 @@ fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) 
     // A callback's current context is its creation context, so a view moved into
     // another context would still name its owner; require the caller to be that owner.
     let owner=current_owner(scope)?;
-    if entered_owner(scope).as_ref().map(|(id,g)|(id.as_str(),*g))!=Some((owner.id.as_str(),owner.generation)) {
+    if entered_owner(scope).as_ref().map(|(id,g)|(id.as_str(),*g))!=Some((&*owner.id,owner.generation)) {
         return Err("record view used from another context".into());
     }
     Ok((lease(scope,id)?,selector,field))
@@ -2135,9 +2146,21 @@ fn view<'s>(
 fn delivery_key<'s>(
     scope: &mut v8::PinScope<'s, '_>,
 ) -> Result<v8::Local<'s, v8::Private>, String> {
-    let name = v8::String::new(scope, "s2script.function-copy.delivery.v1")
-        .ok_or("delivery key allocation")?;
-    Ok(v8::Private::for_api(scope, Some(name)))
+    leased::private(scope, "s2script.function-copy.delivery.v1")
+}
+/// `set_own` for a name the host spells itself: the key is made once, not per call.
+fn own<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<v8::Object>,
+    key: &'static str,
+    value: v8::Local<'s, v8::Value>,
+) -> Result<(), String> {
+    let key = leased::name(scope, key)?;
+    if object.create_data_property(scope, key.into(), value) == Some(true) {
+        Ok(())
+    } else {
+        Err("own data property creation failed".into())
+    }
 }
 
 fn decision(
@@ -2284,12 +2307,12 @@ fn js_cursor(
             l.dispatch.deliveries.borrow_mut().push(value.clone());
             let out = v8::Object::new(scope);
             let action = v8::Integer::new(scope, value.action);
-            set_own(scope, out, "action", action.into())?;
+            own(scope, out, "action", action.into())?;
             let original = match value.value {
                 Some(value) => projected_to_js(scope, value)?,
                 None => v8::undefined(scope).into(),
             };
-            set_own(scope, out, "returnValue", original)?;
+            own(scope, out, "returnValue", original)?;
             let lease_id = v8::BigInt::new_from_u64(scope, l.id);
             let index = v8::BigInt::new_from_u64(scope, delivery_index as u64 + 1);
             // Array construction initializes own elements directly; no prototype
@@ -2301,7 +2324,7 @@ fn js_cursor(
                 return Err("delivery lineage allocation".into());
             }
             let revision = v8::Number::new(scope, l.dispatch.revision.get() as f64);
-            set_own(scope, out, "frameRevision", revision.into())?;
+            own(scope, out, "frameRevision", revision.into())?;
             freeze_snapshot(scope, out)?;
             return Ok(out.into());
         }
@@ -2317,8 +2340,7 @@ fn invoke_wrapper(
     sub: &Subscription,
 ) -> Result<Decision, String> {
     let prior_revision = dispatch.revision.get();
-    let context = clone_plugin_context(&sub.owner.id).ok_or("subscriber context unavailable")?;
-    let context = v8::Local::new(parent, &context);
+    let context = plugin_context_local(parent, &sub.owner.id).ok_or("subscriber context unavailable")?;
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
@@ -2378,9 +2400,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
             value: None,
         });
     };
-    let context =
-        clone_plugin_context(&adapter.instance.parent.id).ok_or("adapter context unavailable")?;
-    let context = v8::Local::new(parent, &context);
+    let context = plugin_context_local(parent, &adapter.instance.parent.id).ok_or("adapter context unavailable")?;
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
@@ -2397,22 +2417,18 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         true,
         SubscriptionMode::for_phase(dispatch.frame.phase, false)?,
     )?;
-    let facade = v8::Object::new(&mut tc);
+    let post = dispatch.frame.phase == 1;
+    let facade = leased::instance(&mut tc, leased::Shape::Facade { post }, id, |shape| {
+        shape.slot("frame", 1)?;
+        let phase = shape.string(if post { "post" } else { "pre" })?;
+        shape.constant("phase", phase)?;
+        shape.slot("cursor", 2)
+    })?;
     let frame = view(&mut tc, &dispatch, &dispatch.binding, id)?;
-    set(&mut tc, facade, "frame", frame.into())?;
-    let phase = v8::String::new(
-        &mut tc,
-        if dispatch.frame.phase == 0 {
-            "pre"
-        } else {
-            "post"
-        },
-    )
-    .unwrap();
-    set(&mut tc, facade, "phase", phase.into())?;
+    leased::set_slot(facade, 1, frame.into())?;
     let cursor = leased::instance(&mut tc, leased::Shape::Cursor, id, |shape| shape.method("invokeNext", js_cursor))?;
     cursor.set_integrity_level(&mut tc, v8::IntegrityLevel::Frozen);
-    set(&mut tc, facade, "cursor", cursor.into())?;
+    leased::set_slot(facade, 2, cursor.into())?;
     facade.set_integrity_level(&mut tc, v8::IntegrityLevel::Frozen);
     let function = v8::Local::new(&mut tc, callback);
     let recv = v8::undefined(&mut tc);
@@ -2797,8 +2813,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             if parent.kind != OwnerKind::Plugin || !owner_is_live(&parent.id, parent.generation) {
                 return Err("dispatch parent generation unavailable".into());
             }
-            let context = clone_plugin_context(&parent.id).ok_or("dispatch context unavailable")?;
-            let context = v8::Local::new(&mut scope, &context);
+            let context = plugin_context_local(&mut scope, &parent.id).ok_or("dispatch context unavailable")?;
             if context.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation) {
                 return Err("dispatch context generation mismatch".into());
             }
@@ -2860,8 +2875,8 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
 pub(super) mod proof {
     use super::*;
     pub fn owner_resources(id: &str) -> (usize, usize) {
-        (ADAPTERS.with(|a| a.borrow().values().filter(|a| a.instance.parent.id == id).count()),
-         SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| s.owner.id == id).count()))
+        (ADAPTERS.with(|a| a.borrow().values().filter(|a| &*a.instance.parent.id == id).count()),
+         SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| &*s.owner.id == id).count()))
     }
     #[test]
     fn copied_v8_roundtrip_is_strict_and_immutable() {
@@ -3094,7 +3109,7 @@ pub(super) mod proof {
         use crate::engine_functions::{contract, overrides, tests};
         let host = HostPackageOwner::mint("@proof/copied-process").unwrap();
         let mut bundle = tests::fixture();
-        bundle["ownerId"] = host.key().id.clone().into();
+        bundle["ownerId"] = host.key().id.to_string().into();
         let f = &mut bundle["functions"][0];
         f["canonicalId"] = format!("{}::fire", host.key().id).into();
         f["requirement"] = "required".into();
@@ -4713,7 +4728,7 @@ pub(super) mod proof {
     pub fn provenance(owner: &str) -> (PackageInstanceKey, String) {
         ADAPTERS.with(|a| {
             let a = a.borrow();
-            let a = a.values().find(|a| a.instance.parent.id == owner).unwrap();
+            let a = a.values().find(|a| &*a.instance.parent.id == owner).unwrap();
             (a.instance.clone(), a.package.manifest.as_str().into())
         })
     }
@@ -5086,6 +5101,7 @@ pub(crate) mod scalar_transport_tests {
             register('proof.review.v1','{}',{{
                 pre(d){{while(d.cursor.invokeNext()!==null){{}}return 0;}},
                 post(d){{
+                    if(d.frame!==d.frame || d.cursor!==d.cursor || d.phase!=='post' || !Object.isFrozen(d) || !Object.isFrozen(d.cursor))throw Error('facade');
                     const next=d.cursor.invokeNext;let refused=false;
                     try{{next()}}catch(_){{refused=true}}
                     if(!refused)throw Error('detached cursor ran');
@@ -5116,15 +5132,15 @@ pub(crate) mod scalar_transport_tests {
             assert_eq!(close_frame(&info).output.bits, 7);
         };
         call();
-        // PRE frame, POST frame and the adapter's cursor.
-        assert_eq!(leased::cached(), 3);
+        // A frame view and an adapter facade for each phase, and the adapter's cursor.
+        assert_eq!(leased::cached(), 5);
         for _ in 0..50 {
             call();
         }
-        assert_eq!(leased::cached(), 3, "a later call built a shape again");
+        assert_eq!(leased::cached(), 5, "a later call built a shape again");
         eval_in_context("shapes", "if(seen.length!==102)throw Error(seen.length);").unwrap();
         unload_plugin("shapes");
-        assert_eq!(leased::cached(), 1, "a retired binding's shapes are dropped");
+        assert_eq!(leased::cached(), 3, "a retired binding's shapes are dropped");
         drop(package);
         set_engine_ops(None);
         shutdown();

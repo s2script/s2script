@@ -24,24 +24,63 @@ pub(super) enum Shape {
     Record { binding: u64, selector: i32 },
     /// The package adapter's subscriber cursor.
     Cursor,
+    /// What a package adapter's callback is handed: the frame view, the phase and the cursor.
+    Facade { post: bool },
 }
 
 impl Shape {
     fn binding(&self) -> Option<u64> {
         match self {
             Shape::Frame { binding, .. } | Shape::Record { binding, .. } => Some(*binding),
-            Shape::Cursor => None,
+            Shape::Cursor | Shape::Facade { .. } => None,
+        }
+    }
+    /// Internal fields of an instance: the lease, then whatever the shape's slot getters return.
+    fn fields(&self) -> usize {
+        match self {
+            Shape::Facade { .. } => 3,
+            _ => 1,
         }
     }
 }
 
+type Words = crate::fasthash::FastState;
+
 thread_local! {
-    static SHAPES: RefCell<HashMap<Shape, v8::Global<v8::FunctionTemplate>>> = RefCell::new(HashMap::new());
+    static SHAPES: RefCell<HashMap<Shape, v8::Global<v8::FunctionTemplate>, Words>> = RefCell::new(HashMap::default());
+    /// Property names and the delivery tag's private key, made once.
+    static NAMES: RefCell<HashMap<usize, v8::Global<v8::String>, Words>> = RefCell::new(HashMap::default());
+    static PRIVATES: RefCell<HashMap<usize, v8::Global<v8::Private>, Words>> = RefCell::new(HashMap::default());
+}
+
+/// `name` as an internalized string, made once per isolate. Keyed by the literal's address.
+pub(super) fn name<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str) -> Result<v8::Local<'s, v8::String>, String> {
+    let key = name.as_ptr() as usize;
+    if let Some(found) = NAMES.with(|n| n.borrow().get(&key).map(|g| v8::Local::new(scope, g))) {
+        return Ok(found);
+    }
+    let made = v8::String::new_from_utf8(scope, name.as_bytes(), v8::NewStringType::Internalized).ok_or("string allocation")?;
+    NAMES.with(|n| n.borrow_mut().insert(key, v8::Global::new(scope, made)));
+    Ok(made)
+}
+
+/// The API private symbol `name`, looked up once per isolate.
+pub(super) fn private<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str) -> Result<v8::Local<'s, v8::Private>, String> {
+    let key = name.as_ptr() as usize;
+    if let Some(found) = PRIVATES.with(|n| n.borrow().get(&key).map(|g| v8::Local::new(scope, g))) {
+        return Ok(found);
+    }
+    let text = v8::String::new(scope, name).ok_or("private key allocation")?;
+    let made = v8::Private::for_api(scope, Some(text));
+    PRIVATES.with(|n| n.borrow_mut().insert(key, v8::Global::new(scope, made)));
+    Ok(made)
 }
 
 /// Drop every cached shape. Runs before the isolate drops.
 pub(crate) fn reset() {
     SHAPES.with(|s| s.borrow_mut().clear());
+    NAMES.with(|n| n.borrow_mut().clear());
+    PRIVATES.with(|n| n.borrow_mut().clear());
 }
 
 /// Drop the shapes of a binding that is going away.
@@ -91,14 +130,14 @@ impl<'s> Builder<'_, 's, '_> {
         let key = self.key(name)?;
         let getter = self.function(getter, Some(data));
         let setter = self.function(setter, Some(data));
-        self.instance.set_accessor_property(key, Some(getter), Some(setter), FIXED);
+        self.instance.set_accessor_property(key, Some(getter), Some(setter), FIXED | v8::PropertyAttribute::DONT_ENUM);
         Ok(())
     }
     /// A read-only accessor property.
     pub(super) fn getter(&mut self, name: &str, getter: impl v8::MapFnTo<v8::FunctionCallback>) -> Result<(), String> {
         let key = self.key(name)?;
         let getter = self.function(getter, None);
-        self.instance.set_accessor_property(key, Some(getter), None, FIXED);
+        self.instance.set_accessor_property(key, Some(getter), None, FIXED | v8::PropertyAttribute::DONT_ENUM);
         Ok(())
     }
     /// A method, called as `view.name(...)`.
@@ -113,6 +152,17 @@ impl<'s> Builder<'_, 's, '_> {
         let key = self.key(name)?;
         self.instance.set_with_attr(key, value.into(), FIXED | v8::PropertyAttribute::READ_ONLY);
         Ok(())
+    }
+    /// A read-only property answering with the instance's internal field `slot` (see `set_slot`).
+    pub(super) fn slot(&mut self, name: &str, slot: i32) -> Result<(), String> {
+        let key = self.key(name)?;
+        let data = self.integer(slot);
+        let getter = self.function(js_slot, Some(data));
+        self.instance.set_accessor_property(key, Some(getter), None, FIXED);
+        Ok(())
+    }
+    pub(super) fn string(&mut self, value: &str) -> Result<v8::Local<'s, v8::Primitive>, String> {
+        Ok(v8::String::new(self.scope, value).ok_or("shape string allocation")?.into())
     }
     pub(super) fn integer(&mut self, value: i32) -> v8::Local<'s, v8::Value> {
         v8::Integer::new(self.scope, value).into()
@@ -135,13 +185,13 @@ pub(super) fn instance<'s, 'i>(
     lease: u64,
     build: impl FnOnce(&mut Builder<'_, 's, 'i>) -> Result<(), String>,
 ) -> Result<v8::Local<'s, v8::Object>, String> {
-    let cached = SHAPES.with(|s| s.borrow().get(&shape).cloned());
+    let cached = SHAPES.with(|s| s.borrow().get(&shape).map(|template| v8::Local::new(scope, template)));
     let template = match cached {
-        Some(template) => v8::Local::new(scope, &template),
+        Some(template) => template,
         None => {
             let template = v8::FunctionTemplate::builder(illegal_constructor).build(scope);
             let instance = template.instance_template(scope);
-            instance.set_internal_field_count(1);
+            instance.set_internal_field_count(shape.fields());
             let signature = v8::Signature::new(scope, template);
             build(&mut Builder { scope, instance, signature })?;
             SHAPES.with(|s| s.borrow_mut().insert(shape, v8::Global::new(scope, template)));
@@ -155,6 +205,22 @@ pub(super) fn instance<'s, 'i>(
         return Err("view lease slot".into());
     }
     Ok(object)
+}
+
+/// Fill one of a `Facade`'s slots.
+pub(super) fn set_slot(object: v8::Local<v8::Object>, slot: usize, value: v8::Local<v8::Value>) -> Result<(), String> {
+    if object.set_internal_field(slot, value.into()) { Ok(()) } else { Err("view slot".into()) }
+}
+
+/// A slot getter. No lease check: a slot holds another view, and every view checks its own lease.
+fn js_slot(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let value = args.data().int32_value(scope)
+        .and_then(|slot| args.this().get_internal_field(scope, slot as usize))
+        .and_then(|field| v8::Local::<v8::Value>::try_from(field).ok());
+    match value {
+        Some(value) => rv.set(value),
+        None => throw(scope, "invalid receiver"),
+    }
 }
 
 fn illegal_constructor(scope: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {

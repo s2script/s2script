@@ -719,7 +719,7 @@ pub(crate) fn prepare_verified_package(
     }
     Ok(PreparedCandidate {
         base: None,
-        owner_id: owner.id,
+        owner_id: owner.id.to_string(),
         functions,
     })
 }

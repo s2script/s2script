@@ -405,7 +405,8 @@ pub fn parse(
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum OwnerKind { Plugin, GamePackage }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct OwnerKey { pub id: String, pub generation: u64, pub kind: OwnerKind }
+/// `id` is shared, not owned: a key is cloned for every callback lease on every hooked call.
+pub(crate) struct OwnerKey { pub id: std::sync::Arc<str>, pub generation: u64, pub kind: OwnerKind }
 impl OwnerKey {
     pub(crate) fn plugin(id: &str, generation: u64) -> Self {
         Self { id: id.into(), generation, kind: OwnerKind::Plugin }

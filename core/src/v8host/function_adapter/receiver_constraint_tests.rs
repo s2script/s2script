@@ -309,7 +309,7 @@ fn host_owner() -> OwnerKey {
     PACKAGES.with(|p| {
         p.borrow()
             .values()
-            .find(|p| p.owner.key().id == "@proof/receiver")
+            .find(|p| &*p.owner.key().id == "@proof/receiver")
             .unwrap()
             .owner
             .key()

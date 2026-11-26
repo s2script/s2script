@@ -204,7 +204,7 @@ pub(crate) fn activate_owner(
     receipt: PreparedOwnerReceipt,
     owner: OwnerKey,
 ) -> Result<Vec<u64>, String> {
-    if owner.kind != OwnerKind::Plugin || receipt.intended_id != owner.id {
+    if owner.kind != OwnerKind::Plugin || *receipt.intended_id != *owner.id {
         return Err("prepared candidate owner mismatch".into());
     }
     if !v8host::owner_is_live(&owner.id, owner.generation) {
@@ -470,7 +470,7 @@ pub(crate) fn activate_package_owner(
     #[cfg(test)]
     if PACKAGE_ACTIVATION_FAILURE_OWNER.with(|slot| {
         let mut slot = slot.borrow_mut();
-        if slot.as_deref() == Some(owner.key().id.as_str()) {
+        if slot.as_deref() == Some(&*owner.key().id) {
             slot.take();
             true
         } else {
