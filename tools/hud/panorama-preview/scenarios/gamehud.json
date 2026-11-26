@@ -1,0 +1,35 @@
+{
+  "layout": "../../../../examples/hud-lab/workshop/panorama/layout/custom_game/s2script_gamehud.xml",
+  "stylesheet": "../../../../examples/hud-lab/workshop/panorama/styles/custom_game/s2script_gamekit.css",
+  "show": [
+    "gk_rail", "gk_rail_lp0", "gk_rail_lp1", "gk_rail_lp2", "gk_rail_lp3", "gk_rail_rp0", "gk_rail_rp1", "gk_rail_rp2",
+    "gk_kf0", "gk_kf1", "gk_kf2", "gk_kf1_hs",
+    "gk_status",
+    "gk_wpn", "gk_wpn_slots", "gk_wpn_s0", "gk_wpn_s0_i0", "gk_wpn_s0_i0_t", "gk_wpn_s1", "gk_wpn_s1_i0", "gk_wpn_s1_i0_t",
+    "gk_wpn_s2", "gk_wpn_s2_i0", "gk_wpn_s2_i0_t", "gk_wpn_ammo",
+    "gk_target", "gk_target_s", "gk_toast"
+  ],
+  "classes": {
+    "gk_rail_r": { "remove": ["gk-e-blue"], "add": ["gk-e-red"] },
+    "gk_kf0": { "remove": ["gk-e-grey"], "add": ["gk-e-red"] },
+    "gk_kf1": { "remove": ["gk-e-grey"], "add": ["gk-e-blue"] },
+    "gk_bar0_fill": { "remove": ["s2-w0"], "add": ["s2-w7"] },
+    "gk_bar1_fill": { "remove": ["s2-w0"], "add": ["s2-w4"] },
+    "gk_wpn_s0": { "add": ["gk-sel"] },
+    "gk_wpn_s0_i0": { "add": ["gk-on"] },
+    "gk_target": { "remove": ["gk-fade"] }
+  },
+  "vars": {
+    "gk_rail_lscore": "7", "gk_rail_llab": "Guards", "gk_rail_clock": "1:42", "gk_rail_rlab": "Prisoners", "gk_rail_rscore": "5",
+    "gk_rail_sub": "Round 13 · Warday",
+    "gk_kf0_a": "Rook", "gk_kf0_w": "AK-47", "gk_kf0_v": "Mallory",
+    "gk_kf1_tag": "Warden", "gk_kf1_a": "Ines", "gk_kf1_w": "M4A1-S", "gk_kf1_v": "Dutch",
+    "gk_kf2_a": "Dutch", "gk_kf2_w": "Knife", "gk_kf2_v": "Sable",
+    "gk_status_role": "Prisoner", "gk_status_hint": "Follow the warden's orders",
+    "gk_bar0_lab": "HP", "gk_bar0_val": "70", "gk_bar1_lab": "AR", "gk_bar1_val": "40",
+    "gk_wpn_s0_i0_t": "AK-47", "gk_wpn_s1_i0_t": "Glock-18", "gk_wpn_s2_i0_t": "Knife",
+    "gk_wpn_name": "AK-47", "gk_wpn_clip": "24", "gk_wpn_res": "/ 90",
+    "gk_target_n": "Mallory", "gk_target_s": "Guard · 100 HP",
+    "gk_toast_t": "Cells open", "gk_toast_s": "Warden has 30 seconds to give an order"
+  }
+}
