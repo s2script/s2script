@@ -36,9 +36,14 @@ test("padding and border are inside the width", () => {
 
 test("alignment without flow: centre and far edge honour margins", () => {
   const b = run(`<Panel id="c" class="box mid" /><Panel id="r" class="box far" />`,
-    `.box { width: 100px; height: 50px; } .mid { horizontal-align: center; vertical-align: center; } .far { horizontal-align: right; vertical-align: bottom; margin-right: 20px; margin-bottom: 10px; }`);
-  assert.deepEqual(b.c, [450, 225, 100, 50]);
+    `.box { width: 100px; height: 50px; } .mid { horizontal-align: center; vertical-align: center; } .far { horizontal-align: right; vertical-align: bottom; margin-right: 20px; margin-bottom: 10px; } .mid { margin-top: 120px; }`);
+  assert.deepEqual(b.c, [450, 285, 100, 50]);
   assert.deepEqual(b.r, [880, 440, 100, 50]);
+});
+
+test("height: width-percentage ties height to width", () => {
+  const b = run(`<Panel id="sq" class="sq" />`, `.sq { width: 200px; height: width-percentage(50%); }`);
+  assert.deepEqual(b.sq, [0, 0, 200, 100]);
 });
 
 test("a collapsed panel takes no space, and the scenario can show it", () => {

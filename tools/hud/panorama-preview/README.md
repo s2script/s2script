@@ -6,7 +6,7 @@ has set, and the dialog variable strings.
 
 ```bash
 npm run build   # scenarios/gamehud.json -> out/gamehud.html (self-contained, opens from disk)
-npm test        # 8 tests, no dependencies
+npm test        # 9 tests, no dependencies
 ```
 
 ## Why it can match the game

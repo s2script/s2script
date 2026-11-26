@@ -10,6 +10,7 @@
 // The preview is only as true as that list is short.
 
 export const ASSUMPTIONS = [
+  ["centre-margins", "a centre-aligned panel is centred in the space its margins leave (seen in game for one case)"],
   ["box-model", "width and height include padding and border; margin is outside"],
   ["default-size", "a panel with no width or height is fit-children on that axis; a Label fits its text"],
   ["percent-of", "a percentage size is a share of the parent's content box (inside padding and border)"],
@@ -216,6 +217,9 @@ function layout(n, availW, availH, forceW, forceH, ctx) {
   const fixed = (spec, avail, force) =>
     force != null ? force : spec.kind === "px" ? spec.n : spec.kind === "pct" && avail != null ? (avail * spec.n) / 100 : null;
   let w = fixed(ws, availW, forceW), h = fixed(hs, availH, forceH);
+  // width: height-percentage(n) and height: width-percentage(n) tie one axis to the other.
+  if (ws.kind === "aspect" && h != null) w = (h * ws.n) / 100;
+  if (hs.kind === "aspect" && w != null) h = (w * hs.n) / 100;
   if (w != null) w = clampDim(w, s, "width");
   if (h != null) h = clampDim(h, s, "height");
   const padW = e.pl + e.pr, padH = e.pt + e.pb;
@@ -233,7 +237,8 @@ function layout(n, availW, availH, forceW, forceH, ctx) {
     contentW = inner.w; contentH = inner.h;
   }
   if (w == null) w = clampDim(contentW + padW, s, "width");
-  if (h == null) h = clampDim(contentH + padH, s, "height");
+  if (h == null) h = clampDim(hs.kind === "aspect" ? (w * hs.n) / 100 : contentH + padH, s, "height");
+  if (ws.kind === "aspect" && forceW == null) w = clampDim((h * ws.n) / 100, s, "width");
   n.w = w; n.h = h;
   // Second pass now that both sizes are known: percentage and fill children can resolve.
   if (n.tag !== "Label" && n.tag !== "Image") flowChildren(n, w - padW, h - padH, ctx, true);
@@ -305,7 +310,9 @@ function flowChildren(n, cw, ch, ctx, place = false) {
 }
 
 function alignPos(mode, avail, size, before, after, _start, end) {
-  if (mode === "center" || mode === "middle") return (avail - size) / 2 + before - after;
+  // Centred inside what the margins leave, so each margin moves the panel by half its size
+  // (seen in game: the target label's margin-top 120px sits it 60px below centre).
+  if (mode === "center" || mode === "middle") return before + (avail - before - after - size) / 2;
   if (mode === end) return avail - size - after;
   return before;
 }

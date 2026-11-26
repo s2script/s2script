@@ -34,12 +34,15 @@ const transform = (v) => v.replace(/rotateZ/g, "rotate").replace(/\(\s+/g, "(").
 
 function paint(root, stage, state, opts) {
   stage.replaceChildren();
+  const bw = (n, side) => (n?.style[`border-${side}`] ? parseFloat(n.style[`border-${side}`]) || 0 : 0);
   const draw = (n, parentEl) => {
     if (n.hidden) return;
     const s = n.style, el = document.createElement("div");
     const st = el.style;
     st.position = "absolute"; st.boxSizing = "border-box";
-    st.left = `${n.x ?? 0}px`; st.top = `${n.y ?? 0}px`; st.width = `${n.w}px`; st.height = `${n.h}px`;
+    // The engine's x/y are from the parent's outer edge; an absolutely positioned element is
+    // placed from inside the parent's border.
+    st.left = `${(n.x ?? 0) - bw(n.parent, "left")}px`; st.top = `${(n.y ?? 0) - bw(n.parent, "top")}px`; st.width = `${n.w}px`; st.height = `${n.h}px`;
     if (s["background-color"]) st.backgroundColor = s["background-color"];
     for (const side of ["top", "right", "bottom", "left"]) if (s[`border-${side}`]) st[`border${side[0].toUpperCase()}${side.slice(1)}`] = s[`border-${side}`];
     if (s["border-radius"]) st.borderRadius = s["border-radius"];
@@ -55,7 +58,7 @@ function paint(root, stage, state, opts) {
       const t = document.createElement("span");
       Object.assign(t.style, textCss(s));
       t.style.position = "absolute";
-      t.style.left = `${n.e.pl - parseFloat(st.borderLeftWidth || 0)}px`; t.style.top = `${n.e.pt - parseFloat(st.borderTopWidth || 0)}px`;
+      t.style.left = `${n.e.pl - bw(n, "left")}px`; t.style.top = `${n.e.pt - bw(n, "top")}px`;
       t.style.width = `${n.w - n.e.pl - n.e.pr}px`;
       t.style.whiteSpace = s["white-space"] === "nowrap" ? "pre" : "pre-wrap";
       t.style.textAlign = s["text-align"] ?? "left";
