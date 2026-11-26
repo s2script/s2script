@@ -151,6 +151,12 @@ pub(crate) fn clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Context
     PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
 }
 
+/// The plugin's context as a handle in `scope`, without the `Global` clone a caller that only
+/// wants to enter it would make and drop.
+pub(crate) fn plugin_context_local<'s>(scope: &v8::PinScope<'s, '_, ()>, owner: &str) -> Option<v8::Local<'s, v8::Context>> {
+    PLUGINS.with(|p| p.borrow().get(owner).map(|pi| v8::Local::new(scope, &pi.context)))
+}
+
 static PLATFORM_INIT: Once = Once::new();
 /// The process's V8 platform, kept so the frame loop can run V8's posted foreground tasks
 /// (`gc_points`).
@@ -284,8 +290,8 @@ thread_local! {
     /// ALONGSIDE `HOST` for this task: the existing single-context path is untouched.  Dropped
     /// (per id in `dispose_plugin_context`, or all in `shutdown`) while the isolate is still alive
     /// — same discipline as the Jobs resolver map / `CONCOMMANDS`.
-    static PLUGINS: std::cell::RefCell<std::collections::HashMap<String, PluginInstance>>
-        = std::cell::RefCell::new(std::collections::HashMap::new());
+    static PLUGINS: std::cell::RefCell<crate::fasthash::FastMap<String, PluginInstance>>
+        = std::cell::RefCell::new(crate::fasthash::FastMap::default());
     /// Plugin registry (Task 2): generation counter + per-plugin teardown ledger, keyed by the
     /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
     static REGISTRY: std::cell::RefCell<plugin::Registry>
@@ -1637,7 +1643,7 @@ fn s2require(
                             pi.package_exports
                                 .iter()
                                 .find(|e| {
-                                    e.instance.package_owner.id == id
+                                    *e.instance.package_owner.id == *id
                                         && e.instance.parent.generation == generation
                                 })
                                 .and_then(|e| e.modules.get(&subpath))
@@ -4809,15 +4815,10 @@ enum HookAccess {
 /// The epoch comparison is the whole point: it is what BINDS a view object to the one dispatch that
 /// built it. See `ActiveHook::epoch`.
 fn hook_access(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> HookAccess {
-    let (idx, epoch) = match v8::Local::<v8::Array>::try_from(args.data()) {
-        Ok(a) => (
-            a.get_index(scope, 0).and_then(|v| v.int32_value(scope)).unwrap_or(-1),
-            a.get_index(scope, 1).and_then(|v| v.number_value(scope)).unwrap_or(-1.0) as u64,
-        ),
-        // Unreachable — `build_hook_view` is the only thing that builds these — but a malformed
-        // `data` must fail closed rather than default to param 0 of the live frame.
-        Err(_) => (-1, u64::MAX),
-    };
+    // The epoch is the view's internal field, the param index the accessor's data. A malformed
+    // receiver or data must fail closed rather than default to param 0 of the live frame.
+    let epoch = function_adapter::leased::lease_id(scope, args).unwrap_or(u64::MAX);
+    let idx = if args.data().is_int32() { args.data().int32_value(scope).unwrap_or(-1) } else { -1 };
     match active_hook() {
         None => HookAccess::Dead,
         Some((view, owner, name, live_epoch)) => {
@@ -5000,29 +5001,32 @@ fn build_hook_view<'s>(
     view: *mut std::ffi::c_void,
     epoch: u64,
 ) -> Option<Vec<v8::Local<'s, v8::Value>>> {
-    let obj = v8::Object::new(tc);
-    for (i, pname) in plan.params.iter().enumerate() {
-        let key = v8::String::new(tc, pname)?;
-        // `[paramIndex, epoch]` — the index alone would let this accessor operate on WHATEVER
-        // dispatch is live when it is called. The epoch binds it to this one. See `ActiveHook`.
-        let data_arr = v8::Array::new(tc, 2);
-        let iv = v8::Integer::new(tc, i as i32);
-        let ev = v8::Number::new(tc, epoch as f64);
-        data_arr.set_index(tc, 0, iv.into());
-        data_arr.set_index(tc, 1, ev.into());
-        let data: v8::Local<v8::Value> = data_arr.into();
-        let getter: v8::Local<v8::Value> =
-            v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
-        // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
-        // setter", which makes an assignment throw under strict mode instead of silently vanishing.
-        let setter: v8::Local<v8::Value> = if plan.writable[i] {
-            v8::Function::builder(s2_hook_param_set).data(data).build(tc)?.into()
-        } else {
-            v8::undefined(tc).into()
-        };
-        let desc = v8::PropertyDescriptor::new_from_get_set(getter, setter);
-        obj.define_property(tc, key.into(), &desc);
-    }
+    // The view is an instance of a shape built once per hook, never a set of fresh functions: V8
+    // allocates a function template for each `v8::Function` in the old generation, and only a full
+    // collection reclaims those (see `function_adapter::leased`). The dispatch's epoch is the
+    // instance's internal field: an index alone would let an accessor operate on WHATEVER dispatch
+    // is live when it is called, and the epoch binds it to this one. See `ActiveHook`.
+    let layout = {
+        use std::hash::{Hash, Hasher};
+        let mut h = crate::fasthash::WordHasher::default();
+        plan.params.hash(&mut h);
+        plan.writable.hash(&mut h);
+        h.finish()
+    };
+    let shape = function_adapter::leased::Shape::Hook { hook: plan.hook_id, layout };
+    let obj = function_adapter::leased::instance(tc, shape, epoch, |shape| {
+        for (i, pname) in plan.params.iter().enumerate() {
+            let index = shape.integer(i as i32);
+            // No setter at all for a read-only param, which makes an assignment throw under strict
+            // mode instead of silently vanishing.
+            if plan.writable[i] {
+                shape.accessor(pname, s2_hook_param_get, s2_hook_param_set, index)?;
+            } else {
+                shape.read_only(pname, s2_hook_param_get, index)?;
+            }
+        }
+        Ok(())
+    }).ok()?;
     // The receiver, when the descriptor surfaces one: a books-gated EntityRef, exactly like every
     // other entity crossing into JS. NO RAW POINTER — the shim hands back a packed CEntityHandle its
     // own books already vouched for, and `entity_live::adopt` re-decides liveness here.
@@ -7320,6 +7324,8 @@ pub(crate) fn register_process_singletons() {
     reg("FRAMEWORK_REALM", BeforeIsolateDrop, realm::reset);
     // The per-isolate native templates every context instantiates its natives from.
     reg("NATIVE_TEMPLATES", BeforeIsolateDrop, reset_native_templates);
+    // The shapes hook callbacks' views are stamped from.
+    reg("FUNCTION_VIEW_SHAPES", BeforeIsolateDrop, function_adapter::leased::reset);
     reg("INTEROP_FACADES", BeforeIsolateDrop, interop_facade::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())

@@ -5970,6 +5970,21 @@
 
         assert_eq!(eval_in_context_string("hk2", "String(globalThis.__stash.delay)"), "undefined",
             "the view is block-scoped: outside its dispatch every accessor is dead");
+
+        // The view is stamped from a shape built once. Fresh functions per dispatch would be
+        // old-generation garbage that only a full collection reclaims.
+        let shapes = function_adapter::leased::cached();
+        for _ in 0..20 {
+            dispatch_hook(hook_id, HOOK_VIEW_TOKEN as *mut std::ffi::c_void);
+        }
+        assert_eq!(function_adapter::leased::cached(), shapes, "a later dispatch built a shape again");
+        // An accessor lifted off a view refuses any receiver that is not such a view.
+        assert_eq!(eval_in_context_string("hk2", r#"
+            (function () {
+                var get = Object.getOwnPropertyDescriptor(globalThis.__stash, "delay").get;
+                try { get.call({}); return "ran"; } catch (e) { return "refused"; }
+            })()
+        "#), "refused");
         shutdown();
     }
 

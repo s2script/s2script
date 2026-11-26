@@ -5,14 +5,15 @@
 //! and entities (`entity_live`). A plugin reload must not invalidate entities; a map
 //! change must not invalidate plugins.
 
-use std::collections::HashMap;
+use crate::fasthash::FastMap;
 use std::hash::Hash;
 
 /// A host-owned liveness table: `key → (host-minted id, meta)`. The id allocator is
 /// monotonic for the table's lifetime and NEVER resets (not on remove, not on clear) —
 /// that monotonicity IS the anti-aliasing guarantee.
 pub struct LiveTable<K: Eq + Hash, M> {
-    entries: HashMap<K, (u64, M)>,
+    // Probed on every dispatch and by every native that checks its caller is still loaded.
+    entries: FastMap<K, (u64, M)>,
     next_id: u64,
 }
 
@@ -21,7 +22,7 @@ impl<K: Eq + Hash, M> LiveTable<K, M> {
     /// wire for entities, and for plugins as the `unwrap_or(0)` fallback every
     /// subscribe-time generation stamp uses when the owner is not a registered plugin.
     pub fn new(first_id: u64) -> Self {
-        Self { entries: HashMap::new(), next_id: first_id }
+        Self { entries: FastMap::default(), next_id: first_id }
     }
     /// Mint a fresh id for `key`, replacing any existing entry. Replacement IS the
     /// invalidation of the previous holder — its captured id can never match again.

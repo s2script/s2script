@@ -35,6 +35,7 @@ pub(crate) const GAMEDATA_PLATFORM: &str = "win64";
 pub(crate) const GAMEDATA_PLATFORM: &str = "linuxsteamrt64";
 
 mod engine_functions;
+mod fasthash;
 mod game_packages;
 mod async_limits;
 mod admin;
