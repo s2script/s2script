@@ -1964,11 +1964,19 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
         Err(e) => throw(scope, e),
     }
 }
+/// A record accessor's position and field as one integer: its callback data must be a primitive.
+const RECORD_FIELDS:i32=1<<16;
+const RECORD_BIAS:i32=1<<8;
+fn record_data(selector:i32,field:usize) -> Result<i32,String> {
+    if !(-RECORD_BIAS..RECORD_BIAS).contains(&selector) || field>=RECORD_FIELDS as usize {return Err("record shape out of range".into());}
+    Ok((selector+RECORD_BIAS)*RECORD_FIELDS+field as i32)
+}
+fn record_selector(data:i32) -> (i32,u32) {
+    (data.div_euclid(RECORD_FIELDS)-RECORD_BIAS,data.rem_euclid(RECORD_FIELDS) as u32)
+}
 fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) -> Result<(Lease,i32,u32),String> {
     let id=leased::lease_id(scope,args)?;
-    let data=v8::Local::<v8::Array>::try_from(args.data()).map_err(|_|"invalid record accessor")?;
-    let selector=data.get_index(scope,0).and_then(|v|v.int32_value(scope)).ok_or("missing record position")?;
-    let field=data.get_index(scope,1).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
+    let (selector,field)=record_selector(args.data().int32_value(scope).ok_or("invalid record accessor")?);
     // A callback's current context is its creation context, so a view moved into
     // another context would still name its owner; require the caller to be that owner.
     let owner=current_owner(scope)?;
@@ -2030,7 +2038,7 @@ fn record_view<'s>(scope:&mut v8::PinScope<'s,'_>,l:&Lease,selector:i32) -> Resu
     let shape=leased::Shape::Record{binding:l.binding.id,selector};
     let object=leased::instance(scope,shape,l.id,|shape| {
         for (field,row) in l.binding.function.abi.layout(selector)?.fields.iter().enumerate() {
-            let data=shape.pair(selector,field as i32);
+            let data=shape.integer(record_data(selector,field)?);
             shape.accessor(&row.name,record_get,record_set,data)?;
         }
         Ok(())
@@ -5090,6 +5098,16 @@ pub(crate) mod scalar_transport_tests {
         drop(package);
         set_engine_ops(None);
         shutdown();
+    }
+    #[test]
+    fn record_accessor_data_round_trips_as_one_integer() {
+        for selector in [-16, -2, -1, 0, 1, 31] {
+            for field in [0usize, 1, 7, 65535] {
+                assert_eq!(record_selector(record_data(selector, field).unwrap()), (selector, field as u32));
+            }
+        }
+        assert!(record_data(0, 65536).is_err());
+        assert!(record_data(256, 0).is_err());
     }
     // Catches a view built from fresh functions again: that garbage is old-generation, so a
     // per-tick hook forced a full collection every second or two.

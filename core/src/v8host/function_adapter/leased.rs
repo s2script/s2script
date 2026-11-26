@@ -164,13 +164,10 @@ impl<'s> Builder<'_, 's, '_> {
     pub(super) fn string(&mut self, value: &str) -> Result<v8::Local<'s, v8::Primitive>, String> {
         Ok(v8::String::new(self.scope, value).ok_or("shape string allocation")?.into())
     }
+    /// Callback data must be a primitive: a shape outlives every context, and an object (an array
+    /// of selectors, say) would keep the context it was made in alive after its plugin unloads.
     pub(super) fn integer(&mut self, value: i32) -> v8::Local<'s, v8::Value> {
         v8::Integer::new(self.scope, value).into()
-    }
-    pub(super) fn pair(&mut self, a: i32, b: i32) -> v8::Local<'s, v8::Value> {
-        let a = v8::Integer::new(self.scope, a);
-        let b = v8::Integer::new(self.scope, b);
-        v8::Array::new_with_elements(self.scope, &[a.into(), b.into()]).into()
     }
     pub(super) fn boolean(&mut self, value: bool) -> v8::Local<'s, v8::Primitive> {
         v8::Boolean::new(self.scope, value).into()
