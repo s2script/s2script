@@ -7320,6 +7320,8 @@ pub(crate) fn register_process_singletons() {
     reg("FRAMEWORK_REALM", BeforeIsolateDrop, realm::reset);
     // The per-isolate native templates every context instantiates its natives from.
     reg("NATIVE_TEMPLATES", BeforeIsolateDrop, reset_native_templates);
+    // The shapes hook callbacks' views are stamped from.
+    reg("FUNCTION_VIEW_SHAPES", BeforeIsolateDrop, function_adapter::leased::reset);
     reg("INTEROP_FACADES", BeforeIsolateDrop, interop_facade::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())

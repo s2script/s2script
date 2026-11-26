@@ -39,7 +39,8 @@ fn bounded_name(scope: &mut v8::PinScope, value: v8::Local<v8::Value>, what: &st
 }
 pub(super) fn js_hidden_referenced_by(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
-        let l = lease(scope, bigint(args.data())?)?;
+        let id = leased::lease_id(scope, &args)?;
+        let l = lease(scope, id)?;
         if !has_hidden(&l.binding) {
             return Err("binding has no hidden native position".into());
         }

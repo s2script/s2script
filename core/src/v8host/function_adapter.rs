@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
 };
 mod hidden_relation;
+pub(crate) mod leased;
 
 pub(super) struct PreparedPackage {
     owner: HostPackageOwner,
@@ -1316,6 +1317,7 @@ pub(crate) fn drop_owner(owner: &OwnerKey) {
     }
     for id in registry::owner_bindings(owner) {
         AUTHORIZED.with(|a| a.borrow_mut().remove(&id));
+        leased::forget_binding(id);
     }
 }
 
@@ -1554,7 +1556,8 @@ fn js_original_return(
     mut rv: v8::ReturnValue,
 ) {
     let result = (|| {
-        let l = lease(scope, bigint(args.data())?)?;
+        let id = leased::lease_id(scope, &args)?;
+        let l = lease(scope, id)?;
         let permit = AdapterPostReturnPermit::issue(l)?;
         let frame = GuardedPostFrame { permit };
         match package_adapter::ProjectedFrame::original_return(&frame)? {
@@ -1573,7 +1576,8 @@ fn js_override_return(
     mut rv: v8::ReturnValue,
 ) {
     let result = (|| {
-        let l = lease(scope, bigint(args.data())?)?;
+        let id = leased::lease_id(scope, &args)?;
+        let l = lease(scope, id)?;
         let permit = AdapterPostReturnPermit::issue(l)?;
         let (_, binding) = permit.validate()?;
         let ret = &binding.function.abi.returns;
@@ -1595,12 +1599,8 @@ fn accessor_data(
     scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
 ) -> Result<(Lease, i32), String> {
-    let a = v8::Local::<v8::Array>::try_from(args.data()).map_err(|_| "invalid accessor")?;
-    let id = bigint(a.get_index(scope, 0).ok_or("missing lease")?)?;
-    let selector = a
-        .get_index(scope, 1)
-        .and_then(|v| v.int32_value(scope))
-        .ok_or("missing selector")?;
+    let id = leased::lease_id(scope, args)?;
+    let selector = args.data().int32_value(scope).ok_or("missing selector")?;
     Ok((lease(scope, id)?, selector))
 }
 fn scalar_to_js<'s>(
@@ -1954,10 +1954,10 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
     }
 }
 fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) -> Result<(Lease,i32,u32),String> {
+    let id=leased::lease_id(scope,args)?;
     let data=v8::Local::<v8::Array>::try_from(args.data()).map_err(|_|"invalid record accessor")?;
-    let id=bigint(data.get_index(scope,0).ok_or("missing record lease")?)?;
-    let selector=data.get_index(scope,1).and_then(|v|v.int32_value(scope)).ok_or("missing record position")?;
-    let field=data.get_index(scope,2).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
+    let selector=data.get_index(scope,0).and_then(|v|v.int32_value(scope)).ok_or("missing record position")?;
+    let field=data.get_index(scope,1).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
     // A callback's current context is its creation context, so a view moved into
     // another context would still name its owner; require the caller to be that owner.
     let owner=current_owner(scope)?;
@@ -2016,17 +2016,14 @@ fn record_view<'s>(scope:&mut v8::PinScope<'s,'_>,l:&Lease,selector:i32) -> Resu
         return Err("invalid native record presence".into());
     }
     if presence.bits==0 {return Ok(v8::null(scope).into());}
-    let object=v8::Object::new(scope);
-    for (field,row) in l.binding.function.abi.layout(selector)?.fields.iter().enumerate() {
-        let id=v8::BigInt::new_from_u64(scope,l.id);
-        let position=v8::Integer::new(scope,selector);let field=v8::Integer::new_from_unsigned(scope,field as u32);
-        let data=v8::Array::new_with_elements(scope,&[id.into(),position.into(),field.into()]);
-        let getter=v8::Function::builder(record_get).data(data.into()).build(scope).ok_or("record getter allocation")?;
-        let setter=v8::Function::builder(record_set).data(data.into()).build(scope).ok_or("record setter allocation")?;
-        let descriptor=v8::PropertyDescriptor::new_from_get_set(getter.into(),setter.into());
-        let name=v8::String::new(scope,&row.name).ok_or("record name allocation")?;
-        if object.define_property(scope,name.into(),&descriptor)!=Some(true) {return Err("record property allocation".into());}
-    }
+    let shape=leased::Shape::Record{binding:l.binding.id,selector};
+    let object=leased::instance(scope,shape,l.id,|shape| {
+        for (field,row) in l.binding.function.abi.layout(selector)?.fields.iter().enumerate() {
+            let data=shape.pair(selector,field as i32);
+            shape.accessor(&row.name,record_get,record_set,data)?;
+        }
+        Ok(())
+    })?;
     object.set_integrity_level(scope,v8::IntegrityLevel::Frozen).ok_or("record view freeze")?;
     Ok(object.into())
 }
@@ -2081,59 +2078,43 @@ fn view<'s>(
     binding: &Binding,
     lease: u64,
 ) -> Result<v8::Local<'s, v8::Object>, String> {
-    let object = v8::Object::new(scope);
-    let mut fields = binding
-        .function
-        .abi
-        .parameters
-        .iter()
-        .enumerate()
-        .filter(|(_,p)|!p.hidden())
-        .map(|(i, p)| (p.name.clone(), i as i32))
-        .collect::<Vec<_>>();
-    if let Some(receiver)=binding.function.abi.receiver.as_ref().filter(|p|!p.hidden()) {
-        fields.push((receiver.name.clone(), -1));
-    }
-    if dispatch.frame.phase == 1 {
-        fields.push(("returnValue".into(), -2));
-    } else {
-        for (k, slot) in binding.function.abi.scratch.iter().enumerate() {
-            fields.push((slot.name.clone(), SCRATCH_BASE - k as i32));
-        }
-    }
-    for (name, index) in fields {
-        let data = v8::Array::new(scope, 2);
-        let l = v8::BigInt::new_from_u64(scope, lease);
-        let i = v8::Integer::new(scope, index);
-        data.set_index(scope, 0, l.into());
-        data.set_index(scope, 1, i.into());
-        let getter = v8::Function::builder(js_get)
-            .data(data.into())
-            .build(scope)
-            .ok_or("getter allocation")?;
-        let setter = v8::Function::builder(js_set)
-            .data(data.into())
-            .build(scope)
-            .ok_or("setter allocation")?;
-        let desc = v8::PropertyDescriptor::new_from_get_set(getter.into(), setter.into());
-        let key = v8::String::new(scope, &name).unwrap();
-        object.define_property(scope, key.into(), &desc);
-    }
-    if dispatch.frame.phase == 1 {
-        let skipped = v8::Boolean::new(scope, dispatch.frame.info.flags & 1 != 0);
-        set(scope, object, "skipped", skipped.into())?;
-    }
-    if dispatch.frame.phase == 1 && LEASES.with(|s| s.borrow().last().is_some_and(|l|
+    let post = dispatch.frame.phase == 1;
+    let authority = post && LEASES.with(|s| s.borrow().last().is_some_and(|l|
         l.id == lease && l.adapter && dispatch.adapter.as_ref().is_some_and(|a|
-            a.post_authority == PostReturnAuthority::Override))) {
-        let data = v8::BigInt::new_from_u64(scope, lease);
-        let getter = v8::Function::builder(js_original_return).data(data.into()).build(scope).ok_or("getter allocation")?;
-        let undefined = v8::undefined(scope);
-        let desc = v8::PropertyDescriptor::new_from_get_set(getter.into(), undefined.into());
-        let key = v8::String::new(scope, "originalReturnValue").unwrap();
-        object.define_property(scope,key.into(),&desc);
-        let method = v8::Function::builder(js_override_return).data(data.into()).build(scope).ok_or("method allocation")?;
-        set(scope,object,"overrideReturn",method.into())?;
+            a.post_authority == PostReturnAuthority::Override)));
+    let skipped = post && dispatch.frame.info.flags & 1 != 0;
+    let shape = leased::Shape::Frame { binding: binding.id, post, skipped, authority };
+    let object = leased::instance(scope, shape, lease, |shape| {
+        let abi = &binding.function.abi;
+        for (i, p) in abi.parameters.iter().enumerate().filter(|(_, p)| !p.hidden()) {
+            let selector = shape.integer(i as i32);
+            shape.accessor(&p.name, js_get, js_set, selector)?;
+        }
+        if let Some(receiver) = abi.receiver.as_ref().filter(|p| !p.hidden()) {
+            let selector = shape.integer(-1);
+            shape.accessor(&receiver.name, js_get, js_set, selector)?;
+        }
+        if post {
+            let selector = shape.integer(-2);
+            shape.accessor("returnValue", js_get, js_set, selector)?;
+            let skipped = shape.boolean(skipped);
+            shape.constant("skipped", skipped)?;
+        } else {
+            for (k, slot) in abi.scratch.iter().enumerate() {
+                let selector = shape.integer(SCRATCH_BASE - k as i32);
+                shape.accessor(&slot.name, js_get, js_set, selector)?;
+            }
+        }
+        if authority {
+            shape.getter("originalReturnValue", js_original_return)?;
+            shape.method("overrideReturn", js_override_return)?;
+        }
+        if hidden_relation::has_hidden(binding) {
+            shape.method("hiddenReferencedBy", hidden_relation::js_hidden_referenced_by)?;
+        }
+        Ok(())
+    })?;
+    if authority {
         let proposal = dispatch.proposal.borrow().clone();
         if let Some((value, _)) = proposal {
             // A proposed entity that died since PRE is observed as null, never revived.
@@ -2147,11 +2128,6 @@ fn view<'s>(
             let value = projected_to_js(scope, value)?;
             set_own(scope, object, "proposedReturn", value)?;
         }
-    }
-    if hidden_relation::has_hidden(binding) {
-        let data = v8::BigInt::new_from_u64(scope, lease);
-        let method = v8::Function::builder(hidden_relation::js_hidden_referenced_by).data(data.into()).build(scope).ok_or("method allocation")?;
-        set(scope,object,"hiddenReferencedBy",method.into())?;
     }
     object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
     Ok(object)
@@ -2261,7 +2237,8 @@ fn js_cursor(
     mut rv: v8::ReturnValue,
 ) {
     let result = (|| -> Result<v8::Local<v8::Value>, String> {
-        let l = lease(scope, bigint(args.data())?)?;
+        let id = leased::lease_id(scope, &args)?;
+        let l = lease(scope, id)?;
         if !l.adapter {
             return Err("cursor requires adapter callback lease".into());
         }
@@ -2433,13 +2410,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     )
     .unwrap();
     set(&mut tc, facade, "phase", phase.into())?;
-    let cursor = v8::Object::new(&mut tc);
-    let data = v8::BigInt::new_from_u64(&mut tc, id);
-    let next = v8::Function::builder(js_cursor)
-        .data(data.into())
-        .build(&mut tc)
-        .ok_or("cursor allocation")?;
-    set(&mut tc, cursor, "invokeNext", next.into())?;
+    let cursor = leased::instance(&mut tc, leased::Shape::Cursor, id, |shape| shape.method("invokeNext", js_cursor))?;
     cursor.set_integrity_level(&mut tc, v8::IntegrityLevel::Frozen);
     set(&mut tc, facade, "cursor", cursor.into())?;
     facade.set_integrity_level(&mut tc, v8::IntegrityLevel::Frozen);
@@ -3518,8 +3489,8 @@ pub(super) mod proof {
             post(d){{
               if(mode==='probe'){{events.push('ready');return;}}
               if(d.frame.originalReturnValue!==original)throw Error('original snapshot');
-              globalThis.retained=d.frame.overrideReturn;
-              globalThis.retainedOriginal=Object.getOwnPropertyDescriptor(d.frame,'originalReturnValue').get;
+              const heldFrame=d.frame;globalThis.retained=v=>heldFrame.overrideReturn(v);
+              globalThis.retainedOriginal=()=>heldFrame.originalReturnValue;
               if(mode==='rust'){{__proofRustPost();events.push('adapter');return;}}
               if(mode==='nested'){{
                 // Caller bypass leaves a different instance selected during this nested frame.
@@ -5105,6 +5076,60 @@ pub(crate) mod scalar_transport_tests {
         set_engine_ops(None);
         shutdown();
     }
+    // Catches a view built from fresh functions again: that garbage is old-generation, so a
+    // per-tick hook forced a full collection every second or two.
+    #[test]
+    fn callback_views_are_stamped_from_shapes_built_once() {
+        init_transport();
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{
+                pre(d){{while(d.cursor.invokeNext()!==null){{}}return 0;}},
+                post(d){{
+                    const next=d.cursor.invokeNext;let refused=false;
+                    try{{next()}}catch(_){{refused=true}}
+                    if(!refused)throw Error('detached cursor ran');
+                    while(d.cursor.invokeNext()!==null){{}}
+                }}
+            }});
+            globalThis.seen=[];
+            globalThis.wrapper=(view)=>{{
+                const get=Object.getOwnPropertyDescriptor(view,'x').get;
+                let refused=0;
+                try{{get()}}catch(_){{refused++}}
+                try{{get.call({{}})}}catch(_){{refused++}}
+                for(const old of seen){{try{{get.call(old)}}catch(_){{refused++}}try{{old.x}}catch(_){{refused++}}}}
+                if(refused!==2+2*seen.length)throw Error('foreign or expired receiver read the frame');
+                if(get.call(view)!==7 || view.x!==7 || !Object.isFrozen(view))throw Error('live view');
+                seen.push(view);
+            }};
+        "#,
+            proof::HASH
+        ));
+        frame_tests::load_body("shapes", "return {};", "{}");
+        let binding = proof::prepared_binding("shapes", |_| {});
+        authorize(&package, "shapes", binding, "proof.review.v1").unwrap();
+        eval_in_context("shapes", &format!("subscribeProof({binding}n);subscribeProof({binding}n,'proof.review.v1','post');")).unwrap();
+        let call = || {
+            let info = open_frame();
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+            assert_eq!(close_frame(&info).output.bits, 7);
+        };
+        call();
+        // PRE frame, POST frame and the adapter's cursor.
+        assert_eq!(leased::cached(), 3);
+        for _ in 0..50 {
+            call();
+        }
+        assert_eq!(leased::cached(), 3, "a later call built a shape again");
+        eval_in_context("shapes", "if(seen.length!==102)throw Error(seen.length);").unwrap();
+        unload_plugin("shapes");
+        assert_eq!(leased::cached(), 1, "a retired binding's shapes are dropped");
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+        assert_eq!(leased::cached(), 0);
+    }
     #[test]
     fn trusted_post_shared_production_body() {
         init_transport();
@@ -5141,7 +5166,7 @@ pub(crate) mod scalar_transport_tests {
               pre(d){{if('overrideReturn' in d.frame || 'originalReturnValue' in d.frame)throw Error('PRE authority');}},
               post(d){{
                 if(d.frame.originalReturnValue!==7 || d.frame.returnValue!==7)throw Error('initial snapshot');
-                globalThis.retained=d.frame.overrideReturn;
+                const heldFrame=d.frame;globalThis.retained=v=>heldFrame.overrideReturn(v);
                 if(globalThis.stale){{let refused=false;try{{stale(90)}}catch(_){{refused=true}}if(!refused)throw Error('old generation revived');}}
                 Promise.resolve().then(()=>{{let refused=false;try{{retained(90)}}catch(_){{refused=true}}if(!refused)throw Error('await authority');globalThis.awaitRefused=true;}});
                 let rejected=0;for(const value of [null,true,1.5,2147483648,{{}}]){{try{{retained(value);}}catch(_){{rejected++;}}}}
